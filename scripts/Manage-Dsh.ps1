@@ -39,7 +39,12 @@ $desktopDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settingsPath = Join-Path $desktopDir 'settings.json'
 $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 $defaultDshVersion = '0.1.0-rc.7'
-$MinSupportedDshVersion = '0.1.0-rc.7'
+# 验证基线：只有 rc.7 是已验证版本。官方 DSH 仍是 developer preview，会发 breaking changes：
+# - 比 rc.7 旧 → 不支持，询问
+# - 等于 rc.7 → 已验证，直接使用
+# - 比 rc.7 新 → 未验证，明确询问（不能因为“版本更高”就静默信任）
+# - 无法解析 → 未验证，明确询问
+$VerifiedDshVersion = '0.1.0-rc.7'
 $defaultProfilePnpmVersion = '10.33.2'
 
 # 插件目录。分层与可复现性规则（2026-08-19 第二轮审计后）：
@@ -167,9 +172,21 @@ function Normalize-Version([string]$value) {
     return $value
 }
 
+# Profile 名保留字：官方 DSH 禁止 node_modules；Windows 设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）不能作目录名
+$ReservedProfileNames = @('node_modules', 'con', 'prn', 'aux', 'nul')
+
+function Test-ReservedProfileName([string]$value) {
+    if ([string]::IsNullOrWhiteSpace($value)) { return $false }
+    $lower = $value.ToLowerInvariant()
+    if ($ReservedProfileNames -contains $lower) { return $true }
+    if ($lower -match '^(com|lpt)[1-9]$') { return $true }
+    return $false
+}
+
 function Normalize-Profile([string]$value) {
     if ([string]::IsNullOrWhiteSpace($value)) { return 'web' }
     if ($value -notmatch '^[A-Za-z0-9_-]+$') { return 'web' }
+    if (Test-ReservedProfileName $value) { return 'web' }
     return $value
 }
 
@@ -296,16 +313,16 @@ function Compare-DshVersion([string]$a, [string]$b) {
     return $(if ($pa.Pre.Count -lt $pb.Pre.Count) { -1 } else { 1 })
 }
 
-# $null = 版本串为空（无法读取，按可用处理）；$false = 低于基线或无法解析（未验证）；
-# $true = 支持。无法解析的版本串一律按“未验证”走门槛，而不是静默放行。
+# $null = 版本串为空（无法读取，按可用处理）；$false = 非验证基线（更旧/更新/无法解析）；
+# $true = 等于验证基线 $VerifiedDshVersion。返回 false 的一律走门槛询问，不静默放行。
 function Test-DshVersionSupported([string]$version) {
     if ([string]::IsNullOrWhiteSpace($version)) { return $null }
-    $cmp = Compare-DshVersion $version $MinSupportedDshVersion
+    $cmp = Compare-DshVersion $version $VerifiedDshVersion
     if ($null -eq $cmp) { return $false }
-    return ($cmp -ge 0)
+    return ($cmp -eq 0)
 }
 
-# 带版本门槛的现有 dsh 解析：低于基线/无法解析时询问或自动改用 npx，而不是静默接管。
+# 带验证基线的现有 dsh 解析：未验证/不支持时询问或自动改用 npx，而不是静默接管。
 function Resolve-DshCommandWithGate([string]$existing) {
     $actual = Get-DshVersionFromCommand $existing
     if ([string]::IsNullOrWhiteSpace($actual)) {
@@ -313,18 +330,21 @@ function Resolve-DshCommandWithGate([string]$existing) {
         return [pscustomobject]@{ Path=$existing; Version=(Normalize-Version $defaultDshVersion); Mode='command' }
     }
 
-    $cmp = Compare-DshVersion $actual $MinSupportedDshVersion
+    $cmp = Compare-DshVersion $actual $VerifiedDshVersion
     if ($null -eq $cmp) {
-        Warn "检测到现有 DSH，版本串无法解析（$actual），未通过验证基线 $MinSupportedDshVersion。"
-    } elseif ($cmp -ge 0) {
+        Warn "检测到现有 DSH，版本串无法解析（$actual），DesktopShell 未验证此版本。"
+        Warn "DesktopShell 当前验证基线：$VerifiedDshVersion"
+    } elseif ($cmp -lt 0) {
+        Warn "检测到现有 DSH $actual，低于 DesktopShell 验证基线 $VerifiedDshVersion（插件/settings 接口可能不兼容）。"
+    } elseif ($cmp -gt 0) {
+        Warn "检测到现有 DSH $actual，高于 DesktopShell 验证基线 $VerifiedDshVersion；DesktopShell 尚未审核此版本。"
+    } else {
         Ok "检测到现有 DSH，直接使用：$existing  ($actual)"
         return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command' }
-    } else {
-        Warn "检测到现有 DSH $actual，低于 DesktopShell 验证基线 $MinSupportedDshVersion（插件/settings 接口可能不兼容）。"
     }
 
     if ($NonInteractive) {
-        Warn "非交互模式：改用 npx @deepseek-ai/dsh@$MinSupportedDshVersion。"
+        Warn "非交互模式：改用 npx @deepseek-ai/dsh@$VerifiedDshVersion。"
         return $null
     }
     if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行验证基线版本' $false) {
@@ -358,12 +378,21 @@ function Set-Property($obj, [string]$name, $value) {
     else { $obj | Add-Member -NotePropertyName $name -NotePropertyValue $value }
 }
 
+# DSH 运行方式：command=只用现有 dsh；npx=只用官方 npx；auto=有 dsh 用 dsh，否则 npx。
+# 持久化到 settings.json 的 dshRunnerMode，C# 端同样严格遵守——
+# 否则“选择 npx”只会把 dshPath 写空，下次解析又会把 PATH 里的旧 dsh 捡回来。
+function Resolve-RunnerMode([string]$value) {
+    if ($value -in @('command', 'npx', 'auto')) { return $value }
+    return 'auto'
+}
+
 function Save-DesktopSettings([string]$dshPath, [string]$version, [string]$profile, [int]$webPort, [string]$workDir,
-    [string]$closeAction, [bool]$developerMode) {
+    [string]$closeAction, [bool]$developerMode, [string]$runnerMode) {
     New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
     $obj = Get-SettingsObject
     Set-Property $obj 'dshPath' $(if ($dshPath) { $dshPath } else { '' })
     Set-Property $obj 'dshVersion' (Normalize-Version $version)
+    Set-Property $obj 'dshRunnerMode' (Resolve-RunnerMode $runnerMode)
     Set-Property $obj 'profileName' (Normalize-Profile $profile)
     Set-Property $obj 'port' $webPort
     Set-Property $obj 'workingDirectory' $workDir
@@ -385,13 +414,19 @@ function Save-DesktopSettings([string]$dshPath, [string]$version, [string]$profi
 
 function Get-CurrentSettings {
     $obj = Get-SettingsObject
+    $mode = Resolve-RunnerMode ([string]$obj.dshRunnerMode)
 
     $savedPath = $null
-    if ($obj.dshPath -and (Test-Path -LiteralPath ([string]$obj.dshPath) -PathType Leaf) -and
-        -not ([IO.Path]::GetFullPath([string]$obj.dshPath)).StartsWith([IO.Path]::GetFullPath($legacyRuntimeDir), [StringComparison]::OrdinalIgnoreCase)) {
-        $savedPath = [string]$obj.dshPath
+    if ($mode -eq 'npx') {
+        # 用户明确选择 npx：绝不回捡 PATH 里的 dsh
+        $savedPath = $null
+    } else {
+        if ($obj.dshPath -and (Test-Path -LiteralPath ([string]$obj.dshPath) -PathType Leaf) -and
+            -not ([IO.Path]::GetFullPath([string]$obj.dshPath)).StartsWith([IO.Path]::GetFullPath($legacyRuntimeDir), [StringComparison]::OrdinalIgnoreCase)) {
+            $savedPath = [string]$obj.dshPath
+        }
+        if (-not $savedPath) { $savedPath = Get-DshCommand }
     }
-    if (-not $savedPath) { $savedPath = Get-DshCommand }
 
     $actualVersion = if ($savedPath) { Get-DshVersionFromCommand $savedPath } else { $null }
     $version = if ($actualVersion) { $actualVersion } elseif ($DshVersion) { Normalize-Version $DshVersion } elseif ($obj.dshVersion) { Normalize-Version ([string]$obj.dshVersion) } else { $defaultDshVersion }
@@ -404,6 +439,7 @@ function Get-CurrentSettings {
     return [pscustomobject]@{
         DshPath=$savedPath
         Version=$version
+        RunnerMode=$mode
         Profile=$profile
         Port=$webPort
         Work=$work
@@ -613,7 +649,7 @@ function Guided-Setup {
     Title 'DeepSeek Harness DesktopShell v1.0.0 初始化'
     Write-Host 'DSH 启动策略：'
     Write-Host '  • 系统已有 dsh 命令 -> 直接使用，不重装、不移动'
-    Write-Host '  • 现有 dsh 低于验证基线 rc.7 -> 询问是否改用 npx，不静默接管'
+    Write-Host '  • 现有 dsh 不等于验证基线 rc.7（更旧/更新/无法解析）-> 询问是否改用 npx，不静默接管'
     Write-Host '  • 没有 dsh 命令      -> 使用官方 npx @deepseek-ai/dsh web 方式'
     Write-Host '  • npx 只按需下载到 npm 缓存，不执行 npm install -g'
     Write-Host '  • ~/.dsh 只作为 DSH 用户数据/Profile/会话目录，DesktopShell 不安装在其中'
@@ -658,7 +694,7 @@ function Guided-Setup {
     }
     $dev = if ($NonInteractive) { $current.Dev } else { Read-YesNo '启用 WebView2 开发者模式（DevTools）？' $current.Dev }
 
-    Save-DesktopSettings $resolved.Path $resolved.Version $profile $webPort $work $close $dev
+    Save-DesktopSettings $resolved.Path $resolved.Version $profile $webPort $work $close $dev $resolved.Mode
 
     $profilePackage = Join-Path $dshHome "profiles\$profile\package.json"
     $profileExisted = Test-Path -LiteralPath $profilePackage -PathType Leaf
@@ -712,18 +748,18 @@ function Interactive-Menu {
                     if ($gated) {
                         Ok "使用现有 DSH：$($gated.Path)  ($($gated.Version))"
                         Write-Host 'DesktopShell 按规则直接使用它，不会自动更新、覆盖或卸载。'
-                        Save-DesktopSettings $gated.Path $gated.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev
+                        Save-DesktopSettings $gated.Path $gated.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev $gated.Mode
                     } else {
-                        Write-Host '改用官方 npx 运行方式。'
+                        Write-Host '改用官方 npx 运行方式（已持久化为仅 npx，不会再回捡 PATH 里的 dsh）。'
                         $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
                         $resolved = Prepare-NpxDsh $v
-                        Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev
+                        Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx'
                     }
                 } else {
                     Write-Host '系统 PATH 中没有 dsh；DesktopShell 使用官方 npx 运行方式。'
                     $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
                     $resolved = Prepare-NpxDsh $v
-                    Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev
+                    Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx'
                 }
             }
             '2' {
@@ -732,12 +768,17 @@ function Interactive-Menu {
                 $p = $current.Port
                 if (-not ([int]::TryParse($portText,[ref]$p) -and $p -ge 1 -and $p -le 65535)) { $p=3080 }
                 $work = Read-Default '默认工作目录' $current.Work
+                Write-Host 'DSH 运行方式：1=自动（有 dsh 用 dsh，否则 npx）  2=仅现有 dsh  3=仅 npx'
+                $rmDefault = if ($current.RunnerMode -eq 'command') { '2' } elseif ($current.RunnerMode -eq 'npx') { '3' } else { '1' }
+                $rm = Read-Default '选择' $rmDefault
+                $runnerMode = if ($rm -eq '2') { 'command' } elseif ($rm -eq '3') { 'npx' } else { 'auto' }
                 Write-Host '关闭窗口行为：1=每次询问  2=关闭到托盘  3=关闭并退出'
                 $closeDefault = if ($current.Close -eq 'tray') { '2' } elseif ($current.Close -eq 'exit') { '3' } else { '1' }
                 $cc = Read-Default '选择' $closeDefault
                 $close = if ($cc -eq '2') {'tray'} elseif ($cc -eq '3') {'exit'} else {'ask'}
                 $dev = Read-YesNo '启用 WebView2 开发者模式（DevTools）？' $current.Dev
-                Save-DesktopSettings $current.DshPath $current.Version $profile $p $work $close $dev
+                $savePath = if ($runnerMode -eq 'npx') { $null } else { $current.DshPath }
+                Save-DesktopSettings $savePath $current.Version $profile $p $work $close $dev $runnerMode
             }
             '3' {
                 $profilePackage = Join-Path $dshHome "profiles\$($current.Profile)\package.json"

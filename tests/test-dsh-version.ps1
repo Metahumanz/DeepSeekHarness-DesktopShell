@@ -18,7 +18,7 @@ if ($funcs.Count -ne $names.Count) {
     exit 1
 }
 $text = (@($funcs) | ForEach-Object { $_.Extent.Text }) -join "`n"
-$MinSupportedDshVersion = '0.1.0-rc.7'   # 函数引用的脚本级变量，测试侧提供
+$VerifiedDshVersion = '0.1.0-rc.7'   # 函数引用的脚本级变量，测试侧提供
 . ([scriptblock]::Create($text))          # 点源：把函数定义进当前作用域
 
 $fail = 0
@@ -37,11 +37,15 @@ Assert-Equal "alpha < rc"                 (Compare-DshVersion '0.1.0-alpha.1' '0
 Assert-Equal "0.2.0 > 0.1.99"             (Compare-DshVersion '0.2.0' '0.1.99') 1
 Assert-Equal "unparseable -> null"        (Compare-DshVersion 'dev-build' '0.1.0-rc.7') $null
 
+# 兼容策略 = “已验证版本”：只有 rc.7 直接放行；更旧=不支持、更新=未验证、
+# 无法解析=未验证，一律走门槛（$false）。空版本串（无法读取）才返回 $null。
 Assert-Equal "support rc.6"               (Test-DshVersionSupported '0.1.0-rc.6') $false
 Assert-Equal "support rc.5"               (Test-DshVersionSupported '0.1.0-rc.5') $false
 Assert-Equal "support rc.7"               (Test-DshVersionSupported '0.1.0-rc.7') $true
-Assert-Equal "support 1.0.0"              (Test-DshVersionSupported '1.0.0') $true
-Assert-Equal "support 0.2.0"              (Test-DshVersionSupported '0.2.0') $true
+Assert-Equal "support rc.8 unverified"    (Test-DshVersionSupported '0.1.0-rc.8') $false
+Assert-Equal "support 0.1.0 newer"        (Test-DshVersionSupported '0.1.0') $false
+Assert-Equal "support 0.2.0 unverified"   (Test-DshVersionSupported '0.2.0') $false
+Assert-Equal "support 1.0.0 unverified"   (Test-DshVersionSupported '1.0.0') $false
 Assert-Equal "support unparseable"        (Test-DshVersionSupported 'weird') $false
 Assert-Equal "support empty -> unknown"   (Test-DshVersionSupported '') $null
 
