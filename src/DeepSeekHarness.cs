@@ -17,8 +17,9 @@ using Microsoft.Web.WebView2.WinForms;
 
 [assembly: System.Reflection.AssemblyTitle("DeepSeek Harness DesktopShell")]
 [assembly: System.Reflection.AssemblyProduct("DeepSeek Harness DesktopShell")]
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+// AssemblyVersion / AssemblyFileVersion / AssemblyInformationalVersion 由
+// 构建脚本（Build-Release.ps1 / Install-Desktop.ps1）生成的 VersionInfo.cs 注入，
+// 保证 release 包里的 EXE 版本与 version.txt 一致。
 
 namespace DeepSeekHarnessDesktop
 {
@@ -871,6 +872,22 @@ namespace DeepSeekHarnessDesktop
             catch { return false; }
         }
 
+        /// <summary>
+        /// DSH 就绪判定 = TCP 可连 + 监听进程 PID 可查 + 命令行像 DSH。
+        /// 只用 TCP 判定存在 TOCTOU 窗口：DSH 崩溃后端口被其它本地服务抢到，
+        /// 纯 TCP 探测会误以为 DSH 正常，并继续把 127.0.0.1:port 当可信 DSH origin。
+        /// </summary>
+        public bool IsDshReady(int port, int timeoutMs)
+        {
+            if (!IsReady(port, timeoutMs)) return false;
+
+            int pid = FindListeningPid(port);
+            if (pid <= 0) return false;
+
+            string commandLine;
+            return IsLikelyDshProcess(pid, out commandLine);
+        }
+
         public void EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath)
         {
             if (IsReady(port, 350))
@@ -965,7 +982,10 @@ namespace DeepSeekHarnessDesktop
             int waited = 0;
             while (waited < 120000)
             {
-                if (IsReady(port, 300)) return;
+                if (IsDshReady(port, 300)) return;
+                if (IsReady(port, 300))
+                    throw new InvalidOperationException(
+                        "端口 " + port.ToString() + " 在 DSH 就绪前被非 DSH 进程占用。桌面壳拒绝把它当作 DSH。请查看日志：" + logPath);
                 if (process.HasExited)
                     throw new InvalidOperationException("DSH 在 Web 服务就绪前退出，退出码 " +
                         process.ExitCode.ToString() + "。请查看日志：" + logPath);
@@ -2342,7 +2362,7 @@ namespace DeepSeekHarnessDesktop
 
             try
             {
-                bool ready = await Task.Run(delegate { return dsh.IsReady(settings.port, 350); });
+                bool ready = await Task.Run(delegate { return dsh.IsDshReady(settings.port, 350); });
                 if (ready)
                 {
                     healthFailures = 0;
@@ -2482,9 +2502,24 @@ namespace DeepSeekHarnessDesktop
                 Uri uri;
                 if (!Uri.TryCreate(uriText, UriKind.Absolute, out uri)) return;
 
+                // 协议白名单（而非危险协议黑名单）：http/https/mailto 直接交给系统；
+                // file:、ms-settings:、任意自定义 URI handler 等必须先经用户确认。
                 string scheme = uri.Scheme.ToLowerInvariant();
-                if (scheme == "javascript" || scheme == "data" || scheme == "blob" || scheme == "about")
-                    return;
+                bool allowed = scheme == Uri.UriSchemeHttp || scheme == Uri.UriSchemeHttps ||
+                               scheme == "mailto";
+
+                if (!allowed)
+                {
+                    string shown = uriText.Length > 240 ? uriText.Substring(0, 240) + "…" : uriText;
+                    DialogResult confirm = ThemedMessageBox.Show(
+                        this,
+                        "页面请求打开一个非 http/https 的外部链接：\r\n\r\n" + shown +
+                        "\r\n\r\n是否交给 Windows 用系统程序打开？",
+                        "DeepSeek Harness",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                    if (confirm != DialogResult.Yes) return;
+                }
 
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = uriText;

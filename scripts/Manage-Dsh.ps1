@@ -28,6 +28,7 @@ $desktopDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settingsPath = Join-Path $desktopDir 'settings.json'
 $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 $defaultDshVersion = '0.1.0-rc.7'
+$MinSupportedDshVersion = '0.1.0-rc.7'
 $defaultProfilePnpmVersion = '10.33.2'
 
 # 插件目录。可复现性规则（2026-08-19 审计后）：
@@ -224,11 +225,41 @@ function Prepare-NpxDsh([string]$version) {
 function Resolve-DshRunner([string]$version) {
     $existing = Get-DshCommand
     if ($existing) {
-        $actual = Get-DshVersionFromCommand $existing
-        Ok "检测到现有 DSH，直接使用：$existing$(if ($actual) { "  ($actual)" } else { '' })"
-        return [pscustomobject]@{ Path=$existing; Version=$(if ($actual) {$actual} else {(Normalize-Version $version)}); Mode='command' }
+        $gated = Resolve-DshCommandWithGate $existing
+        if ($gated) { return $gated }
     }
     return Prepare-NpxDsh $version
+}
+
+# DSH 版本门槛：DesktopShell 验证基线为 $MinSupportedDshVersion。
+# 返回 $null 表示版本无法解析（按可用处理）；$false 表示低于基线；$true 表示支持。
+function Test-DshVersionSupported([string]$version) {
+    if ([string]::IsNullOrWhiteSpace($version)) { return $null }
+    try {
+        $v = [version]$version
+        if ($v -lt [version]$MinSupportedDshVersion) { return $false }
+        return $true
+    } catch { return $null }
+}
+
+# 带版本门槛的现有 dsh 解析：低于基线时询问/自动改用 npx，而不是静默接管。
+function Resolve-DshCommandWithGate([string]$existing) {
+    $actual = Get-DshVersionFromCommand $existing
+    $support = Test-DshVersionSupported $actual
+    if ($support -ne $false) {
+        Ok "检测到现有 DSH，直接使用：$existing$(if ($actual) { "  ($actual)" } else { '' })"
+        return [pscustomobject]@{ Path=$existing; Version=$(if ($actual) {$actual} else {(Normalize-Version $defaultDshVersion)}); Mode='command' }
+    }
+
+    Warn "检测到现有 DSH $actual，低于 DesktopShell 验证基线 $MinSupportedDshVersion（插件/settings 接口可能不兼容）。"
+    if ($NonInteractive) {
+        Warn "非交互模式：改用 npx @deepseek-ai/dsh@$MinSupportedDshVersion。"
+        return $null
+    }
+    if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行验证基线版本' $false) {
+        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command' }
+    }
+    return $null
 }
 
 function Remove-LegacyPrivateRuntime {
@@ -500,6 +531,7 @@ function Guided-Setup {
     Title 'DeepSeek Harness DesktopShell v1.0.0 初始化'
     Write-Host 'DSH 启动策略：'
     Write-Host '  • 系统已有 dsh 命令 -> 直接使用，不重装、不移动'
+    Write-Host '  • 现有 dsh 低于验证基线 rc.7 -> 询问是否改用 npx，不静默接管'
     Write-Host '  • 没有 dsh 命令      -> 使用官方 npx @deepseek-ai/dsh web 方式'
     Write-Host '  • npx 只按需下载到 npm 缓存，不执行 npm install -g'
     Write-Host '  • ~/.dsh 只作为 DSH 用户数据/Profile/会话目录，DesktopShell 不安装在其中'
@@ -510,9 +542,14 @@ function Guided-Setup {
     $existing = Get-DshCommand
 
     if ($existing) {
-        $actual = Get-DshVersionFromCommand $existing
-        $resolved = [pscustomobject]@{ Path=$existing; Version=$(if ($actual) {$actual} else {$current.Version}); Mode='command' }
-        Ok "使用现有 DSH：$($resolved.Path)$(if ($actual) { "  ($actual)" } else { '' })"
+        $gated = Resolve-DshCommandWithGate $existing
+        if ($gated) {
+            $resolved = $gated
+            Ok "使用现有 DSH：$($resolved.Path)$(if ($resolved.Version) { "  ($($resolved.Version))" } else { '' })"
+        } else {
+            $version = Read-Default 'npx 使用的 DSH 版本' $current.Version
+            $resolved = Prepare-NpxDsh $version
+        }
     } else {
         $version = Read-Default 'npx 使用的 DSH 版本' $current.Version
         $resolved = Prepare-NpxDsh $version
@@ -589,10 +626,17 @@ function Interactive-Menu {
                 Ensure-Node
                 $found = Get-DshCommand
                 if ($found) {
-                    $fv = Get-DshVersionFromCommand $found
-                    Ok "检测到系统 dsh：$found$(if ($fv) { "  ($fv)" } else { '' })"
-                    Write-Host 'DesktopShell 按规则直接使用它，不会自动更新、覆盖或卸载。'
-                    Save-DesktopSettings $found $(if ($fv) {$fv} else {$current.Version}) $current.Profile $current.Port $current.Work $current.Close $current.Dev
+                    $gated = Resolve-DshCommandWithGate $found
+                    if ($gated) {
+                        Ok "使用现有 DSH：$($gated.Path)  ($($gated.Version))"
+                        Write-Host 'DesktopShell 按规则直接使用它，不会自动更新、覆盖或卸载。'
+                        Save-DesktopSettings $gated.Path $gated.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev
+                    } else {
+                        Write-Host '改用官方 npx 运行方式。'
+                        $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
+                        $resolved = Prepare-NpxDsh $v
+                        Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev
+                    }
                 } else {
                     Write-Host '系统 PATH 中没有 dsh；DesktopShell 使用官方 npx 运行方式。'
                     $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
