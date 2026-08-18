@@ -43,6 +43,30 @@ Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $pkg 'Uninstall-Desk
 
 $fail = 0
 
+# 找一个确定空闲的本地端口。完整卸载前卸载器会按 settings.json 的端口探测并停止
+# “外部 DSH”——测试绝不能指向真实 DSH 端口（可能把宿主机上的 DSH/自身环境杀掉），
+# 因此卸载前把临时安装的 settings.json 端口改到空闲端口。
+function Get-FreeTcpPort {
+    foreach ($candidate in 40000..49999) {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $iar = $client.BeginConnect('127.0.0.1', $candidate, $null, $null)
+            if (-not $iar.AsyncWaitHandle.WaitOne(150)) { return $candidate }
+            $client.EndConnect($iar)
+        } catch { return $candidate } finally { $client.Dispose() }
+    }
+    return 0
+}
+function Set-TestAppPort([string]$appDir) {
+    $settings = Join-Path $appDir 'settings.json'
+    if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
+    $port = Get-FreeTcpPort
+    if ($port -le 0) { Write-Error '找不到空闲端口'; exit 1 }
+    $cfg = Get-Content -LiteralPath $settings -Raw -Encoding UTF8 | ConvertFrom-Json
+    $cfg.port = $port
+    [System.IO.File]::WriteAllText($settings, ($cfg | ConvertTo-Json -Depth 20), [System.Text.UTF8Encoding]::new($false))
+}
+
 # 保护真实开始菜单目录：备份 -> 测试 -> 恢复
 $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeepSeek Harness'
 $smBak = Join-Path $env:TEMP ('dsh-sm-backup-' + [guid]::NewGuid().ToString('N'))
@@ -66,6 +90,8 @@ try {
     if ((Invoke-HermeticInstall $u2app) -ne 0) { $fail++; 'U2 FAILED: setup install' }
     # 假发布包里的卸载器是占位文件，覆盖为真实卸载器
     Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $u2app 'Uninstall-DesktopShell.ps1') -Force
+    # 端口改空闲：防止卸载器把宿主机真实 DSH 当外部后端
+    Set-TestAppPort $u2app
     & $hostExe -NoProfile -File (Join-Path $u2app 'Uninstall-DesktopShell.ps1') -Force *> $null
     $u2code = $LASTEXITCODE
     Write-Host ("U2 owned-shell-only exit={0}" -f $u2code)
@@ -84,6 +110,8 @@ try {
     $st = Get-Content -LiteralPath (Join-Path $u3app 'install-state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $st.dshHome = $u3parent
     [System.IO.File]::WriteAllText((Join-Path $u3app 'install-state.json'), ($st | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+    # 端口改空闲：防止卸载器把宿主机真实 DSH 当外部后端
+    Set-TestAppPort $u3app
     # 父目录里放一个哨兵文件，验证没被删除
     Set-Content -LiteralPath (Join-Path $u3parent 'sentinel.txt') -Value 'keep me'
     & $hostExe -NoProfile -File (Join-Path $u3app 'Uninstall-DesktopShell.ps1') -Force -Full *> $null
