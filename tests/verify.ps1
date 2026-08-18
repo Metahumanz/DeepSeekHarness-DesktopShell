@@ -1,0 +1,54 @@
+﻿param(
+    [switch]$SkipAnalyzer
+)
+
+# 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
+# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、五项回归测试。
+# 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
+
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
+$tests = @(
+    'test-dsh-version.ps1',
+    'test-runner-mode.ps1',
+    'test-repair-regex.ps1',
+    'test-install-ownership.ps1',
+    'test-uninstall-guards.ps1'
+)
+
+Write-Host "== verify: parse ($($hostExe | Split-Path -Leaf)) =="
+$files = @(Get-ChildItem -Path (Join-Path $repo 'scripts'), (Join-Path $repo 'tests') -Filter *.ps1 -Recurse)
+foreach ($f in $files) {
+    $t = @(); $e = @()
+    [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$t, [ref]$e)
+    if ($e.Count -gt 0) {
+        Write-Host "PARSE FAILED: $($f.Name)"
+        foreach ($err in $e) { Write-Host "  L$($err.Extent.StartLineNumber): $($err.Message)" }
+        exit 1
+    }
+}
+Write-Host "parse ok ($($files.Count) files)."
+
+if (-not $SkipAnalyzer) {
+    Write-Host '== verify: PSScriptAnalyzer (Error) =='
+    if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+        Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+    }
+    $issues = $files | Invoke-ScriptAnalyzer -Severity Error
+    if ($issues) { $issues | Format-Table; exit 1 }
+    Write-Host 'analyzer ok.'
+}
+
+Write-Host '== verify: regression tests =='
+foreach ($t in $tests) {
+    & $hostExe -NoProfile -File (Join-Path $repo "tests\$t")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "TEST FAILED: $t"
+        exit 1
+    }
+    Write-Host "PASS: $t"
+}
+
+Write-Host 'VERIFY PASSED'
+exit 0

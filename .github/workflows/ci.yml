@@ -11,46 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse all PowerShell scripts
+      # 统一门禁（tests/verify.ps1）：解析 + PSScriptAnalyzer + 五项回归测试
+      - name: Verify gate (PowerShell 7)
         shell: pwsh
-        run: |
-          $failed = $false
-          Get-ChildItem -Path scripts, tests -Filter *.ps1 -Recurse | ForEach-Object {
-            $tokens = $null; $errors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
-            if ($errors.Count -gt 0) {
-              $failed = $true
-              Write-Host "PARSE FAILED: $($_.FullName)"
-              foreach ($e in $errors) { Write-Host "  L$($e.Extent.StartLineNumber): $($e.Message)" }
-            }
-          }
-          if ($failed) { exit 1 }
-          Write-Host 'Parse check passed.'
+        run: pwsh -NoProfile -File tests/verify.ps1
 
-      - name: PSScriptAnalyzer (errors only)
+      - name: Verify gate (Windows PowerShell 5.1)
         shell: pwsh
-        run: |
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
-          $issues = Get-ChildItem -Path scripts, tests -Filter *.ps1 -Recurse |
-            Invoke-ScriptAnalyzer -Severity Error
-          if ($issues) { $issues | Format-Table; exit 1 }
-          Write-Host 'PSScriptAnalyzer passed.'
-
-      - name: Repair-CostMeterLedger regex test
-        shell: pwsh
-        run: pwsh -NoProfile -File tests/test-repair-regex.ps1
-
-      - name: DSH version gate test (SemVer)
-        shell: pwsh
-        run: pwsh -NoProfile -File tests/test-dsh-version.ps1
-
-      - name: Install directory ownership tests
-        shell: pwsh
-        run: pwsh -NoProfile -File tests/test-install-ownership.ps1
-
-      - name: Uninstall guard tests
-        shell: pwsh
-        run: pwsh -NoProfile -File tests/test-uninstall-guards.ps1
+        run: powershell -NoProfile -File tests/verify.ps1 -SkipAnalyzer
 
       - name: Build release package (C# compile + zip self-check)
         shell: pwsh

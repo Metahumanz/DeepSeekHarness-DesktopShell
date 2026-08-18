@@ -44,15 +44,9 @@ jobs:
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Resolved version: $v"
 
-      - name: Run verify tests
+      - name: Run verify gate
         shell: pwsh
-        run: |
-          pwsh -NoProfile -File tests/test-repair-regex.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pwsh -NoProfile -File tests/test-install-ownership.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pwsh -NoProfile -File tests/test-uninstall-guards.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: pwsh -NoProfile -File tests/verify.ps1
 
       - name: Build release package
         shell: pwsh
@@ -90,6 +84,21 @@ jobs:
             git push origin $tag
           }
 
+      - name: Delete existing release for tag (re-publish support)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release delete $tag --yes
+            if ($LASTEXITCODE -ne 0) { Write-Error "无法删除已存在的 Release $tag"; exit 1 }
+            Write-Host "已删除旧 Release $tag，将重建。"
+          } else {
+            Write-Host "Release $tag 不存在，跳过删除。"
+          }
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -97,7 +106,7 @@ jobs:
           name: DeepSeek Harness DesktopShell v${{ steps.version.outputs.version }}
           body: |
             安装：见仓库 README 的“一键安装”（引导命令钉在本 tag，并显式传入 Owner/Repo/Tag）。
-            一键安装会下载本 Release 的 zip 与 SHA256SUMS.txt 并强制校验哈希。
+            一键安装会下载本 Release 的 zip 与 SHA256SUMS.txt 并做完整性校验（SHA256 一致才继续）。
             本发布包面向 Windows 10/11 **x64**（WebView2Loader 为 win-x64 变体）。
           generate_release_notes: true
           files: |
