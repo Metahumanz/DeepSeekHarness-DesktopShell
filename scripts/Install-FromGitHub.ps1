@@ -92,7 +92,7 @@ try {
             Confirm-ZipHash $pkgZip (Join-Path (Split-Path -Parent $ZipPath) 'SHA256SUMS.txt') $false
         } else {
             if (-not $Owner -or -not $Repo) {
-                Fail '无法确定 GitHub 仓库。请显式传入 -Owner xxx -Repo xxx，或先设置 git remote origin。'
+                Fail '无法确定 GitHub 仓库。请显式传入 -Owner xxx -Repo xxx（建议再带 -Tag v1.0.0 锁定已发布版本），或先设置 git remote origin。'
             }
             if ($Tag) { $url = "https://github.com/$Owner/$Repo/releases/download/$Tag/DeepSeekHarness-DesktopShell.zip" }
             else { $url = "https://github.com/$Owner/$Repo/releases/latest/download/DeepSeekHarness-DesktopShell.zip" }

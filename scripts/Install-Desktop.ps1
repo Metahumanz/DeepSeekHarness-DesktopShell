@@ -10,6 +10,23 @@ function Say([string]$text) { Write-Host "[DSH Desktop] $text" -ForegroundColor 
 function Ok([string]$text) { Write-Host "[OK] $text" -ForegroundColor Green }
 function Fail([string]$text) { throw $text }
 
+# WebView2 Runtime（Evergreen）预检：桌面壳依赖它承载界面，安装阶段就给出明确入口，
+# 而不是让用户等到第一次启动才看到“启动失败”。
+function Get-WebView2RuntimeVersion {
+    $keys = @(
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    )
+    foreach ($k in $keys) {
+        if (Test-Path $k) {
+            $pv = (Get-ItemProperty -Path $k -ErrorAction SilentlyContinue).pv
+            if ($pv) { return [string]$pv }
+        }
+    }
+    return $null
+}
+
 # 只关闭“指定 exe 路径”的桌面程序；路径无法读取/不匹配的进程一律不碰。
 # 绝不允许按进程名全杀：DSH 宿主本身也可能叫 DeepSeekHarness。
 function Stop-DesktopShellProcess([string]$exePath) {
@@ -54,6 +71,19 @@ Write-Host ''
 Say "DesktopShell: $desktopDir"
 Say "DSH_HOME:     $dshHome"
 Say 'DSH 规则：已有 dsh 就使用；没有则按官方 npx @deepseek-ai/dsh web 方式运行，不做 npm -g 安装。'
+
+# 运行时预检：WebView2 Runtime
+$webView2 = Get-WebView2RuntimeVersion
+if (-not $webView2) {
+    $url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+    $msg = "未检测到 WebView2 Runtime（Evergreen）。DesktopShell 依赖它承载界面。下载地址：$url"
+    if ($NoWizard) { Fail $msg }
+    Warn $msg
+    Read-Host '按 Enter 打开下载页（安装完成后重新运行本安装程序）' | Out-Null
+    Start-Process $url
+    Fail '请先安装 WebView2 Runtime，然后重新运行安装程序。'
+}
+Ok "WebView2 Runtime：$webView2"
 
 New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
 

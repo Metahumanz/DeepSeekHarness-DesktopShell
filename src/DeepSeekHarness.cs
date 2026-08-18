@@ -2045,11 +2045,30 @@ namespace DeepSeekHarnessDesktop
             catch (Exception ex)
             {
                 webViewReady = false;
+                // 缺少 WebView2 Runtime 是普通用户最常见的启动失败原因：
+                // 单独给明确提示与官方下载入口，而不是笼统的“启动失败”。
+                bool missingWebView2 = ex.Message.IndexOf("WebView2", StringComparison.OrdinalIgnoreCase) >= 0;
+                string message = missingWebView2
+                    ? "缺少 WebView2 Runtime，无法启动界面。\r\n\r\n" + ex.Message +
+                      "\r\n\r\n下载地址：https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+                    : "启动失败\r\n\r\n" + ex.Message;
+                string primaryText;
+                EventHandler primaryHandler;
+                if (missingWebView2)
+                {
+                    primaryText = "下载 WebView2 Runtime";
+                    primaryHandler = OnOverlayOpenWebView2Download;
+                }
+                else
+                {
+                    primaryText = "重试";
+                    primaryHandler = OnOverlayRestartBackend;
+                }
                 ShowOverlay(
                     "startup-error",
-                    "启动失败\r\n\r\n" + ex.Message,
-                    "重试",
-                    OnOverlayRestartBackend,
+                    message,
+                    primaryText,
+                    primaryHandler,
                     "打开日志目录",
                     OnOverlayOpenLogs);
             }
@@ -2551,6 +2570,18 @@ namespace DeepSeekHarnessDesktop
             {
                 Directory.CreateDirectory(logsDirectory);
                 Process.Start("explorer.exe", "\"" + logsDirectory + "\"");
+            }
+            catch { }
+        }
+
+        private void OnOverlayOpenWebView2Download(object sender, EventArgs e)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+                psi.UseShellExecute = true;
+                Process.Start(psi);
             }
             catch { }
         }

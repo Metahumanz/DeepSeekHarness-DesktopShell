@@ -20,9 +20,11 @@ param(
        （就地安装时跳过复制）
     4. 迁移旧版设置、写入 install-state.json 与目录所有权标记
        （.dsh-desktop-shell-root，卸载前必须再次验证）
-    5. 创建开始菜单入口（可 -NoShortcuts 跳过）
-    6. 运行首次配置向导（可 -NoWizard 跳过）
-    7. 启动桌面壳（可 -NoLaunch 跳过）
+    5. 运行时预检：WebView2 Runtime（缺失时给出下载入口）/ 架构提示
+    6. 创建开始菜单入口（可 -NoShortcuts 跳过）
+    7. 运行首次配置向导（-NoWizard 时执行无人值守非交互初始化，语义与
+       Install-Desktop.ps1 一致；缺少 Node.js 时中止而非静默跳过）
+    8. 启动桌面壳（可 -NoLaunch 跳过）
 
 .EXAMPLE
     # 在解压后的目录中双击 install.bat，或：
@@ -128,6 +130,23 @@ function Test-DangerousInstallPath([string]$target) {
         } catch {}
         return $false
     } catch { return $true }
+}
+
+# WebView2 Runtime（Evergreen）预检：桌面壳依赖它承载界面，安装阶段就给出明确入口，
+# 而不是让用户等到第一次启动才看到“启动失败”。
+function Get-WebView2RuntimeVersion {
+    $keys = @(
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+        'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    )
+    foreach ($k in $keys) {
+        if (Test-Path $k) {
+            $pv = (Get-ItemProperty -Path $k -ErrorAction SilentlyContinue).pv
+            if ($pv) { return [string]$pv }
+        }
+    }
+    return $null
 }
 
 if (-not $SetupDir) { $SetupDir = $PSScriptRoot }
@@ -238,6 +257,22 @@ try {
     }
     $marker | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $InstallDir $MarkerName) -Encoding utf8NoBOM
 
+    # ---- 运行时预检 ----
+    if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+        Warn '此发布包为 x64 构建；ARM64 设备会通过 x64 模拟运行，或改用源码安装（Install-Desktop.ps1）获取原生构建。'
+    }
+    $webView2 = Get-WebView2RuntimeVersion
+    if (-not $webView2) {
+        $url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+        $msg = "未检测到 WebView2 Runtime（Evergreen）。DesktopShell 依赖它承载界面。下载地址：$url"
+        if ($NoWizard) { Fail $msg }
+        Warn $msg
+        Read-Host '按 Enter 打开下载页（安装完成后重新运行本安装程序）' | Out-Null
+        Start-Process $url
+        Fail '请先安装 WebView2 Runtime，然后重新运行安装程序。'
+    }
+    Ok "WebView2 Runtime：$webView2"
+
     if (-not $NoShortcuts) {
         $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeepSeek Harness'
         if (Test-Path $startMenu) { Remove-Item $startMenu -Recurse -Force }
@@ -287,8 +322,15 @@ try {
         }
     }
 
-    if (-not $NoWizard) {
-        $manager = Join-Path $InstallDir 'Manage-Dsh.ps1'
+    # -NoWizard 与源码安装器语义一致：仍然执行无人值守初始化（检查 Node、
+    # 解析现有 DSH / 准备 npx、初始化 Profile），只是不交互；缺少 Node 时中止，
+    # 避免“安装成功、首次启动才发现缺 Node”。
+    $manager = Join-Path $InstallDir 'Manage-Dsh.ps1'
+    if ($NoWizard) {
+        Say 'NoWizard：无人值守初始化（发现现有 dsh 就使用；否则使用 npx；不改现有插件）。'
+        & $manager -FirstInstall -NonInteractive
+        if ($LASTEXITCODE -ne 0) { Fail "无人值守初始化失败（退出码 $LASTEXITCODE）。" }
+    } else {
         & $manager -FirstInstall
         if ($LASTEXITCODE -ne 0) { Fail "初始化向导失败（退出码 $LASTEXITCODE）。" }
     }
