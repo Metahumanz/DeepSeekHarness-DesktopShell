@@ -61,15 +61,19 @@ npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 n
 ├── scripts/                # PowerShell：安装 / 管理 / 卸载 / 发布 / 修复
 │   ├── Install-Desktop.ps1      # 源码安装器（编译 + 向导）
 │   ├── Install-Release.ps1      # 发布包安装器（zip 内，免编译）
-│   ├── Install-FromGitHub.ps1   # 从 GitHub Releases 一条命令安装
-│   ├── Build-Release.ps1        # 构建发布 zip（免编译安装包）
+│   ├── Install-FromGitHub.ps1   # 从 GitHub Releases 一条命令安装（SHA256 校验）
+│   ├── Build-Release.ps1        # 构建发布 zip（免编译安装包，WebView2 固定版本）
 │   ├── Manage-Dsh.ps1
 │   ├── Uninstall-DesktopShell.ps1
 │   └── Repair-CostMeterLedger.ps1  # 清理 ModLens 双倍计价入账
 ├── src/                    # C# 桌面宿主源码 + app.manifest
 │   ├── DeepSeekHarness.cs  # 窗口/WebView2/进程托管/兼容修复
 │   └── app.manifest
+├── tests/                  # 回归测试：安装目录所有权 / 卸载守卫 / 账本正则
+├── .github/workflows/      # CI（push/PR）与 GitHub Release 工作流
 ├── install.bat             # 双击入口：从 GitHub 一条命令安装
+├── LICENSE                 # MIT
+├── THIRD_PARTY_NOTICES.md  # 第三方组件与许可声明
 ├── .gitignore
 ├── ICON_SOURCE.txt         # 图标来源与处理说明
 └── README.md
@@ -128,11 +132,26 @@ Set-ExecutionPolicy -Scope Process Bypass
 ## 构建发布包（开发者）
 
 ```powershell
-.\scripts\Build-Release.ps1
+.\scripts\Build-Release.ps1            # 默认版本 1.0.0
+.\scripts\Build-Release.ps1 -Version 1.1.0
 ```
 
-产物：`release\DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`（WebView2 SDK 自动从本机缓存/已安装目录/NuGet 解析）。
+- WebView2 SDK 三件套**固定 1.0.4078.44**，且必须来自同一个 NuGet 包目录（可复现构建；`-SdkDir` 覆盖时版本不一致会直接失败）
+- `-Version` 会同步 `version.txt` 与 EXE 的 AssemblyVersion / FileVersion / InformationalVersion
+- 发布包内包含 `Repair-CostMeterLedger.ps1` 手工修复工具（14 个文件自校验）
+- 产物：`release\DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
+
 发布到 GitHub Release 时，**zip 与 `SHA256SUMS.txt` 必须同时上传为资产**，一键安装的哈希校验才能通过。
+
+### 发布（GitHub Actions）
+
+推荐直接用 `Release` 工作流发布：
+
+1. GitHub 仓库 → **Actions → Release → Run workflow**，输入版本号（如 `1.1.0`）
+2. 工作流会：跑全部回归测试 → `Build-Release -Version` → 创建 `v1.1.0` tag → 创建 GitHub Release 并上传 zip 与 `SHA256SUMS.txt`
+3. 推送 `v*` tag 也会自动触发同样流程（版本取 tag 去掉 `v` 前缀）
+
+手动发布也可以：先 `git tag v1.1.0 && git push origin v1.1.0`，然后在 Release 页面把两个产物作为资产上传。
 
 安全审计记录见 [docs/AUDIT.md](docs/AUDIT.md)。
 
@@ -184,4 +203,10 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
   src\DeepSeekHarness.cs
 ```
 
-需要 WebView2 SDK 程序集（`Microsoft.Web.WebView2.Core.dll` / `WinForms.dll` / `WebView2Loader.dll`），安装器会从 NuGet 自动获取。
+需要 WebView2 SDK 程序集（`Microsoft.Web.WebView2.Core.dll` / `WinForms.dll` / `WebView2Loader.dll`），安装器会从 NuGet 自动获取（固定 1.0.4078.44）。
+
+> 直接裸调 `csc` 编译不带版本元数据（EXE 显示 0.0.0.0）。正式构建请使用
+> `Build-Release.ps1` / `Install-Desktop.ps1`，它们会注入 AssemblyVersion/FileVersion。
+
+回归测试：`tests\` 下的 PowerShell 测试（安装目录所有权、卸载守卫、账本正则），
+CI 工作流（`.github/workflows/ci.yml`）在每次 push/PR 自动运行。

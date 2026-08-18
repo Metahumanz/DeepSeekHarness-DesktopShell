@@ -120,10 +120,25 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 
 验证：`csc.exe` 实际编译通过；全部 PowerShell 脚本 `[Parser]::ParseFile` 通过；安装所有权 10 项、卸载守卫 3 项、哈希校验正/负向、合成账本正则测试全部通过（测试脚本在 gitignored 的 `.test-install/`）。
 
-### 遗留（下一次提交）
+### 遗留（已在下一次提交全部收口，见第 7 节）
 
-- 端口可信性 TOCTOU：ready 判定只做 TCP 连接，建议补 `FindListeningPid + IsLikelyDshProcess`（或应用层 fingerprint）
-- 外链协议白名单（http/https + 明确允许项），替代当前黑名单
-- DSH 最低版本门槛：现有 dsh 低于 rc.7 时提示而不是静默接管
-- 发布链：WebView2 三件套固定同一 NuGet 版本（1.0.4078.44）、`Build-Release -Version` 同步 EXE AssemblyVersion/FileVersion、`Repair-CostMeterLedger.ps1` 装入发布包
-- 工程化：LICENSE、THIRD_PARTY_NOTICES.md、GitHub Actions CI（PS 解析/编译/路径守卫与正则测试）
+- 端口可信性 TOCTOU、外链协议白名单、DSH rc.7 最低版本门槛
+- WebView2 三件套固定版本、`Build-Release -Version` 同步 EXE 版本、修复脚本入发布包
+- LICENSE / THIRD_PARTY_NOTICES / CI / GitHub Release 工作流
+
+## 7. 2026-08-19 第三轮修复（剩余审计项收口 + 发布工程化）
+
+| # | 级别 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 1 | P1/P2 | 端口可信性 TOCTOU：启动等待/健康检查只做 TCP 探测 | 新增 `DshProcessManager.IsDshReady` = TCP 可连 + `FindListeningPid` + `IsLikelyDshProcess`；启动等待循环与健康检查全部改用；启动等待期间若端口被非 DSH 进程抢先占用立即报错而不是等 120 秒超时（`src/DeepSeekHarness.cs`） |
+| 2 | P2 | 外链协议用危险协议黑名单 | 改为白名单：http/https/mailto 直接交给系统；file:/ms-settings:/自定义 URI handler 等先弹主题化确认框（`src/DeepSeekHarness.cs` `OpenExternalUri`） |
+| 3 | P2 | "发现现有 dsh 就直接用"无 rc.7 门槛 | `Manage-Dsh.ps1` 新增 `Resolve-DshCommandWithGate`：现有 dsh 低于验证基线 0.1.0-rc.7 时询问"继续使用 / 改用 npx"，非交互模式默认改用 npx；三处解析入口（向导、菜单"检查 DSH"、Resolve-DshRunner）统一走门槛 |
+| 4 | P2 | WebView2 三件套来源/版本不一致 | `Build-Release.ps1` 固定 1.0.4078.44：`-SdkDir` 覆盖（版本不符直接失败）→ 同版本 NuGet 包目录 → NuGet 下载，同一包目录取三件套；`Install-Desktop.ps1` 复用条件改为三件套 FileVersion 全部等于固定版本，否则整套重下 |
+| 5 | P2 | `Build-Release -Version` 不改 EXE 版本 | 删除源码里写死的 AssemblyVersion/FileVersion，构建脚本生成 `VersionInfo.cs`（AssemblyVersion/FileVersion=四段版本，InformationalVersion=原始版本串）注入编译；构建后校验 EXE FileVersion 与版本一致 |
+| 6 | P2 | `Repair-CostMeterLedger.ps1` 不在发布包 | 进入 `Build-Release.ps1` 与 `Install-Desktop.ps1` 的分发清单（zip 自校验 13→14 文件）；`Install-Release.ps1` 作为可选文件复制（旧包没有不影响安装） |
+| 7 | P3 | 无 LICENSE / 第三方声明 | 新增 `LICENSE`（MIT）、`THIRD_PARTY_NOTICES.md`（DeepSeek Harness 图标 MIT 声明、WebView2 SDK 许可、运行时与社区插件说明） |
+| 8 | P3 | 无 CI / 发布工作流 | `.github/workflows/ci.yml`（PS 解析 + PSScriptAnalyzer + 三项回归测试 + Build-Release + zip 内容校验 + artifacts）；`.github/workflows/release.yml`（workflow_dispatch 输版本号或推 v* tag：回归测试 → 构建 → 打 tag → 创建 GitHub Release 并上传 zip + SHA256SUMS.txt） |
+| 9 | P3 | 回归测试未入库 | `tests/`：`test-install-ownership.ps1`（10 项）、`test-uninstall-guards.ps1`（3 项，自动备份/恢复开始菜单）、`test-repair-regex.ps1`（合成账本 DryRun） |
+
+发布提醒：README 一键安装引导命令钉在 `v1.0.0` tag，远端当前还没有任何 tag/Release；
+首次发布请用 `Release` 工作流（或手动打 tag 并上传 zip + `SHA256SUMS.txt` 两个资产）。

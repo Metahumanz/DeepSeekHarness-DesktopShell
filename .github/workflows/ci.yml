@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse all PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Path scripts, tests -Filter *.ps1 -Recurse | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "PARSE FAILED: $($_.FullName)"
+              foreach ($e in $errors) { Write-Host "  L$($e.Extent.StartLineNumber): $($e.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host 'Parse check passed.'
+
+      - name: PSScriptAnalyzer (errors only)
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          $issues = Get-ChildItem -Path scripts, tests -Filter *.ps1 -Recurse |
+            Invoke-ScriptAnalyzer -Severity Error
+          if ($issues) { $issues | Format-Table; exit 1 }
+          Write-Host 'PSScriptAnalyzer passed.'
+
+      - name: Repair-CostMeterLedger regex test
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/test-repair-regex.ps1
+
+      - name: Install directory ownership tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/test-install-ownership.ps1
+
+      - name: Uninstall guard tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/test-uninstall-guards.ps1
+
+      - name: Build release package (C# compile + zip self-check)
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/Build-Release.ps1
+
+      - name: Verify zip content
+        shell: pwsh
+        run: |
+          $zip = 'release/DeepSeekHarness-DesktopShell.zip'
+          $expected = 14
+          $tmp = Join-Path $env:TEMP ('ci-verify-' + [guid]::NewGuid().ToString('N'))
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          $actual = @(Get-ChildItem -Path (Join-Path $tmp 'DeepSeek Harness DesktopShell') -File).Count
+          if ($actual -ne $expected) { Write-Error "zip file count $actual != $expected"; exit 1 }
+          if (-not (Test-Path 'release/SHA256SUMS.txt')) { Write-Error 'SHA256SUMS.txt missing'; exit 1 }
+          Write-Host "zip content verified ($actual files)."
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-package
+          path: |
+            release/DeepSeekHarness-DesktopShell.zip
+            release/SHA256SUMS.txt

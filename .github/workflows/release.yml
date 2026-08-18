@@ -1,0 +1,97 @@
+name: Release
+
+# 发布 GitHub Release：
+# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.1.0）
+# - 或推送 v* tag 自动触发（版本号取 tag，去掉 v 前缀）
+# 产物：release/DeepSeekHarness-DesktopShell.zip + SHA256SUMS.txt
+# （一键安装 Install-FromGitHub.ps1 会下载这两个资产并强制校验 SHA256）
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 1.1.0)'
+        required: true
+        default: '1.1.0'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "push") {
+            $v = "${{ github.ref_name }}".TrimStart('v')
+          } else {
+            $v = "${{ github.event.inputs.version }}".TrimStart('v')
+          }
+          if ($v -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            Write-Error "Invalid version: $v"; exit 1
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Resolved version: $v"
+
+      - name: Run verify tests
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tests/test-repair-regex.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tests/test-install-ownership.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tests/test-uninstall-guards.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build release package
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/Build-Release.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Verify package contents
+        shell: pwsh
+        run: |
+          $zip = 'release/DeepSeekHarness-DesktopShell.zip'
+          $expected = 14
+          $tmp = Join-Path $env:TEMP ('rel-verify-' + [guid]::NewGuid().ToString('N'))
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          $actual = @(Get-ChildItem -Path (Join-Path $tmp 'DeepSeek Harness DesktopShell') -File).Count
+          if ($actual -ne $expected) { throw "zip file count $actual != $expected" }
+          if (-not (Test-Path 'release/SHA256SUMS.txt')) { throw 'SHA256SUMS.txt missing' }
+          Write-Host "Package verified ($actual files)."
+
+      - name: Ensure tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          if (-not (git rev-parse -q --verify "refs/tags/$tag")) {
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag $tag
+            git push origin $tag
+          } else {
+            Write-Host "Tag $tag already exists."
+          }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: DeepSeek Harness DesktopShell v${{ steps.version.outputs.version }}
+          body: |
+            安装：见仓库 README 的“方式一：GitHub 一键安装”（引导命令钉在本 tag）。
+            一键安装会下载本 Release 的 zip 与 SHA256SUMS.txt 并强制校验哈希。
+          generate_release_notes: true
+          files: |
+            release/DeepSeekHarness-DesktopShell.zip
+            release/SHA256SUMS.txt
