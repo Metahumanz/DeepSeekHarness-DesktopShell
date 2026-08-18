@@ -110,6 +110,14 @@ $state = [ordered]@{
 }
 $state | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $installStatePath -Encoding utf8NoBOM
 
+# 目录所有权标记：卸载器只有再次验证 marker/install-state 后才允许递归删除本目录
+$marker = [ordered]@{
+    schemaVersion = 1
+    product = 'DeepSeek Harness DesktopShell'
+    installedAt = (Get-Date).ToString('o')
+}
+$marker | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $desktopDir '.dsh-desktop-shell-root') -Encoding utf8NoBOM
+
 $cscCandidates = @(
     "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
     "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"

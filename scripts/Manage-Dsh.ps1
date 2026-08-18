@@ -30,20 +30,25 @@ $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 $defaultDshVersion = '0.1.0-rc.7'
 $defaultProfilePnpmVersion = '10.33.2'
 
+# 插件目录。可复现性规则（2026-08-19 审计后）：
+#   - 推荐组合（Recommended）必须锁定精确 npm 版本或 GitHub commit，不追 latest/main；
+#   - 可选插件（Recommended=$false）保留 @latest，属于用户主动选择。
+# 锁定版本升级须经过人工审核：先验证新版本与 PluginCompat 兼容修复、
+# 再更新此处的版本号/commit。
 $PluginCatalog = @(
-    [pscustomobject]@{ No=1;  Id='market';         Name='插件市场';                  Spec='dshmarket@latest'; Recommended=$true;  Full=$true;  Allow=@() },
-    [pscustomobject]@{ No=2;  Id='sidebar';        Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@latest'; Recommended=$true; Full=$true; Allow=@('node-pty') },
+    [pscustomobject]@{ No=1;  Id='market';         Name='插件市场';                  Spec='dshmarket@1.14.0'; Recommended=$true;  Full=$true;  Allow=@() },
+    [pscustomobject]@{ No=2;  Id='sidebar';        Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@0.13.1'; Recommended=$true; Full=$true; Allow=@('node-pty') },
     [pscustomobject]@{ No=3;  Id='skills';         Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.23'; Recommended=$true; Full=$true; Allow=@() },
     [pscustomobject]@{ No=4;  Id='auto-mode';      Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@0.1.4'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=5;  Id='at-file';        Name='@file 文件引用';            Spec='dsh-at-file@latest'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=6;  Id='file-mentions';  Name='文件路径点击/提及';          Spec='https://github.com/a903067276-rgb/dsh-file-mentions/archive/refs/heads/main.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=7;  Id='collapse';       Name='Tool/Think 自动折叠';        Spec='https://github.com/a179-sanae/dsh-auto-collapse/archive/refs/heads/main.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=8;  Id='tidy';           Name='Codex 风格对话排版';        Spec='dsh-chat-tidy@latest'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=9;  Id='outline';        Name='对话侧边大纲';              Spec='https://github.com/EnkiduGilgamesh/dsh-codex-side-outline/archive/refs/heads/main.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=10; Id='cost';           Name='Cost Meter';                Spec='dsh-cost-meter@latest'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=11; Id='model-picker';   Name='模型选择器增强';            Spec='dsh-model-picker@latest'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=12; Id='archive';        Name='Better Archive';             Spec='https://github.com/huahai0202/dsh-better-archive/archive/refs/heads/main.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=13; Id='rewind';         Name='历史消息回退/重跑';          Spec='https://github.com/XSJUSTC/dsh-rewind/archive/refs/heads/main.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=5;  Id='at-file';        Name='@file 文件引用';            Spec='https://github.com/omdsh-dev/dsh-at-file/archive/898369ece56ae6ec41afd8e014f187bb5b723409.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=6;  Id='file-mentions';  Name='文件路径点击/提及';          Spec='https://github.com/a903067276-rgb/dsh-file-mentions/archive/a303b81a32a890be02bc57fabd1e28583040ac12.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=7;  Id='collapse';       Name='Tool/Think 自动折叠';        Spec='https://github.com/a179-sanae/dsh-auto-collapse/archive/9d02fb02e8dd2fb56c5e82fcc5d68b5a5b62efcd.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=8;  Id='tidy';           Name='Codex 风格对话排版';        Spec='dsh-chat-tidy@0.2.0'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=9;  Id='outline';        Name='对话侧边大纲';              Spec='https://github.com/EnkiduGilgamesh/dsh-codex-side-outline/archive/2e923efab570557d056ba8cbbb915f55ff878ff7.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=10; Id='cost';           Name='Cost Meter';                Spec='dsh-cost-meter@1.5.10'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=11; Id='model-picker';   Name='模型选择器增强';            Spec='dsh-model-picker@1.0.2'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=12; Id='archive';        Name='Better Archive';             Spec='https://github.com/huahai0202/dsh-better-archive/archive/fa31fc486d35b1e270828fd068a240f1775fb992.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
+    [pscustomobject]@{ No=13; Id='rewind';         Name='历史消息回退/重跑';          Spec='https://github.com/XSJUSTC/dsh-rewind/archive/6dcfcc9c4bf388519eb51a6ca312a140b8552154.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
     [pscustomobject]@{ No=14; Id='dream-skin';     Name='Dream Skin 主题';            Spec='dsh-dream-skin@latest'; Recommended=$false; Full=$true; Allow=@() },
     [pscustomobject]@{ No=15; Id='status';         Name='Status Rotator 状态文案';    Spec='dsh-status-rotator@latest'; Recommended=$false; Full=$true; Allow=@() },
     [pscustomobject]@{ No=16; Id='sentinel';       Name='Sentinel 条件唤醒';          Spec='dsh-sentinel@latest'; Recommended=$false; Full=$true; Allow=@() },

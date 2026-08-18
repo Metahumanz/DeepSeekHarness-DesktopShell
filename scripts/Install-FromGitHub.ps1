@@ -16,7 +16,8 @@ param(
 .DESCRIPTION
     - 未指定 Owner/Repo 时，优先从 `git remote get-url origin` 推断
     - 指定 -Tag 下载对应版本；否则下载 latest
-    - 指定 -ZipPath 时使用本地 zip（离线 / 测试用）
+    - 下载后必须通过同源 SHA256SUMS.txt 校验（供应链保护，失败即中止）
+    - 指定 -ZipPath 时使用本地 zip（离线 / 测试用；若旁边有 SHA256SUMS.txt 同样校验）
     - 其余参数透传给 Install-Release.ps1
 
 .EXAMPLE
@@ -32,7 +33,37 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$text) { Write-Host "[DSH Desktop] $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "[OK] $text" -ForegroundColor Green }
+function Warn([string]$text) { Write-Host "[!]   $text" -ForegroundColor Yellow }
 function Fail([string]$text) { throw $text }
+
+# 校验 zip 的 SHA256 与 SHA256SUMS.txt 一致（兼容 "SHA256  <hash>  <name>" 与 "<hash>  <name>" 两种格式）。
+# -Mandatory 时缺失/解析失败/不匹配一律 Fail（网络下载链必须校验）。
+function Confirm-ZipHash([string]$zipFile, [string]$sumsPath, [bool]$mandatory) {
+    if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) {
+        if ($mandatory) { Fail '无法获取 SHA256SUMS.txt（供应链校验缺失），安装已中止。' }
+        Warn '未找到 SHA256SUMS.txt，跳过本地发布包校验（离线/测试路径）。'
+        return
+    }
+    $actual = (Get-FileHash -LiteralPath $zipFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    $entries = @()
+    foreach ($line in (Get-Content -LiteralPath $sumsPath -Encoding UTF8)) {
+        if ($line -match '^\s*(?:SHA256\s+)?([0-9a-fA-F]{64})\s+(\S+)\s*$') {
+            $entries += [pscustomobject]@{ Hash = $Matches[1].ToLowerInvariant(); Name = $Matches[2] }
+        }
+    }
+    if ($entries.Count -eq 0) { Fail 'SHA256SUMS.txt 内容无法解析，安装已中止。' }
+    $zipName = [IO.Path]::GetFileName($zipFile)
+    $byName = @($entries | Where-Object { $_.Name -eq $zipName })
+    $ok = if ($byName.Count -gt 0) {
+        @($byName | Where-Object { $_.Hash -eq $actual }).Count -gt 0
+    } else {
+        @($entries | Where-Object { $_.Hash -eq $actual }).Count -gt 0
+    }
+    if (-not $ok) {
+        Fail ("SHA256 校验失败：$zipName 与 SHA256SUMS.txt 不一致，安装已中止。")
+    }
+    Ok "SHA256 校验通过：$actual"
+}
 
 try {
     $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -52,10 +83,13 @@ try {
     try {
         New-Item -ItemType Directory -Force -Path $work | Out-Null
 
+        $pkgZip = Join-Path $work 'DeepSeekHarness-DesktopShell.zip'
+
         if ($ZipPath) {
             if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) { Fail "找不到本地发布包：$ZipPath" }
             Say "使用本地发布包：$ZipPath"
-            Copy-Item -LiteralPath $ZipPath -Destination (Join-Path $work 'pkg.zip') -Force
+            Copy-Item -LiteralPath $ZipPath -Destination $pkgZip -Force
+            Confirm-ZipHash $pkgZip (Join-Path (Split-Path -Parent $ZipPath) 'SHA256SUMS.txt') $false
         } else {
             if (-not $Owner -or -not $Repo) {
                 Fail '无法确定 GitHub 仓库。请显式传入 -Owner xxx -Repo xxx，或先设置 git remote origin。'
@@ -63,10 +97,19 @@ try {
             if ($Tag) { $url = "https://github.com/$Owner/$Repo/releases/download/$Tag/DeepSeekHarness-DesktopShell.zip" }
             else { $url = "https://github.com/$Owner/$Repo/releases/latest/download/DeepSeekHarness-DesktopShell.zip" }
             Say "下载：$url"
-            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $work 'pkg.zip')
+            Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $pkgZip
+
+            $sumsUrl = if ($Tag) { "https://github.com/$Owner/$Repo/releases/download/$Tag/SHA256SUMS.txt" }
+                       else { "https://github.com/$Owner/$Repo/releases/latest/download/SHA256SUMS.txt" }
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $sumsUrl -OutFile (Join-Path $work 'SHA256SUMS.txt')
+            } catch {
+                Fail "下载 SHA256SUMS.txt 失败：$($_.Exception.Message)。无法校验发布包，安装已中止。"
+            }
+            Confirm-ZipHash $pkgZip (Join-Path $work 'SHA256SUMS.txt') $true
         }
 
-        Expand-Archive -LiteralPath (Join-Path $work 'pkg.zip') -DestinationPath $work -Force
+        Expand-Archive -LiteralPath $pkgZip -DestinationPath $work -Force
         $setupDir = Get-ChildItem -LiteralPath $work -Directory | Sort-Object Name | Select-Object -First 1
         if (-not $setupDir) { Fail '发布包内没有找到应用目录。' }
 

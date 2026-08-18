@@ -8,8 +8,44 @@ $appDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $statePath = Join-Path $appDir 'install-state.json'
 $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeepSeek Harness'
 $homeDir = [Environment]::GetFolderPath('UserProfile')
+$localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [Environment]::GetFolderPath('LocalApplicationData') }
 $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $homeDir '.dsh' }
 $preExisting = $false
+
+$MarkerName = '.dsh-desktop-shell-root'
+$ProductId = 'DeepSeek Harness DesktopShell'
+
+# 目录所有权：只有安装端写入的 marker / install-state.json 产品标记有效。
+function Test-ProductFile([string]$path) {
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    try {
+        $j = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        return ($j.product -eq $ProductId)
+    } catch { return $false }
+}
+
+function Test-DesktopShellOwned([string]$dir) {
+    if ([string]::IsNullOrWhiteSpace($dir)) { return $false }
+    return (Test-ProductFile (Join-Path $dir $MarkerName)) -or
+           (Test-ProductFile (Join-Path $dir 'install-state.json'))
+}
+
+# 卸载器会递归删除本脚本所在目录，必须先证明目录所有权（P0）。
+$owned = Test-DesktopShellOwned $appDir
+if (-not $owned) {
+    $msg = "无法确认此目录是 DeepSeek Harness DesktopShell 安装目录（缺少所有权标记 .dsh-desktop-shell-root / install-state.json）：`r`n$appDir`r`n`r`n为避免误删数据，卸载已取消，未删除任何文件。"
+    if ($Force) {
+        Write-Host ''
+        Write-Host $msg -ForegroundColor Red
+        exit 1
+    }
+    [System.Windows.Forms.MessageBox]::Show(
+        $msg,
+        'DeepSeek Harness DesktopShell',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    exit 1
+}
 
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     try {
@@ -133,34 +169,81 @@ Stop-Shell
 Remove-Item -LiteralPath $startMenu -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($mode -eq 'full') {
-    # 边界守卫：拒绝把用户主目录、盘符根、桌面壳自身目录当作 DSH_HOME 删除。
+    # 边界守卫：DSH_HOME 为空、等于或包含任何受保护目录、或位于桌面壳目录内时，
+    # 一律拒绝整目录删除并降级为仅卸载桌面壳。
+    # 方向必须双向检查：
+    #   - DSH_HOME 位于桌面壳目录内部（$full 以 $appFull 开头）
+    #   - 桌面壳目录位于 DSH_HOME 内部（$appFull 以 $full 开头）
     $dangerous = $false
     if ([string]::IsNullOrWhiteSpace($dshHome)) { $dangerous = $true }
     else {
-        $full = [IO.Path]::GetFullPath($dshHome).TrimEnd('\')
-        $homeFull = [IO.Path]::GetFullPath($homeDir).TrimEnd('\')
-        $appFull = [IO.Path]::GetFullPath($appDir).TrimEnd('\')
-        $root = [IO.Path]::GetPathRoot($full).TrimEnd('\')
-        if ($full -eq $homeFull -or $full -eq $root -or $full -eq $appFull -or
-            $full.StartsWith($appFull + '\', [StringComparison]::OrdinalIgnoreCase)) { $dangerous = $true }
+        try {
+            $full = [IO.Path]::GetFullPath($dshHome).TrimEnd('\')
+            $appFull = [IO.Path]::GetFullPath($appDir).TrimEnd('\')
+            $root = [IO.Path]::GetPathRoot($full).TrimEnd('\')
+            if (-not $full -or $full -eq $root) { $dangerous = $true }
+            elseif ($full.StartsWith($appFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                $dangerous = $true   # DSH_HOME 在 DesktopShell 程序目录内部
+            } else {
+                $protected = @(
+                    $homeDir,
+                    $appFull,
+                    $env:WINDIR,
+                    (Join-Path $env:WINDIR 'System32'),
+                    $env:ProgramFiles,
+                    ${env:ProgramFiles(x86)},
+                    $env:ProgramData,
+                    $env:PUBLIC,
+                    $env:APPDATA,
+                    $localAppData,
+                    $env:TEMP,
+                    $env:TMP,
+                    ([Environment]::GetFolderPath('DesktopDirectory')),
+                    ([Environment]::GetFolderPath('Personal')),
+                    (Join-Path $homeDir 'Downloads'),
+                    (Join-Path $homeDir 'OneDrive')
+                )
+                foreach ($p in $protected) {
+                    if ([string]::IsNullOrWhiteSpace($p)) { continue }
+                    try {
+                        $pf = [IO.Path]::GetFullPath($p).TrimEnd('\')
+                        # DSH_HOME 等于受保护目录，或受保护目录位于 DSH_HOME 内部
+                        # （例：DSH_HOME=C:\Users 会把整个用户目录删掉；
+                        #      DSH_HOME=%LOCALAPPDATA%\Programs 会删掉桌面壳所在目录）
+                        if ($full -eq $pf -or
+                            $pf.StartsWith($full + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                            $dangerous = $true; break
+                        }
+                    } catch {}
+                }
+            }
+        } catch { $dangerous = $true }
     }
 
     if ($dangerous) {
-        [System.Windows.Forms.MessageBox]::Show(
-            "DSH_HOME 路径不安全（$dshHome），已取消删除 DSH 用户数据，仅继续卸载桌面壳。",
-            'DeepSeek Harness DesktopShell',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        $warnText = "DSH_HOME 路径不安全（$dshHome），已取消删除 DSH 用户数据，仅继续卸载桌面壳。"
+        if ($Force) { Write-Host "[!] $warnText" -ForegroundColor Yellow }
+        else {
+            [System.Windows.Forms.MessageBox]::Show(
+                $warnText,
+                'DeepSeek Harness DesktopShell',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        }
         $mode = 'shell'
     } elseif (Test-Path -LiteralPath $dshHome) {
         try {
             Remove-Item -LiteralPath $dshHome -Recurse -Force -ErrorAction Stop
         } catch {
-            [System.Windows.Forms.MessageBox]::Show(
-                "删除 DSH_HOME 失败：$($_.Exception.Message)`r`n桌面壳仍会继续卸载。",
-                'DeepSeek Harness DesktopShell',
-                [System.Windows.Forms.MessageBoxButtons]::OK,
-                [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            $warnText = "删除 DSH_HOME 失败：$($_.Exception.Message)`r`n桌面壳仍会继续卸载。"
+            if ($Force) { Write-Host "[!] $warnText" -ForegroundColor Yellow }
+            else {
+                [System.Windows.Forms.MessageBox]::Show(
+                    $warnText,
+                    'DeepSeek Harness DesktopShell',
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            }
         }
     }
 }
@@ -169,7 +252,22 @@ $tempScript = Join-Path $env:TEMP ("dsh-desktop-uninstall-" + [Guid]::NewGuid().
 $appEscaped = $appDir.Replace("'", "''")
 @"
 Start-Sleep -Seconds 2
-Remove-Item -LiteralPath '$appEscaped' -Recurse -Force -ErrorAction SilentlyContinue
+`$target = '$appEscaped'
+`$owned = `$false
+foreach (`$f in @('.dsh-desktop-shell-root', 'install-state.json')) {
+    `$p = Join-Path `$target `$f
+    if (Test-Path -LiteralPath `$p -PathType Leaf) {
+        try {
+            `$j = Get-Content -LiteralPath `$p -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (`$j.product -eq 'DeepSeek Harness DesktopShell') { `$owned = `$true; break }
+        } catch {}
+    }
+}
+if (`$owned) {
+    Remove-Item -LiteralPath `$target -Recurse -Force -ErrorAction SilentlyContinue
+} else {
+    Write-Warning "删除前所有权标记验证失败，已跳过删除：`$target"
+}
 Remove-Item -LiteralPath `$PSCommandPath -Force -ErrorAction SilentlyContinue
 "@ | Set-Content -LiteralPath $tempScript -Encoding UTF8
 
@@ -182,8 +280,12 @@ $msg = if ($mode -eq 'full') {
 } else {
     'DesktopShell 卸载已开始；DSH_HOME 保留，可继续单独使用 DSH。'
 }
-[System.Windows.Forms.MessageBox]::Show(
-    $msg,
-    'DeepSeek Harness DesktopShell',
-    [System.Windows.Forms.MessageBoxButtons]::OK,
-    [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+if ($Force) {
+    Write-Host "[OK] $msg" -ForegroundColor Green
+} else {
+    [System.Windows.Forms.MessageBox]::Show(
+        $msg,
+        'DeepSeek Harness DesktopShell',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+}

@@ -741,17 +741,28 @@ namespace DeepSeekHarnessDesktop
             File.WriteAllText(temp, content, new UTF8Encoding(false));
             if (File.Exists(path))
             {
+                // File.Replace 原子替换并保留 backup（.dsh-desktop.bak 为滚动备份）。
+                string backup = path + ".dsh-desktop.bak";
                 try
                 {
-                    File.Replace(temp, path, null);
+                    File.Replace(temp, path, backup);
                     return;
                 }
-                catch
-                {
-                    try { File.Delete(path); } catch { }
-                }
+                catch { }
             }
-            File.Move(temp, path);
+
+            // Replace 不受支持（如 FAT/网络卷）时退化为复制覆盖。
+            // 绝不「先删原文件再 Move」：先删后动一旦第二步失败，插件文件直接丢失。
+            try
+            {
+                File.Copy(temp, path, true);
+                File.Delete(temp);
+            }
+            catch
+            {
+                try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+                throw;
+            }
         }
 
         private static int CountOccurrences(string text, string value)
@@ -1067,8 +1078,13 @@ namespace DeepSeekHarnessDesktop
             return !IsReady(port, 200);
         }
 
-        public void RestartBackend(int port, string workingDirectory, string logsDirectory,
-            string requestedVersion, string profileName, string configuredDshPath, bool allowExternalStop)
+        /// <summary>
+        /// 停止当前端口的 DSH 后端：自家托管的直接回收；外部进程只有在
+        /// allowExternalStop=true 且命令行像 DSH 时才结束。与 RestartBackend 分离，
+        /// 让调用方可以在「停止之后、启动之前」插入 PluginCompat.ApplyAll，
+        /// 保证升级插件后点“重启 DSH 后端”也能吃到兼容修复。
+        /// </summary>
+        public void StopBackend(int port, bool allowExternalStop)
         {
             if (OwnsBackend)
             {
@@ -1105,7 +1121,12 @@ namespace DeepSeekHarnessDesktop
 
             if (!WaitForPortClosed(port, 10000))
                 throw new InvalidOperationException("旧的 DSH Web 在 10 秒内没有释放端口 " + port.ToString() + "。");
+        }
 
+        public void RestartBackend(int port, string workingDirectory, string logsDirectory,
+            string requestedVersion, string profileName, string configuredDshPath, bool allowExternalStop)
+        {
+            StopBackend(port, allowExternalStop);
             EnsureStarted(port, workingDirectory, logsDirectory, requestedVersion, profileName, configuredDshPath);
         }
 
@@ -1977,6 +1998,7 @@ namespace DeepSeekHarnessDesktop
             {
                 await Task.Run(delegate
                 {
+                    // 每次启动 DSH 前都执行兼容修复（幂等）
                     PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName);
                     dsh.EnsureStarted(
                         settings.port,
@@ -2381,14 +2403,17 @@ namespace DeepSeekHarnessDesktop
 
                 await Task.Run(delegate
                 {
-                    dsh.RestartBackend(
+                    // 兼容修复在「停止旧后端之后、启动新后端之前」执行：
+                    // 升级插件后点“重启 DSH 后端”也能吃到兼容补丁（账本清理也不会被旧后端关停写回覆盖）。
+                    dsh.StopBackend(settings.port, allowExternal);
+                    PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName);
+                    dsh.EnsureStarted(
                         settings.port,
                         settings.workingDirectory,
                         logsDirectory,
                         settings.dshVersion,
                         settings.profileName,
-                        settings.dshPath,
-                        allowExternal);
+                        settings.dshPath);
                 });
 
                 healthFailures = 0;

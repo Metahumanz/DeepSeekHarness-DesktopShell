@@ -45,8 +45,13 @@ $removedBuckets = 0
 $removedCalls = 0
 $removedCost = 0.0
 
+# 与 C# PluginCompat.RemoveSyntheticLedgerBuckets 完全一致的判断：
+# deepseek-modlens:* 或 modlens-*（如 modlens-openrouter:gpt）。
+# 注意不能用正则 '^(deepseek-modlens|modlens-):'——它会漏掉 modlens-*:* 这类键。
 function Test-SyntheticKey([string]$key) {
-    return $key -match '^(deepseek-modlens|modlens-):'
+    if ([string]::IsNullOrEmpty($key)) { return $false }
+    return $key.StartsWith('deepseek-modlens:', [StringComparison]::Ordinal) -or
+           $key.StartsWith('modlens-', [StringComparison]::Ordinal)
 }
 
 function Subtract-Bucket($total, $bucket) {

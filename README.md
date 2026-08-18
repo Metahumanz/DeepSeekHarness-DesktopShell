@@ -11,11 +11,13 @@ Windows 桌面宿主：把 [DeepSeek Harness](https://github.com/deepseek-ai/dee
 - **原生桌面窗口**：WebView2 承载 DSH Web 界面，自动适配深色/浅色主题、每显示器 DPI（PerMonitorV2）
 - **按官方方式运行 DSH**：已有 `dsh` 命令直接用；没有则 `npx -y @deepseek-ai/dsh@<版本> web`；**绝不执行 `npm install -g`**
 - **边界安全**：只信任回环地址上的 DSH 页面；端口被非 DSH 进程占用时拒绝附着/结束；未知进程绝不强杀
+- **安装目录所有权**：安装器写入 `.dsh-desktop-shell-root` 所有权标记；卸载器验证标记后才允许递归删除程序目录；拒绝盘符根/用户主目录/系统目录/非空共享目录
+- **供应链校验**：一键安装下载发布包后强制比对同源 `SHA256SUMS.txt`，不一致即中止
 - **进程托管**：Job Object 托管 DSH 后端，桌面壳退出即回收；日志自动轮转（保留 40 个 / 30 天）
 - **单实例**：重复启动会激活已有窗口
 - **托盘与关闭策略**：每次询问 / 关闭到托盘 / 关闭并退出
-- **插件向导**：19 个社区插件目录（推荐/可选），自动匹配 Profile 的 pnpm store 版本（v10/v11），GitHub git+ssh 传输自动降级为 https
-- **兼容修复**：Sentinel client-id 特征修复、Cost Meter × ModLens 合成提供方重复计费去重（幂等、带标记、原子写入）
+- **插件向导**：19 个社区插件目录（推荐/可选）；推荐组合锁定精确版本/commit（可复现），可选插件保留 `@latest`；自动匹配 Profile 的 pnpm store 版本（v10/v11），GitHub git+ssh 传输自动降级为 https
+- **兼容修复**：Sentinel client-id 特征修复、Cost Meter × ModLens 合成提供方重复计费去重（幂等、带标记、原子写入带备份）；每次启动 DSH 前（含"重启 DSH 后端"）自动执行
 
 ## 核心原则
 
@@ -41,6 +43,15 @@ npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 n
 | DSH 用户数据（Profile/插件/会话/设置/storage） | `%USERPROFILE%\.dsh`（设置 `DSH_HOME` 则使用该路径） |
 
 `~/.dsh` 是 DSH 用户状态目录，**不是** `@deepseek-ai/dsh` 的安装目录。删除 `~/.dsh` 等于清空 DSH 用户状态，但不等于 npm uninstall；DesktopShell 卸载不会删除 `~/.dsh`（除非选择"完整卸载"）。
+
+### 安装目录所有权
+
+卸载器会递归删除 DesktopShell 所在目录，因此安装器必须先证明目录所有权：
+
+- 安装时写入 `.dsh-desktop-shell-root` 标记（卸载前再次验证；旧版安装凭 `install-state.json` 的 `product` 字段）
+- 自定义 `-InstallDir` 指向**已存在且非空**的目录、且不是已有 DesktopShell 安装时，安装被拒绝（就地安装且目录内只有发布包文件时豁免）
+- 盘符根、用户主目录、系统目录、Program Files、AppData、临时目录、DSH_HOME 等已知大目录一律拒绝
+- 卸载器的延迟自删除脚本在执行前会再次验证标记，验证失败只跳过删除
 
 ## 目录结构
 
@@ -70,11 +81,15 @@ npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 n
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/main/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.0/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
 & "$env:TEMP\install-dsh.ps1"
 ```
 
-也可以双击仓库根目录的 `install.bat`（自动推断 git remote 的 metahumanz/DeepSeekHarness-DesktopShell）。
+引导命令固定指向 **v1.0.0 tag**（不追 `main`），安装脚本从同源 Release 下载
+`DeepSeekHarness-DesktopShell.zip` **和** `SHA256SUMS.txt`，SHA256 不一致即中止。
+发布 v1.0.0 时必须把这两个文件都作为 Release 资产上传。
+
+也可以双击仓库根目录的 `install.bat`（自动推断 git remote 的 metahumanz/DeepSeekHarness-DesktopShell；同样的哈希校验）。
 
 ### 方式二：发布包 zip
 
@@ -117,6 +132,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 产物：`release\DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`（WebView2 SDK 自动从本机缓存/已安装目录/NuGet 解析）。
+发布到 GitHub Release 时，**zip 与 `SHA256SUMS.txt` 必须同时上传为资产**，一键安装的哈希校验才能通过。
+
+安全审计记录见 [docs/AUDIT.md](docs/AUDIT.md)。
 
 ## 管理
 
@@ -134,8 +152,12 @@ Set-ExecutionPolicy -Scope Process Bypass
 - Better Sidebar 可固定 `pwsh.exe`（用户环境变量 `DSH_SIDEBAR_SHELL`）
 - Status Rotator 可关闭 gradient 炫彩
 - Sentinel client-id 特征式兼容修复
-- Cost Meter × ModLens 双倍计价防护：记账守卫（llm/stream）+ 历史回填守卫（backfill.js）+ 账本自动清理（每次启动执行；也可手动运行 `scripts\Repair-CostMeterLedger.ps1`）
+- Cost Meter × ModLens 双倍计价防护：记账守卫（llm/stream）+ 历史回填守卫（backfill.js）+ 账本自动清理（**每次启动 DSH 前**执行，包括菜单里的"重启 DSH 后端"；也可手动运行 `scripts\Repair-CostMeterLedger.ps1`）
 - Profile pnpm store v10/v11 匹配，避免交叉迁移
+
+### 插件版本策略
+
+推荐组合里的 13 个插件全部锁定**精确 npm 版本或 GitHub commit**（今天安装和下周安装得到相同的代码）；可选插件保留 `@latest`，属于用户主动选择。升级锁定版本前需人工审核新版本与兼容修复的相容性，再更新 `Manage-Dsh.ps1` 里的 `$PluginCatalog`。
 
 ## 卸载
 
@@ -144,7 +166,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 1. **完整卸载**：删除 DesktopShell + DSH_HOME（Profile、插件、会话、设置、storage）
 2. **仅卸载桌面壳**：保留 DSH_HOME，适合以后继续单独使用 DSH
 
-卸载器**不会**删除：`~/.dsh`（仅卸载桌面壳时）、`~/.modlens`、Node.js/npm、npm 缓存、用户自己已有的 dsh。若 DesktopShell 安装前 DSH_HOME 已存在，卸载器会显式警告。完整卸载带路径安全守卫，拒绝把用户主目录 / 盘符根 / 桌面壳自身当作 DSH_HOME 删除。
+卸载器**不会**删除：`~/.dsh`（仅卸载桌面壳时）、`~/.modlens`、Node.js/npm、npm 缓存、用户自己已有的 dsh。若 DesktopShell 安装前 DSH_HOME 已存在，卸载器会显式警告。完整卸载带路径安全守卫：DSH_HOME 为空、等于/包含用户主目录、盘符根、系统目录、Program Files、AppData、桌面壳目录（任一方向）时，拒绝删除并降级为仅卸载桌面壳；卸载器本身也只有验证 `.dsh-desktop-shell-root` / `install-state.json` 所有权标记后才允许递归删除程序目录。
 
 ## 开发与构建
 

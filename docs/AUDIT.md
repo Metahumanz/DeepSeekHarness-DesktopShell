@@ -102,3 +102,28 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 4. 卸载器 GUI 依赖 Windows Forms，在 PowerShell 5.1 下同样可用（未做强制 PS7 校验，属有意兼容）。
 5. 双倍计价防护依赖 cost-meter 的 `llm/stream`/`request/header` 内部结构锚点；cost-meter 或 modlens 大版本升级后需重新验证（compat 日志会记录"left untouched"）。
 6. 会话日志本身仍保留 ModLens 合成 usage 事件（属宿主记录，不影响计价）；若用户手工重置/删除账本，backfill 已不会回填合成条目，但首次启动的自动清理仍以"map 非空即跳过"为幂等前提。
+
+## 6. 2026-08-19 第二轮修复（外部审计响应）
+
+按外部审计的优先级结论"下一次提交先修 5 项"，本次提交完成：
+
+| # | 级别 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 1 | **P0** | 自定义 `-InstallDir` 可指向任意已有目录，卸载时递归删除整个目录 | 安装目录所有权机制：安装端写入 `.dsh-desktop-shell-root` 标记；目标目录非空且不是已有 DesktopShell 安装（marker/`install-state.json` 产品字段）时拒绝安装；盘符根/用户主目录/系统目录/Program Files/AppData/临时目录/DSH_HOME 等已知大目录一律拒绝；卸载前再次验证标记，延迟自删除脚本执行前还会第三次验证（`scripts/Install-Release.ps1`、`scripts/Uninstall-DesktopShell.ps1`、`scripts/Install-Desktop.ps1`） |
+| 2 | **P0** | DSH_HOME"包含桌面壳目录"的方向判断写反，父目录会通过安全守卫 | 双向检查：DSH_HOME 位于桌面壳内、桌面壳位于 DSH_HOME 内都拒绝；并扩展为 DSH_HOME 等于/包含用户主目录、系统目录、Program Files、AppData、临时目录等受保护路径时拒绝（`scripts/Uninstall-DesktopShell.ps1`） |
+| 3 | P1 | `Repair-CostMeterLedger.ps1` 的 `modlens-*` 正则漏掉 `modlens-xxx:yyy` 键 | 改为与 C# 完全一致的 `StartsWith('deepseek-modlens:') -or StartsWith('modlens-')`（已用合成账本 DryRun 验证 4 类键） |
+| 4 | P1 | 推荐组合 11/13 插件追 `@latest`/GitHub `main`，不可复现 | 推荐组合全部锁定精确 npm 版本或 GitHub commit（2026-08-19 快照：dshmarket@1.14.0、dsh-better-sidebar@0.13.1、dsh-chat-tidy@0.2.0、dsh-cost-meter@1.5.10、dsh-model-picker@1.0.2 + 6 个 GitHub commit 固定 tar.gz；`dsh-at-file` 在 npm 上不存在，改用其真实仓库 omdsh-dev/dsh-at-file 的 commit 固定包）。可选插件保留 `@latest`（用户主动选择）。锁定版本升级须人工审核后更新 `$PluginCatalog` |
+| 5 | P1 | 一键安装下载 `latest` zip 后不校验 `SHA256SUMS` | `Install-FromGitHub.ps1` 下载同源 `SHA256SUMS.txt` 并强制校验，失败即中止；本地 `-ZipPath` 旁若有 SUMS 文件同样校验。README 引导命令钉到 `v1.0.0` tag（发布时 zip 与 SUMS 必须同时上传） |
+| 6 | P1/P2 | `PluginCompat` 只在桌面壳首次启动执行；`WriteAtomic` 替换失败先删原文件 | 兼容修复改为"停止旧后端 → ApplyAll → 启动新后端"，每次启动 DSH 前（含菜单"重启 DSH 后端"）都执行；`WriteAtomic` 改用 `File.Replace` 带滚动备份参数，替换失败时绝不先删原文件（`src/DeepSeekHarness.cs`） |
+
+另顺手修正：`-Force` 无人值守卸载路径下剩余的三处 MessageBox 改为 Write-Host（此前 `-Force` 仍会弹窗阻塞自动化）。
+
+验证：`csc.exe` 实际编译通过；全部 PowerShell 脚本 `[Parser]::ParseFile` 通过；安装所有权 10 项、卸载守卫 3 项、哈希校验正/负向、合成账本正则测试全部通过（测试脚本在 gitignored 的 `.test-install/`）。
+
+### 遗留（下一次提交）
+
+- 端口可信性 TOCTOU：ready 判定只做 TCP 连接，建议补 `FindListeningPid + IsLikelyDshProcess`（或应用层 fingerprint）
+- 外链协议白名单（http/https + 明确允许项），替代当前黑名单
+- DSH 最低版本门槛：现有 dsh 低于 rc.7 时提示而不是静默接管
+- 发布链：WebView2 三件套固定同一 NuGet 版本（1.0.4078.44）、`Build-Release -Version` 同步 EXE AssemblyVersion/FileVersion、`Repair-CostMeterLedger.ps1` 装入发布包
+- 工程化：LICENSE、THIRD_PARTY_NOTICES.md、GitHub Actions CI（PS 解析/编译/路径守卫与正则测试）
