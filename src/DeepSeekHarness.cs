@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -386,6 +387,7 @@ namespace DeepSeekHarnessDesktop
         private const string SentinelWrongId = "id: \"@dsh-external/dsh-sentinel\"";
         private const string SentinelRightId = "id: \"dsh-sentinel\"";
         private const string CostMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper";
+        private const string BackfillMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper in backfill replay";
 
         public static void ApplyAll(string desktopDirectory, string logsDirectory, string profileName)
         {
@@ -411,6 +413,8 @@ namespace DeepSeekHarnessDesktop
                 log.AppendLine("Profile: " + profile);
                 RepairSentinel(dshHome, profile, log);
                 RepairCostMeterModLens(dshHome, profile, log);
+                RepairCostMeterBackfill(dshHome, profile, log);
+                RepairCostMeterLedger(dshHome, log);
 
                 File.WriteAllText(
                     Path.Combine(logsDirectory, "plugin-compat.log"),
@@ -530,6 +534,205 @@ namespace DeepSeekHarnessDesktop
             {
                 log.AppendLine("Cost meter: repair failed: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// 给 cost-meter 的 backfill.js 打幂等补丁：历史回放（backfillLegacyLedger）
+        /// 会从会话日志重建 byProviderModel，而会话日志里保留着 ModLens 合成包装的
+        /// request/header + usage 事件。若不拦截，任何被清空/新建的账本都会在启动
+        /// 回填时把合成条目重新计回（双倍计价“复发”的根因）。与 index.js 的守卫一致。
+        /// </summary>
+        private static void RepairCostMeterBackfill(string dshHome, string profileName, StringBuilder log)
+        {
+            string path = Path.Combine(dshHome, "profiles", profileName, "node_modules",
+                "dsh-cost-meter", "lib", "backfill.js");
+            if (!File.Exists(path))
+            {
+                log.AppendLine("Cost meter backfill: not installed; skipped.");
+                return;
+            }
+
+            try
+            {
+                string source = File.ReadAllText(path, Encoding.UTF8);
+                if (source.IndexOf(BackfillMarker, StringComparison.Ordinal) >= 0)
+                {
+                    log.AppendLine("Cost meter backfill: ModLens skip already active.");
+                    CleanupFiles(Path.GetDirectoryName(path), "backfill.js.before-modlens-backfill-fix-*.bak");
+                    return;
+                }
+
+                string anchor = "    const atMs = Number(event.time)";
+                int at = source.IndexOf(anchor, StringComparison.Ordinal);
+                if (at < 0)
+                {
+                    log.AppendLine("Cost meter backfill: anchor not found; left untouched.");
+                    return;
+                }
+
+                string patch =
+                    "    // " + BackfillMarker + "\r\n" +
+                    "    if (provider === 'deepseek-modlens' || provider.startsWith('modlens-')) continue\r\n";
+                source = source.Substring(0, at) + patch + source.Substring(at);
+
+                WriteAtomic(path, source);
+                log.AppendLine("Cost meter backfill: repaired ModLens replay skip.");
+                CleanupFiles(Path.GetDirectoryName(path), "backfill.js.before-modlens-backfill-fix-*.bak");
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("Cost meter backfill: repair failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 清理 cost-meter 账本中被 ModLens 合成包装误计的条目（双倍计价修复）。
+        /// 删除 provider 键为 deepseek-modlens:* 或 modlens-*:* 的计费桶（日级 + 会话级），
+        /// 并从日/会话合计中扣减对应 token 与金额；修改前自动备份。
+        /// 与 scripts/Repair-CostMeterLedger.ps1 逻辑一致，桌面壳每次启动时执行。
+        /// </summary>
+        private static void RepairCostMeterLedger(string dshHome, StringBuilder log)
+        {
+            string path = Path.Combine(dshHome, "storages", "cost-meter", "ledger.json");
+            if (!File.Exists(path))
+            {
+                log.AppendLine("Cost meter ledger: not found; skipped.");
+                return;
+            }
+
+            try
+            {
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                Dictionary<string, object> ledger;
+                try
+                {
+                    ledger = serializer.Deserialize<Dictionary<string, object>>(
+                        File.ReadAllText(path, Encoding.UTF8));
+                }
+                catch
+                {
+                    log.AppendLine("Cost meter ledger: unparseable; left untouched.");
+                    return;
+                }
+
+                if (ledger == null || !ledger.ContainsKey("days"))
+                {
+                    log.AppendLine("Cost meter ledger: no days; skipped.");
+                    return;
+                }
+
+                bool changed = false;
+                int removedBuckets = 0;
+                int removedCalls = 0;
+                double removedCost = 0;
+
+                Dictionary<string, object> days = ledger["days"] as Dictionary<string, object>;
+                if (days != null)
+                {
+                    foreach (KeyValuePair<string, object> dayPair in new List<KeyValuePair<string, object>>(days))
+                    {
+                        Dictionary<string, object> day = dayPair.Value as Dictionary<string, object>;
+                        if (day == null) continue;
+                        removedBuckets += RemoveSyntheticLedgerBuckets(
+                            day, dayPair.Key + " day", log,
+                            ref changed, ref removedCalls, ref removedCost);
+
+                        object sessionsObj;
+                        if (day.TryGetValue("sessions", out sessionsObj))
+                        {
+                            ArrayList sessions = sessionsObj as ArrayList;
+                            if (sessions != null)
+                            {
+                                foreach (object sObj in sessions)
+                                {
+                                    Dictionary<string, object> session = sObj as Dictionary<string, object>;
+                                    if (session == null) continue;
+                                    string sid = session.ContainsKey("id")
+                                        ? Convert.ToString(session["id"]) : "?";
+                                    removedBuckets += RemoveSyntheticLedgerBuckets(
+                                        session, sid, log,
+                                        ref changed, ref removedCalls, ref removedCost);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!changed)
+                {
+                    log.AppendLine("Cost meter ledger: no synthetic ModLens entries; clean.");
+                    return;
+                }
+
+                string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                string bak = path + ".before-modlens-clean-" + stamp + ".bak";
+                File.Copy(path, bak, true);
+                WriteAtomic(path, serializer.Serialize(ledger));
+                log.AppendLine("Cost meter ledger: removed " + removedBuckets + " synthetic bucket(s) (" +
+                    removedCalls + " calls, " + removedCost.ToString("0.######") + " CNY); backup " + bak);
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine("Cost meter ledger: repair failed: " + ex.Message);
+            }
+        }
+
+        private static int RemoveSyntheticLedgerBuckets(Dictionary<string, object> parent,
+            string label, StringBuilder log, ref bool changed, ref int removedCalls, ref double removedCost)
+        {
+            int removed = 0;
+            if (!parent.ContainsKey("byProviderModel")) return 0;
+            Dictionary<string, object> pm = parent["byProviderModel"] as Dictionary<string, object>;
+            if (pm == null || pm.Count == 0) return 0;
+
+            List<string> drop = new List<string>();
+            foreach (string key in pm.Keys)
+            {
+                if (key.StartsWith("deepseek-modlens:", StringComparison.Ordinal) ||
+                    key.StartsWith("modlens-", StringComparison.Ordinal))
+                    drop.Add(key);
+            }
+
+            foreach (string key in drop)
+            {
+                Dictionary<string, object> b = pm[key] as Dictionary<string, object>;
+                if (b != null) SubtractLedgerBucket(parent, b);
+                pm.Remove(key);
+                removed++;
+                changed = true;
+                int calls = b != null && b.ContainsKey("calls") ? Convert.ToInt32(b["calls"]) : 0;
+                double cost = b != null && b.ContainsKey("cost") ? Convert.ToDouble(b["cost"]) : 0;
+                removedCalls += calls;
+                removedCost += cost;
+                log.AppendLine("Cost meter ledger: drop " + label + " " + key +
+                    " (calls=" + calls + " cost=" + cost.ToString("0.######") + ")");
+            }
+            return removed;
+        }
+
+        private static void SubtractLedgerBucket(Dictionary<string, object> total, Dictionary<string, object> b)
+        {
+            SubtractLedgerField(total, b, "input");
+            SubtractLedgerField(total, b, "output");
+            SubtractLedgerField(total, b, "cacheRead");
+            SubtractLedgerField(total, b, "cacheWrite");
+            SubtractLedgerField(total, b, "reasoning");
+            SubtractLedgerField(total, b, "calls");
+            SubtractLedgerField(total, b, "cost");
+        }
+
+        private static void SubtractLedgerField(Dictionary<string, object> total,
+            Dictionary<string, object> b, string name)
+        {
+            if (!total.ContainsKey(name) || !b.ContainsKey(name)) return;
+            try
+            {
+                if (name == "calls")
+                    total[name] = Convert.ToInt32(total[name]) - Convert.ToInt32(b[name]);
+                else
+                    total[name] = Convert.ToDouble(total[name]) - Convert.ToDouble(b[name]);
+            }
+            catch { }
         }
 
         private static void WriteAtomic(string path, string content)

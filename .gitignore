@@ -14,6 +14,8 @@ bin/
 obj/
 .audit-build/
 .build-check/
+.test-install/
+release/
 
 # ---- 运行时生成物（若在仓库内运行桌面壳）----
 settings.json

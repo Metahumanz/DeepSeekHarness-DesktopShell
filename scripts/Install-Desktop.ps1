@@ -10,6 +10,25 @@ function Say([string]$text) { Write-Host "[DSH Desktop] $text" -ForegroundColor 
 function Ok([string]$text) { Write-Host "[OK] $text" -ForegroundColor Green }
 function Fail([string]$text) { throw $text }
 
+# 只关闭“指定 exe 路径”的桌面程序；路径无法读取/不匹配的进程一律不碰。
+# 绝不允许按进程名全杀：DSH 宿主本身也可能叫 DeepSeekHarness。
+function Stop-DesktopShellProcess([string]$exePath) {
+    if ([string]::IsNullOrWhiteSpace($exePath)) { return }
+    $target = ''
+    try { $target = [IO.Path]::GetFullPath($exePath) } catch { return }
+    Get-Process -Name 'DeepSeekHarness' -ErrorAction SilentlyContinue | ForEach-Object {
+        $procPath = ''
+        try { $procPath = [IO.Path]::GetFullPath($_.MainModule.FileName) } catch { return }
+        if ($procPath -ne $target) { return }
+        Say "关闭桌面程序 PID $($_.Id)..."
+        try {
+            $_.CloseMainWindow() | Out-Null
+            Start-Sleep -Milliseconds 700
+            if (-not $_.HasExited) { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+        } catch {}
+    }
+}
+
 if ($PSVersionTable.PSVersion.Major -lt 7) {
     Fail '安装器需要 PowerShell 7。请用 pwsh 打开后重新运行 Install-Desktop.ps1。'
 }
@@ -38,14 +57,8 @@ Say 'DSH 规则：已有 dsh 就使用；没有则按官方 npx @deepseek-ai/dsh
 
 New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
 
-Get-Process -Name 'DeepSeekHarness' -ErrorAction SilentlyContinue | ForEach-Object {
-    Say "关闭旧桌面程序 PID $($_.Id)..."
-    try {
-        $_.CloseMainWindow() | Out-Null
-        Start-Sleep -Milliseconds 700
-        if (-not $_.HasExited) { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
-    } catch {}
-}
+# 只关闭将被覆盖的旧版桌面壳（路径精确匹配），不影响其它同名进程
+Stop-DesktopShellProcess (Join-Path $desktopDir 'DeepSeekHarness.exe')
 
 $newSettings = Join-Path $desktopDir 'settings.json'
 $oldSettings = Join-Path $legacyDesktopDir 'settings.json'

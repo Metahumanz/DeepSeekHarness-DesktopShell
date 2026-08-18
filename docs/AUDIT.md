@@ -79,6 +79,8 @@
 | P2 | 文件复制静默失败，后续编译报错难定位 | 复制后校验 8 个目标文件，缺失即报错 |
 | P2 | `settings.json` 窗口尺寸无上限，损坏 JSON 可携带超大值 | Load 时钳制 800–10000 / 600–10000（`src/DeepSeekHarness.cs`） |
 | P2 | `$env:LOCALAPPDATA` 未设时安装路径报错 | 回退 `[Environment]::GetFolderPath('LocalApplicationData')` |
+| **P0** | 安装/卸载脚本按**进程名** `DeepSeekHarness` 全杀旧实例——DSH 宿主本身（`~/.dsh/desktop\DeepSeekHarness.exe`）同名，实测两次把承载自身的宿主进程杀掉 | 改为 `Stop-DesktopShellProcess`：按 **exe 完整路径精确匹配**（`MainModule.FileName`）才关闭；路径读不到/不匹配一律不碰；旧版目录清理不再主动杀任何进程，删除失败仅警告跳过（三个脚本同步修复） |
+| **P1** | Cost Meter × ModLens 双倍计价"复发"根因链：① index.js 守卫只拦**新增**记账，历史入账不清理；② cost-meter 的 `backfill.js` 启动回填会从**会话日志**重建 byProviderModel，而日志里保留全部 ModLens 合成 usage（实测今天 187 次/昨天 217 次）——账本一旦有空 map 即被回填复现；③ 运行中后端内存持有旧账本，关停 flush 会覆盖磁盘清理 | 三层修复（`src/DeepSeekHarness.cs` PluginCompat + `scripts/Repair-CostMeterLedger.ps1`）：a) 启动时自动清理账本中 `deepseek-modlens:*`/`modlens-*:*` 桶并扣减日/会话合计（自动备份、原子写）；b) 给 `backfill.js` 打幂等守卫，重放跳过 ModLens provider（锚点 + 标记，识别失败即跳过不改）；c) 保留 index.js 记账守卫。已对真实账本执行清理（备份 `ledger.json.before-modlens-clean-*.bak`） |
 
 ## 4. 编译验证
 
@@ -88,12 +90,15 @@
 csc exit: 0 → DeepSeekHarness.exe 生成成功
 ```
 
-三个 PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前 `Uninstall-DesktopShell.ps1` 存在 P0 解析错误）。
+PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前 `Uninstall-DesktopShell.ps1` 存在 P0 解析错误）。
+
+发布链实测：`Build-Release.ps1` 构建 zip（13 文件自校验 + SHA256）→ `Install-FromGitHub.ps1 -ZipPath` 端到端安装（复制校验、install-state.json、settings 迁移、向导/启动/快捷方式开关）全部通过，且未误杀任何进程。
 
 ## 5. 遗留观察项（未修改，文档化）
 
 1. `Manage-Dsh.ps1` 插件目录为静态 19 项清单，版本规格硬编码（如 `@michengai/dsh-skills-manager@0.1.23`），上游发版需人工更新。
 2. `PluginCompat` 直接改写 `node_modules` 内的插件文件——已用标记 + 幂等 + 原子写 + 备份清理降低风险，但仍依赖插件内部结构字符串特征（上游改动可能导致"无法识别，跳过"，不会误改）。
 3. `FindListeningPid` 依赖 `netstat` 输出格式；IPv6 `[::1]` 行已兼容，极端本地化系统差异未覆盖。
-4. 安装器按进程名 `DeepSeekHarness` 关闭旧实例，仅限当前用户会话；多用户同机场景各自独立。
-5. 卸载器 GUI 依赖 Windows Forms，在 PowerShell 5.1 下同样可用（未做强制 PS7 校验，属有意兼容）。
+4. 卸载器 GUI 依赖 Windows Forms，在 PowerShell 5.1 下同样可用（未做强制 PS7 校验，属有意兼容）。
+5. 双倍计价防护依赖 cost-meter 的 `llm/stream`/`request/header` 内部结构锚点；cost-meter 或 modlens 大版本升级后需重新验证（compat 日志会记录"left untouched"）。
+6. 会话日志本身仍保留 ModLens 合成 usage 事件（属宿主记录，不影响计价）；若用户手工重置/删除账本，backfill 已不会回填合成条目，但首次启动的自动清理仍以"map 非空即跳过"为幂等前提。

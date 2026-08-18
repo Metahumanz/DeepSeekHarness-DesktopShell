@@ -19,14 +19,26 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     } catch {}
 }
 
-function Stop-Shell {
+# 只关闭“指定 exe 路径”的桌面程序；路径无法读取/不匹配的进程一律不碰。
+# 绝不允许按进程名全杀：DSH 宿主本身也可能叫 DeepSeekHarness。
+function Stop-DesktopShellProcess([string]$exePath) {
+    if ([string]::IsNullOrWhiteSpace($exePath)) { return }
+    $target = ''
+    try { $target = [IO.Path]::GetFullPath($exePath) } catch { return }
     Get-Process -Name 'DeepSeekHarness' -ErrorAction SilentlyContinue | ForEach-Object {
+        $procPath = ''
+        try { $procPath = [IO.Path]::GetFullPath($_.MainModule.FileName) } catch { return }
+        if ($procPath -ne $target) { return }
         try {
             $_.CloseMainWindow() | Out-Null
             Start-Sleep -Milliseconds 700
             if (-not $_.HasExited) { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
         } catch {}
     }
+}
+
+function Stop-Shell {
+    Stop-DesktopShellProcess (Join-Path $appDir 'DeepSeekHarness.exe')
 }
 
 function Ask-UninstallMode {

@@ -50,19 +50,46 @@ npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 n
 ├── assets/                 # 图标（.ico/.svg，源自官方 favicon.svg）
 ├── docs/
 │   └── AUDIT.md            # 功能审计与边界检查报告
-├── scripts/                # PowerShell：安装 / 管理 / 卸载
-│   ├── Install-Desktop.ps1
+├── scripts/                # PowerShell：安装 / 管理 / 卸载 / 发布 / 修复
+│   ├── Install-Desktop.ps1      # 源码安装器（编译 + 向导）
+│   ├── Install-Release.ps1      # 发布包安装器（zip 内，免编译）
+│   ├── Install-FromGitHub.ps1   # 从 GitHub Releases 一条命令安装
+│   ├── Build-Release.ps1        # 构建发布 zip（免编译安装包）
 │   ├── Manage-Dsh.ps1
-│   └── Uninstall-DesktopShell.ps1
+│   ├── Uninstall-DesktopShell.ps1
+│   └── Repair-CostMeterLedger.ps1  # 清理 ModLens 双倍计价入账
 ├── src/                    # C# 桌面宿主源码 + app.manifest
-│   ├── DeepSeekHarness.cs  # 2590 行：窗口/WebView2/进程托管/兼容修复
+│   ├── DeepSeekHarness.cs  # 窗口/WebView2/进程托管/兼容修复
 │   └── app.manifest
+├── install.bat             # 双击入口：从 GitHub 一条命令安装
 ├── .gitignore
 ├── ICON_SOURCE.txt         # 图标来源与处理说明
 └── README.md
 ```
 
-## 安装
+## 安装（普通用户，免编译）
+
+### 方式一：GitHub 一键安装
+
+推送到 GitHub 并发布 Release 后，把 `OWNER/REPO` 换成实际值：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+irm https://raw.githubusercontent.com/OWNER/REPO/main/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1"
+```
+
+也可以双击仓库根目录的 `install.bat`（自动推断 git remote 的 Owner/Repo）。
+
+### 方式二：发布包 zip
+
+1. 下载 Release 中的 `DeepSeekHarness-DesktopShell.zip`
+2. 解压后**双击 `install.bat`**（或运行 `Install-Release.ps1`）
+3. 跟随首次配置向导
+
+无需编译器、无需下载 WebView2 SDK——exe 与运行库已预编译打包。
+
+### 方式三：从源码安装（开发者）
 
 PowerShell 7：
 
@@ -73,7 +100,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 首次向导内容：现有 dsh / npx 运行方式、npx DSH 版本、Profile、Web 端口、默认工作目录、关闭窗口行为、WebView2 开发者模式、插件安装方案。已有 Profile 默认不改现有插件。
 
-安装器行为：
+源码安装器行为：
 
 - 自动下载/复用 WebView2 SDK（`Microsoft.Web.WebView2`，版本不足则升级）
 - 用 .NET Framework 自带 `csc.exe` 编译 `DeepSeekHarness.exe`（winexe + manifest + icon）
@@ -87,6 +114,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 `-NoWizard`：发现现有 dsh 就使用，否则走 npx，不改现有插件。
+
+## 构建发布包（开发者）
+
+```powershell
+.\scripts\Build-Release.ps1
+```
+
+产物：`release\DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`（WebView2 SDK 自动从本机缓存/已安装目录/NuGet 解析）。
 
 ## 管理
 
@@ -104,7 +139,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 - Better Sidebar 可固定 `pwsh.exe`（用户环境变量 `DSH_SIDEBAR_SHELL`）
 - Status Rotator 可关闭 gradient 炫彩
 - Sentinel client-id 特征式兼容修复
-- Cost Meter + ModLens synthetic wrapper 去重保护
+- Cost Meter × ModLens 双倍计价防护：记账守卫（llm/stream）+ 历史回填守卫（backfill.js）+ 账本自动清理（每次启动执行；也可手动运行 `scripts\Repair-CostMeterLedger.ps1`）
 - Profile pnpm store v10/v11 匹配，避免交叉迁移
 
 ## 卸载
