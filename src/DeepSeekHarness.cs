@@ -38,6 +38,7 @@ namespace DeepSeekHarnessDesktop
         public bool developerMode { get; set; }
         public string dshVersion { get; set; }
         public string dshPath { get; set; }
+        public string dshRunnerMode { get; set; }
         public string profileName { get; set; }
 
         public AppSettings()
@@ -55,6 +56,7 @@ namespace DeepSeekHarnessDesktop
             developerMode = false;
             dshVersion = "0.1.0-rc.7";
             dshPath = "";
+            dshRunnerMode = "auto";
             profileName = "web";
         }
 
@@ -79,6 +81,8 @@ namespace DeepSeekHarnessDesktop
                     value.dshVersion = "0.1.0-rc.7";
                 value.dshVersion = NormalizeDshVersion(value.dshVersion);
                 if (value.dshPath == null) value.dshPath = "";
+                if (value.dshRunnerMode != "command" && value.dshRunnerMode != "npx" && value.dshRunnerMode != "auto")
+                    value.dshRunnerMode = "auto";
                 value.profileName = NormalizeProfileName(value.profileName);
 
                 // Older DesktopShell builds used (-1,-1) as "no saved position", which broke legitimate
@@ -124,6 +128,7 @@ namespace DeepSeekHarnessDesktop
             developerMode = other.developerMode;
             dshVersion = NormalizeDshVersion(other.dshVersion);
             dshPath = other.dshPath ?? "";
+            dshRunnerMode = (other.dshRunnerMode == "command" || other.dshRunnerMode == "npx") ? other.dshRunnerMode : "auto";
             profileName = NormalizeProfileName(other.profileName);
         }
 
@@ -145,7 +150,22 @@ namespace DeepSeekHarnessDesktop
             {
                 if (!(Char.IsLetterOrDigit(c) || c == '-' || c == '_')) return "web";
             }
-            return profile;
+            return IsReservedProfileName(profile) ? "web" : profile;
+        }
+
+        // 官方 DSH 禁止 node_modules；Windows 设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）不能作目录名
+        private static bool IsReservedProfileName(string profile)
+        {
+            string lower = profile.ToLowerInvariant();
+            if (lower == "node_modules" || lower == "con" || lower == "prn" ||
+                lower == "aux" || lower == "nul") return true;
+            if ((lower.StartsWith("com", StringComparison.Ordinal) ||
+                 lower.StartsWith("lpt", StringComparison.Ordinal)) && lower.Length == 4)
+            {
+                int n;
+                if (Int32.TryParse(lower.Substring(3), out n) && n >= 1 && n <= 9) return true;
+            }
+            return false;
         }
 
         public void Save(string path)
@@ -390,8 +410,14 @@ namespace DeepSeekHarnessDesktop
         private const string CostMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper";
         private const string BackfillMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper in backfill replay";
 
-        public static void ApplyAll(string desktopDirectory, string logsDirectory, string profileName)
+        /// <summary>
+        /// 兼容修复入口。apply=false 时只做只读检测并返回待修复项数量（不写任何文件），
+        /// 用于端口上已附着外部 DSH 的场景——运行中的 DSH 在内存持有账本，关停时会
+        /// 写回，直接修文件会被覆盖。返回值为（待）修复项数量。
+        /// </summary>
+        public static int ApplyAll(string desktopDirectory, string logsDirectory, string profileName, bool apply)
         {
+            int pending = 0;
             try
             {
                 string dshHome = Environment.GetEnvironmentVariable("DSH_HOME");
@@ -402,20 +428,24 @@ namespace DeepSeekHarnessDesktop
                         ".dsh");
                 }
 
-                if (String.IsNullOrWhiteSpace(dshHome)) return;
+                if (String.IsNullOrWhiteSpace(dshHome)) return 0;
                 if (!Directory.Exists(logsDirectory)) Directory.CreateDirectory(logsDirectory);
 
                 StringBuilder log = new StringBuilder();
                 log.AppendLine("DeepSeek Harness DesktopShell plugin compatibility");
+                log.AppendLine("Mode: " + (apply ? "apply" : "dry-run (external DSH attached, no writes)"));
                 log.AppendLine("Checked: " + DateTime.Now.ToString("O"));
                 log.AppendLine("DSH_HOME: " + dshHome);
 
                 string profile = AppSettings.NormalizeProfileName(profileName);
                 log.AppendLine("Profile: " + profile);
-                RepairSentinel(dshHome, profile, log);
-                RepairCostMeterModLens(dshHome, profile, log);
-                RepairCostMeterBackfill(dshHome, profile, log);
-                RepairCostMeterLedger(dshHome, log);
+                if (RepairSentinel(dshHome, profile, log, apply)) pending++;
+                if (RepairCostMeterModLens(dshHome, profile, log, apply)) pending++;
+                if (RepairCostMeterBackfill(dshHome, profile, log, apply)) pending++;
+                if (RepairCostMeterLedger(dshHome, log, apply)) pending++;
+                log.AppendLine(apply
+                    ? ("Applied repairs: " + pending)
+                    : ("Pending repairs (skipped): " + pending));
 
                 File.WriteAllText(
                     Path.Combine(logsDirectory, "plugin-compat.log"),
@@ -426,15 +456,16 @@ namespace DeepSeekHarnessDesktop
             {
                 // Compatibility repair must never prevent the shell itself from starting.
             }
+            return pending;
         }
 
-        private static void RepairSentinel(string dshHome, string profileName, StringBuilder log)
+        private static bool RepairSentinel(string dshHome, string profileName, StringBuilder log, bool apply)
         {
             string path = Path.Combine(dshHome, "profiles", profileName, "node_modules", "dsh-sentinel", "lib", "client.js");
             if (!File.Exists(path))
             {
                 log.AppendLine("Sentinel: not installed; skipped.");
-                return;
+                return false;
             }
 
             try
@@ -445,34 +476,43 @@ namespace DeepSeekHarnessDesktop
 
                 if (wrongCount == 1 && rightCount == 0)
                 {
-                    source = source.Replace(SentinelWrongId, SentinelRightId);
-                    WriteAtomic(path, source);
-                    log.AppendLine("Sentinel: repaired client bundle id.");
+                    if (apply)
+                    {
+                        source = source.Replace(SentinelWrongId, SentinelRightId);
+                        WriteAtomic(path, source);
+                        log.AppendLine("Sentinel: repaired client bundle id.");
+                        CleanupFiles(Path.GetDirectoryName(path), "client.js.before-client-id-fix-*.bak");
+                    }
+                    else
+                    {
+                        log.AppendLine("Sentinel: pending client bundle id repair (skipped: external DSH attached).");
+                    }
+                    return true;
                 }
                 else if (wrongCount == 0 && rightCount >= 1)
                 {
                     log.AppendLine("Sentinel: already healthy / upstream fixed; no action.");
+                    if (apply) CleanupFiles(Path.GetDirectoryName(path), "client.js.before-client-id-fix-*.bak");
                 }
                 else
                 {
                     log.AppendLine("Sentinel: unrecognized bundle shape; left untouched.");
                 }
-
-                CleanupFiles(Path.GetDirectoryName(path), "client.js.before-client-id-fix-*.bak");
             }
             catch (Exception ex)
             {
                 log.AppendLine("Sentinel: repair failed: " + ex.Message);
             }
+            return false;
         }
 
-        private static void RepairCostMeterModLens(string dshHome, string profileName, StringBuilder log)
+        private static bool RepairCostMeterModLens(string dshHome, string profileName, StringBuilder log, bool apply)
         {
             string path = Path.Combine(dshHome, "profiles", profileName, "node_modules", "dsh-cost-meter", "lib", "index.js");
             if (!File.Exists(path))
             {
                 log.AppendLine("Cost meter: not installed; skipped.");
-                return;
+                return false;
             }
 
             try
@@ -481,8 +521,8 @@ namespace DeepSeekHarnessDesktop
                 if (source.IndexOf(CostMarker, StringComparison.Ordinal) >= 0)
                 {
                     log.AppendLine("Cost meter: ModLens de-dup already active.");
-                    CleanupFiles(Path.GetDirectoryName(path), "index.js.before-modlens-dedup-*.bak");
-                    return;
+                    if (apply) CleanupFiles(Path.GetDirectoryName(path), "index.js.before-modlens-dedup-*.bak");
+                    return false;
                 }
 
                 int handler = source.IndexOf("ctx.on('llm/stream'", StringComparison.Ordinal);
@@ -492,14 +532,14 @@ namespace DeepSeekHarnessDesktop
                 if (handler < 0)
                 {
                     log.AppendLine("Cost meter: llm/stream handler not found; left untouched.");
-                    return;
+                    return false;
                 }
 
                 int account = source.IndexOf("ledger.account(", handler, StringComparison.Ordinal);
                 if (account < 0)
                 {
                     log.AppendLine("Cost meter: ledger.account call not found; left untouched.");
-                    return;
+                    return false;
                 }
 
                 string region = source.Substring(handler, account - handler);
@@ -507,8 +547,8 @@ namespace DeepSeekHarnessDesktop
                     region.IndexOf("modlens-", StringComparison.Ordinal) >= 0)
                 {
                     log.AppendLine("Cost meter: upstream already contains ModLens filtering; no action.");
-                    CleanupFiles(Path.GetDirectoryName(path), "index.js.before-modlens-dedup-*.bak");
-                    return;
+                    if (apply) CleanupFiles(Path.GetDirectoryName(path), "index.js.before-modlens-dedup-*.bak");
+                    return false;
                 }
 
                 string needle = "if (usage !== null) {";
@@ -516,7 +556,13 @@ namespace DeepSeekHarnessDesktop
                 if (condition < 0 || condition > account)
                 {
                     log.AppendLine("Cost meter: expected usage guard not found; left untouched.");
-                    return;
+                    return false;
+                }
+
+                if (!apply)
+                {
+                    log.AppendLine("Cost meter: pending ModLens synthetic-provider double billing repair (skipped: external DSH attached).");
+                    return true;
                 }
 
                 string replacement =
@@ -530,11 +576,13 @@ namespace DeepSeekHarnessDesktop
                 WriteAtomic(path, source);
                 log.AppendLine("Cost meter: repaired ModLens synthetic-provider double billing.");
                 CleanupFiles(Path.GetDirectoryName(path), "index.js.before-modlens-dedup-*.bak");
+                return true;
             }
             catch (Exception ex)
             {
                 log.AppendLine("Cost meter: repair failed: " + ex.Message);
             }
+            return false;
         }
 
         /// <summary>
@@ -543,14 +591,14 @@ namespace DeepSeekHarnessDesktop
         /// request/header + usage 事件。若不拦截，任何被清空/新建的账本都会在启动
         /// 回填时把合成条目重新计回（双倍计价“复发”的根因）。与 index.js 的守卫一致。
         /// </summary>
-        private static void RepairCostMeterBackfill(string dshHome, string profileName, StringBuilder log)
+        private static bool RepairCostMeterBackfill(string dshHome, string profileName, StringBuilder log, bool apply)
         {
             string path = Path.Combine(dshHome, "profiles", profileName, "node_modules",
                 "dsh-cost-meter", "lib", "backfill.js");
             if (!File.Exists(path))
             {
                 log.AppendLine("Cost meter backfill: not installed; skipped.");
-                return;
+                return false;
             }
 
             try
@@ -559,8 +607,8 @@ namespace DeepSeekHarnessDesktop
                 if (source.IndexOf(BackfillMarker, StringComparison.Ordinal) >= 0)
                 {
                     log.AppendLine("Cost meter backfill: ModLens skip already active.");
-                    CleanupFiles(Path.GetDirectoryName(path), "backfill.js.before-modlens-backfill-fix-*.bak");
-                    return;
+                    if (apply) CleanupFiles(Path.GetDirectoryName(path), "backfill.js.before-modlens-backfill-fix-*.bak");
+                    return false;
                 }
 
                 string anchor = "    const atMs = Number(event.time)";
@@ -568,7 +616,13 @@ namespace DeepSeekHarnessDesktop
                 if (at < 0)
                 {
                     log.AppendLine("Cost meter backfill: anchor not found; left untouched.");
-                    return;
+                    return false;
+                }
+
+                if (!apply)
+                {
+                    log.AppendLine("Cost meter backfill: pending ModLens replay skip repair (skipped: external DSH attached).");
+                    return true;
                 }
 
                 string patch =
@@ -579,11 +633,13 @@ namespace DeepSeekHarnessDesktop
                 WriteAtomic(path, source);
                 log.AppendLine("Cost meter backfill: repaired ModLens replay skip.");
                 CleanupFiles(Path.GetDirectoryName(path), "backfill.js.before-modlens-backfill-fix-*.bak");
+                return true;
             }
             catch (Exception ex)
             {
                 log.AppendLine("Cost meter backfill: repair failed: " + ex.Message);
             }
+            return false;
         }
 
         /// <summary>
@@ -592,13 +648,13 @@ namespace DeepSeekHarnessDesktop
         /// 并从日/会话合计中扣减对应 token 与金额；修改前自动备份。
         /// 与 scripts/Repair-CostMeterLedger.ps1 逻辑一致，桌面壳每次启动时执行。
         /// </summary>
-        private static void RepairCostMeterLedger(string dshHome, StringBuilder log)
+        private static bool RepairCostMeterLedger(string dshHome, StringBuilder log, bool apply)
         {
             string path = Path.Combine(dshHome, "storages", "cost-meter", "ledger.json");
             if (!File.Exists(path))
             {
                 log.AppendLine("Cost meter ledger: not found; skipped.");
-                return;
+                return false;
             }
 
             try
@@ -613,13 +669,13 @@ namespace DeepSeekHarnessDesktop
                 catch
                 {
                     log.AppendLine("Cost meter ledger: unparseable; left untouched.");
-                    return;
+                    return false;
                 }
 
                 if (ledger == null || !ledger.ContainsKey("days"))
                 {
                     log.AppendLine("Cost meter ledger: no days; skipped.");
-                    return;
+                    return false;
                 }
 
                 bool changed = false;
@@ -662,7 +718,14 @@ namespace DeepSeekHarnessDesktop
                 if (!changed)
                 {
                     log.AppendLine("Cost meter ledger: no synthetic ModLens entries; clean.");
-                    return;
+                    return false;
+                }
+
+                if (!apply)
+                {
+                    log.AppendLine("Cost meter ledger: pending removal of " + removedBuckets + " synthetic bucket(s) (" +
+                        removedCalls + " calls, " + removedCost.ToString("0.######") + " CNY) (skipped: external DSH attached).");
+                    return true;
                 }
 
                 string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
@@ -671,11 +734,13 @@ namespace DeepSeekHarnessDesktop
                 WriteAtomic(path, serializer.Serialize(ledger));
                 log.AppendLine("Cost meter ledger: removed " + removedBuckets + " synthetic bucket(s) (" +
                     removedCalls + " calls, " + removedCost.ToString("0.######") + " CNY); backup " + bak);
+                return true;
             }
             catch (Exception ex)
             {
                 log.AppendLine("Cost meter ledger: repair failed: " + ex.Message);
             }
+            return false;
         }
 
         private static int RemoveSyntheticLedgerBuckets(Dictionary<string, object> parent,
@@ -888,8 +953,10 @@ namespace DeepSeekHarnessDesktop
             return IsLikelyDshProcess(pid, out commandLine);
         }
 
-        public void EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath)
+        public void EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode)
         {
+            if (runnerMode != "npx" && runnerMode != "command") runnerMode = "auto";
+
             if (IsReady(port, 350))
             {
                 int existingPid = FindListeningPid(port);
@@ -922,14 +989,31 @@ namespace DeepSeekHarnessDesktop
             string command = configuredDshPath == null ? "" : configuredDshPath.Trim();
             bool usingNpx = false;
 
-            if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
-                command = FindCommand("dsh");
-
-            if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
+            // dshRunnerMode 两端一致：npx=绝不回捡 PATH 里的 dsh；
+            // command=只用现有 dsh（找不到即报错，不悄悄转 npx）；auto=有 dsh 用 dsh，否则 npx。
+            if (runnerMode == "npx")
             {
-                command = FindCommand("npx");
                 usingNpx = true;
             }
+            else
+            {
+                if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
+                    command = FindCommand("dsh");
+
+                if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
+                {
+                    if (runnerMode == "command")
+                    {
+                        throw new InvalidOperationException(
+                            "设置要求使用现有 dsh（dshRunnerMode=command），但 PATH 中找不到 dsh 命令。\r\n\r\n" +
+                            "请安装官方 DeepSeek Harness，或在设置中把运行方式改为“自动”或“仅 npx”。");
+                    }
+                    usingNpx = true;
+                }
+            }
+
+            if (usingNpx)
+                command = FindCommand("npx");
 
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
             {
@@ -1144,10 +1228,10 @@ namespace DeepSeekHarnessDesktop
         }
 
         public void RestartBackend(int port, string workingDirectory, string logsDirectory,
-            string requestedVersion, string profileName, string configuredDshPath, bool allowExternalStop)
+            string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowExternalStop)
         {
             StopBackend(port, allowExternalStop);
-            EnsureStarted(port, workingDirectory, logsDirectory, requestedVersion, profileName, configuredDshPath);
+            EnsureStarted(port, workingDirectory, logsDirectory, requestedVersion, profileName, configuredDshPath, runnerMode);
         }
 
         private static void CleanupOldLogs(string directory)
@@ -1490,6 +1574,7 @@ namespace DeepSeekHarnessDesktop
         private TextBox workdirText;
         private TextBox versionText;
         private TextBox profileText;
+        private ComboBox runnerCombo;
         private NumericUpDown portBox;
         private CheckBox restoreCheck;
         private CheckBox developerCheck;
@@ -1503,7 +1588,7 @@ namespace DeepSeekHarnessDesktop
 
             Text = "DeepSeek Harness 设置";
             Width = 620;
-            Height = 575;
+            Height = 615;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -1636,46 +1721,64 @@ namespace DeepSeekHarnessDesktop
             profileHint.ForeColor = dark ? Color.Silver : Color.DimGray;
             Controls.Add(profileHint);
 
+            Label runnerLabel = new Label();
+            runnerLabel.Text = "DSH 运行方式";
+            runnerLabel.AutoSize = true;
+            runnerLabel.Left = leftLabel;
+            runnerLabel.Top = 391;
+            Controls.Add(runnerLabel);
+
+            runnerCombo = new ComboBox();
+            runnerCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+            runnerCombo.Items.AddRange(new object[] { "自动（优先现有 dsh，否则 npx）", "现有 dsh", "仅 npx" });
+            runnerCombo.Left = leftControl;
+            runnerCombo.Top = 385;
+            runnerCombo.Width = 280;
+            runnerCombo.SelectedIndex =
+                draft.dshRunnerMode == "command" ? 1 :
+                draft.dshRunnerMode == "npx" ? 2 : 0;
+            Controls.Add(runnerCombo);
+
             Label versionLabel = new Label();
-            versionLabel.Text = "DSH / npx 版本";
+            versionLabel.Text = "npx 版本";
             versionLabel.AutoSize = true;
             versionLabel.Left = leftLabel;
-            versionLabel.Top = 391;
+            versionLabel.Top = 429;
             Controls.Add(versionLabel);
 
             versionText = new TextBox();
             versionText.Left = leftControl;
-            versionText.Top = 385;
+            versionText.Top = 423;
             versionText.Width = 180;
             versionText.Text = AppSettings.NormalizeDshVersion(draft.dshVersion);
             versionText.ReadOnly = true;
             Controls.Add(versionText);
 
             Label versionHint = new Label();
-            versionHint.Text = "优先使用现有 dsh；不存在时用 npx 运行此版本，不做全局安装。";
+            versionHint.Text = "仅 npx 方式使用此版本，不做全局安装；在管理器中调整。";
             versionHint.AutoSize = true;
             versionHint.Left = 382;
-            versionHint.Top = 389;
+            versionHint.Top = 427;
             versionHint.Tag = "secondary";
             versionHint.ForeColor = dark ? Color.Silver : Color.DimGray;
             Controls.Add(versionHint);
 
-            Label shellTitle = Header("桌面壳", 428);
+            Label shellTitle = Header("桌面壳", 466);
             Controls.Add(shellTitle);
 
             developerCheck = new CheckBox();
             developerCheck.Text = "开发者模式（允许 WebView2 DevTools）";
             developerCheck.AutoSize = true;
             developerCheck.Left = leftControl;
-            developerCheck.Top = 466;
+            developerCheck.Top = 504;
             developerCheck.Checked = draft.developerMode;
             Controls.Add(developerCheck);
 
             Label hint = new Label();
-            hint.Text = "工作目录、端口、Profile和开发者模式在下次启动时生效；npx版本在管理器中调整。";
+            hint.Text = "工作目录、端口、Profile、运行方式和开发者模式在下次启动时生效；npx 版本在管理器中调整。";
             hint.AutoSize = true;
             hint.Left = leftControl;
-            hint.Top = 492;
+            hint.Top = 530;
             hint.Tag = "secondary";
             hint.ForeColor = dark ? Color.Silver : Color.DimGray;
             Controls.Add(hint);
@@ -1685,7 +1788,7 @@ namespace DeepSeekHarnessDesktop
             save.Width = 90;
             save.Height = 32;
             save.Left = 390;
-            save.Top = 506;
+            save.Top = 544;
             save.Click += delegate
             {
                 draft.closeAction =
@@ -1698,6 +1801,9 @@ namespace DeepSeekHarnessDesktop
                 draft.port = Decimal.ToInt32(portBox.Value);
                 draft.developerMode = developerCheck.Checked;
                 draft.dshVersion = AppSettings.NormalizeDshVersion(versionText.Text);
+                draft.dshRunnerMode =
+                    runnerCombo.SelectedIndex == 1 ? "command" :
+                    runnerCombo.SelectedIndex == 2 ? "npx" : "auto";
                 draft.profileName = AppSettings.NormalizeProfileName(profileText.Text);
                 DialogResult = DialogResult.OK;
                 Close();
@@ -1709,7 +1815,7 @@ namespace DeepSeekHarnessDesktop
             cancel.Width = 90;
             cancel.Height = 32;
             cancel.Left = 490;
-            cancel.Top = 506;
+            cancel.Top = 544;
             cancel.Click += delegate { DialogResult = DialogResult.Cancel; Close(); };
             Controls.Add(cancel);
 
@@ -1765,6 +1871,7 @@ namespace DeepSeekHarnessDesktop
         private bool healthCheckBusy;
         private bool restartBusy;
         private int healthFailures;
+        private int compatPendingAtStartup;
         private string overlayReason;
         private Icon runtimeIcon;
         private ContextMenuStrip activeWebContextMenu;
@@ -2018,15 +2125,28 @@ namespace DeepSeekHarnessDesktop
             {
                 await Task.Run(delegate
                 {
-                    // 每次启动 DSH 前都执行兼容修复（幂等）
-                    PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName);
+                    // 先探测后端：端口上已有外部 DSH 时，不在其运行期间修改插件/账本
+                    // （运行中的 DSH 在内存持有账本，关停时会写回，覆盖清理结果）。
+                    // 附着模式只做只读检测；若有待修复项，启动完成后提示重启。
+                    bool externalDsh = false;
+                    if (dsh.IsReady(settings.port, 350))
+                    {
+                        int pid = dsh.FindListeningPid(settings.port);
+                        string commandLine;
+                        if (pid > 0 && dsh.IsLikelyDshProcess(pid, out commandLine)) externalDsh = true;
+                    }
+
+                    compatPendingAtStartup = PluginCompat.ApplyAll(
+                        baseDirectory, logsDirectory, settings.profileName, !externalDsh);
+
                     dsh.EnsureStarted(
                         settings.port,
                         settings.workingDirectory,
                         logsDirectory,
                         settings.dshVersion,
                         settings.profileName,
-                        settings.dshPath);
+                        settings.dshPath,
+                        settings.dshRunnerMode);
                 });
 
                 loadingLabel.Text = "正在初始化 WebView2...";
@@ -2041,6 +2161,19 @@ namespace DeepSeekHarnessDesktop
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
+
+                if (compatPendingAtStartup > 0)
+                {
+                    ShowOverlay(
+                        "compat",
+                        "检测到外部 DSH 后端正在运行。为避免与运行中的后端冲突，本次未执行 " +
+                        compatPendingAtStartup.ToString() + " 项兼容修复。\r\n\r\n" +
+                        "点击“重启 DSH 后端”接管后端后会自动完成修复。",
+                        "重启 DSH 后端",
+                        OnOverlayRestartBackend,
+                        "稍后",
+                        OnOverlayDismiss);
+                }
             }
             catch (Exception ex)
             {
@@ -2445,17 +2578,19 @@ namespace DeepSeekHarnessDesktop
                     // 兼容修复在「停止旧后端之后、启动新后端之前」执行：
                     // 升级插件后点“重启 DSH 后端”也能吃到兼容补丁（账本清理也不会被旧后端关停写回覆盖）。
                     dsh.StopBackend(settings.port, allowExternal);
-                    PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName);
+                    PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
                     dsh.EnsureStarted(
                         settings.port,
                         settings.workingDirectory,
                         logsDirectory,
                         settings.dshVersion,
                         settings.profileName,
-                        settings.dshPath);
+                        settings.dshPath,
+                        settings.dshRunnerMode);
                 });
 
                 healthFailures = 0;
+                compatPendingAtStartup = 0;
                 webViewReady = true;
                 ReloadDshPage();
                 HideOverlay();
@@ -2562,6 +2697,11 @@ namespace DeepSeekHarnessDesktop
         {
             healthFailures = 1;
             await CheckBackendHealthAsync();
+        }
+
+        private void OnOverlayDismiss(object sender, EventArgs e)
+        {
+            HideOverlay();
         }
 
         private void OnOverlayOpenLogs(object sender, EventArgs e)
