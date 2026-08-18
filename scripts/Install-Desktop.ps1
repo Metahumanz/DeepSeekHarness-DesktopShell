@@ -68,8 +68,6 @@ $legacyDesktopDir = Join-Path $dshHome 'desktop'
 $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeepSeek Harness'
 
 $installStatePath = Join-Path $desktopDir 'install-state.json'
-$dshHomeExistedBefore = Test-Path -LiteralPath $dshHome -PathType Container
-$webProfileExistedBefore = Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf
 
 Write-Host ''
 Write-Host 'DeepSeek Harness DesktopShell v1.0.0' -ForegroundColor Cyan
@@ -137,14 +135,37 @@ if ($LASTEXITCODE -ne 0) {
     Fail "初始化向导失败（退出码 $LASTEXITCODE），安装已中止。"
 }
 
+# 升级时继承第一次安装的历史事实（dshHomeExistedBeforeInstall 等），
+# 并记录 firstInstalledAt / lastUpdatedAt（见 Install-Release.ps1 同段注释）。
+$nowIso = (Get-Date).ToString('o')
+$priorState = $null
+if (Test-Path -LiteralPath $installStatePath -PathType Leaf) {
+    try { $priorState = Get-Content -LiteralPath $installStatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $priorState = $null }
+}
+$dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
+    [bool]$priorState.dshHomeExistedBeforeInstall
+} else {
+    [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+}
+$webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
+    [bool]$priorState.webProfileExistedBeforeInstall
+} else {
+    [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+}
+$firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
+    elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
+    else { $nowIso }
+
 $state = [ordered]@{
     schemaVersion = 1
     product = 'DeepSeek Harness DesktopShell'
     version = '1.0.0'
     dshHome = $dshHome
-    dshHomeExistedBeforeInstall = [bool]$dshHomeExistedBefore
-    webProfileExistedBeforeInstall = [bool]$webProfileExistedBefore
-    installedAt = (Get-Date).ToString('o')
+    dshHomeExistedBeforeInstall = $dshHomeExistedBefore
+    webProfileExistedBeforeInstall = $webProfileExistedBefore
+    firstInstalledAt = $firstInstalledAt
+    installedAt = $nowIso
+    lastUpdatedAt = $nowIso
 }
 Write-Utf8NoBom $installStatePath (($state | ConvertTo-Json -Depth 10))
 

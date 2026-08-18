@@ -249,14 +249,40 @@ try {
         $raw = (Get-Content -LiteralPath $versionFile -Raw -ErrorAction SilentlyContinue).Trim()
         if ($raw) { $stateVersion = $raw }
     }
+
+    # 升级时继承第一次安装的历史事实（dshHomeExistedBeforeInstall 等）。
+    # 否则升级一次后“安装前 DSH_HOME 已存在”的判断就会从 false 漂移成 true，
+    # 卸载器会错误地警告用户“这份 DSH_HOME 在安装 DesktopShell 之前已存在”。
+    $nowIso = (Get-Date).ToString('o')
+    $priorState = $null
+    $priorStatePath = Join-Path $InstallDir 'install-state.json'
+    if (Test-Path -LiteralPath $priorStatePath -PathType Leaf) {
+        try { $priorState = Get-Content -LiteralPath $priorStatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $priorState = $null }
+    }
+    $dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
+        [bool]$priorState.dshHomeExistedBeforeInstall
+    } else {
+        [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+    }
+    $webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
+        [bool]$priorState.webProfileExistedBeforeInstall
+    } else {
+        [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+    }
+    $firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
+        elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
+        else { $nowIso }
+
     $state = [ordered]@{
         schemaVersion = 1
         product = 'DeepSeek Harness DesktopShell'
         version = $stateVersion
         dshHome = $dshHome
-        dshHomeExistedBeforeInstall = [bool](Test-Path -LiteralPath $dshHome -PathType Container)
-        webProfileExistedBeforeInstall = [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
-        installedAt = (Get-Date).ToString('o')
+        dshHomeExistedBeforeInstall = $dshHomeExistedBefore
+        webProfileExistedBeforeInstall = $webProfileExistedBefore
+        firstInstalledAt = $firstInstalledAt
+        installedAt = $nowIso
+        lastUpdatedAt = $nowIso
     }
     Write-Utf8NoBom (Join-Path $InstallDir 'install-state.json') (($state | ConvertTo-Json -Depth 10))
 
