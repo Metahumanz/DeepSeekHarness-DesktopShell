@@ -2,6 +2,24 @@
 
 本项目的用户可见变更记录。安全边界与修复细节见 [docs/AUDIT.md](docs/AUDIT.md)。
 
+## v1.0.0 修订（同 tag 覆盖发布，2026-08-19）
+
+在 v1.0.0 首次发布后的第三方审计基础上，同 tag 覆盖发布修复版：
+
+- 支持 Windows PowerShell 5.1（脚本统一 UTF-8 BOM、去 PS7 专属编码依赖；CI 双宿主验证）
+- `dshRunnerMode`（auto/command/npx）持久化，PS 与 C# 双端一致——修复“选 npx 实际仍跑 PATH 里的旧 dsh”
+- DSH 兼容策略改为“已验证版本”：仅 rc.7 直接放行，更旧/更新/无法解析一律明确询问
+- 外部 DSH 附着时兼容修复只做只读检测，提示“重启 DSH 后端”后完成（不再和运行中的后端抢账本）
+- 完整卸载先确认并停止外部 DSH，停止失败或身份不明时降级为仅卸载壳
+- 升级继承 install-state 首次安装事实（`dshHomeExistedBeforeInstall` 等）并记录 `firstInstalledAt`/`lastUpdatedAt`
+- Profile 名禁止 `node_modules` 与 Windows 设备保留名（PS/C# 双端）
+- 后台健康检查降频：自家后端进程存活 + TCP；外部后端 30 秒 PID 身份缓存，避免每 5 秒拉起 netstat/CIM
+- CI 与 Release 共用 `tests/verify.ps1` 门禁（解析 + PSScriptAnalyzer + 五项回归测试，pwsh 与 PowerShell 5.1 双跑）
+- 安装事务化：Preflight → Stage → Initialize → Commit；升级保留 `DeepSeekHarness.exe.previous` 以便回滚；源码安装器改为先编译后向导
+- 开始菜单只管理自有三个快捷方式，不再整目录删除
+- 未知 pnpm store 版本 fail closed（不再静默退回 pnpm 10）
+- Release 工作流支持同 tag 覆盖发布（先删除旧 Release 再重建）
+
 ## v1.0.0（2026-08-19）
 
 首个公开发布。当前基线：DesktopShell v1.0.0 · DSH 0.1.0-rc.7 · Windows 10/11 x64。

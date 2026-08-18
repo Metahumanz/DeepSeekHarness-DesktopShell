@@ -159,3 +159,41 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 验证：四项回归测试全部通过（版本门槛 15 断言、账本正则、安装所有权 10 项、卸载守卫 3 项）；
 `csc` 编译通过；全部脚本 `[Parser]::ParseFile` 通过；`Build-Release`（x64，固定 SDK 1.0.4078.44，
 EXE FileVersion 1.0.0.0）成功，zip 自校验 14 文件。
+
+## 9. 2026-08-19 第五轮修复（第三方第二轮审计：首批 6 项 + 第二批 + PowerShell 5.1）
+
+### 前置：支持 Windows PowerShell 5.1
+
+| 修复 | 说明 |
+| --- | --- |
+| 编码 | 全部 .ps1 加 UTF-8 BOM（5.1 无 BOM 会按 ANSI 读，中文注释吞引号致解析失败）；`-Encoding utf8NoBOM` 统一改为 .NET `WriteAllText(UTF8Encoding(false))`；`[ref]` 前变量用空数组占位 |
+| 入口 | `install.bat`（根目录 + 发布包模板）优先 pwsh、回退 Windows PowerShell；Install-Desktop 去掉 PS7 强制门槛，改为 >=5.1；README 前置条件更新 |
+| CI | 门禁在 pwsh 与 PowerShell 5.1 双宿主各跑一遍 |
+
+### 首批 6 项
+
+| # | 级别 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 1 | P1 | "改用 npx"只把 dshPath 写空，Get-CurrentSettings 和 C# 都会重新回捡 PATH 里的旧 dsh | 新增 `dshRunnerMode`（auto/command/npx）持久化到 settings.json：PS 端 npx 模式绝不回捡 PATH；C# `EnsureStarted` 严格遵守（command 找不到 dsh 直接报错，npx 永远走 npx）；设置窗口加"DSH 运行方式"下拉；`tests/test-runner-mode.ps1` 端到端回归（rc.6/rc.8 场景断言 mode=npx 且 dshPath 为空） |
+| 2 | P1 | 启动时先 ApplyAll 再探测后端，附着外部 DSH 时直接修改插件/账本（运行中后端关停会写回覆盖） | `PluginCompat.ApplyAll(…, apply)` 双模式：附着外部 DSH 时只做只读检测；有挂起项则启动完成后覆盖层提示"重启 DSH 后端"（重启路径本就是 停止→修复→启动） |
+| 3 | P1 | 完整卸载不停外部 DSH 就删 DSH_HOME | 卸载器读 settings.json 端口 → TCP → netstat PID → CIM 命令行 → 特征确认是 DSH → 交互询问/-Force 直接停；停止失败或身份不明 → 降级为仅卸载壳 |
+| 4 | P1 | 兼容门槛只有"最低 rc.7"，更高版本被静默信任 | 改为"已验证版本"：仅 rc.7 放行；更旧=不支持、更新=未验证、无法解析=未验证，一律明确询问/非交互改 npx（`tests/test-dsh-version.ps1` 更新为 0.2.0/1.0.0/rc.8 均 $false） |
+| 5 | P1/P2 | 升级重写 dshHomeExistedBeforeInstall，历史事实漂移 | 升级读取旧 install-state 继承 `dshHomeExistedBeforeInstall`/`webProfileExistedBeforeInstall`，新增 `firstInstalledAt`/`lastUpdatedAt`（两个安装器同步） |
+| 6 | P2 | Profile 可叫 node_modules；未挡 Windows 设备名 | PS/C# 双端保留名：node_modules、CON/PRN/AUX/NUL、COM1-9、LPT1-9 → 回退 web（`tests/test-runner-mode.ps1` 14 项断言） |
+
+### 第二批
+
+| # | 修复 |
+| --- | --- |
+| 健康检查 | `DshProcessManager.IsDshHealthy`：自家后端 = 进程存活 + TCP；外部后端 = TCP + 30 秒 PID 身份缓存，只有过期/端口变化才跑 netstat+CIM |
+| 统一门禁 | `tests/verify.ps1`（解析 + PSScriptAnalyzer + 五项回归测试，宿主自适应）；CI 与 Release 工作流共用，不再维护两份测试列表 |
+| 安装事务 | `Install-Release.ps1` 改为 Preflight（完整性/危险路径/所有权/WebView2）→ Stage（旁路目录组装+携带 settings/logs/webview2-data）→ Initialize（在 stage 上跑管理器）→ Commit（目录交换 + 保留 `DeepSeekHarness.exe.previous`，失败恢复旧目录）；`Install-Desktop.ps1` 改为先编译后向导、状态最后写 |
+| 开始菜单 | 安装/卸载只管理自有三个 .lnk，不再整目录删除 |
+| pnpm | `.modules.yaml` 未知 store 版本（v10/v11 之外）fail closed |
+| 文档 | `THIRD_PARTY_NOTICES.md`：csc 移入"源码构建依赖"；README/CHANGELOG 收敛为"SHA256 完整性校验"措辞；Release 工作流支持同 tag 覆盖发布（先 `gh release delete` 再重建） |
+
+### 测试安全
+
+U3 卸载守卫测试一度按默认 3080 端口把宿主机真实 DSH 当外部后端停止（测试杀掉了测试环境自身）。
+修复：测试在卸载前把临时安装的 settings.json 端口改为探测出的空闲端口（`Get-FreeTcpPort`），
+测试绝不触碰宿主机真实 DSH 端口。

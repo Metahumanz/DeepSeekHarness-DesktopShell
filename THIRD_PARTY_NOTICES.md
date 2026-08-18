@@ -45,9 +45,14 @@ SOFTWARE.
 
 ## 运行时依赖（不随包分发，由用户环境提供）
 
-- PowerShell 7（<https://github.com/PowerShell/PowerShell>，MIT License）
+- Windows PowerShell 5.1 或 PowerShell 7（<https://github.com/PowerShell/PowerShell>，MIT License）
 - Node.js / npm / npx（<https://nodejs.org/>，按 Node.js 自身许可）
-- .NET Framework 4.x csc.exe（Windows 组件）
+- WebView2 Evergreen Runtime（多数 Windows 已内置；缺失时安装器给出官方下载入口）
+
+## 源码构建依赖（仅开发者需要，Release 用户不需要）
+
+- .NET Framework 4.x `csc.exe`（Windows 自带组件）
+- 网络访问（下载固定版本 WebView2 SDK NuGet 包 1.0.4078.44）
 
 ## 社区插件（用户主动安装，不随包分发）
 
