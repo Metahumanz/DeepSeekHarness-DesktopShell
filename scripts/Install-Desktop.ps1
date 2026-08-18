@@ -75,7 +75,8 @@ $filesToCopy = @(
     @{ From='assets\DeepSeekHarness-Dark.ico'; To='DeepSeekHarness-Dark.ico' },
     @{ From='assets\DeepSeekHarness.svg'; To='DeepSeekHarness.svg' },
     @{ From='scripts\Manage-Dsh.ps1'; To='Manage-Dsh.ps1' },
-    @{ From='scripts\Uninstall-DesktopShell.ps1'; To='Uninstall-DesktopShell.ps1' }
+    @{ From='scripts\Uninstall-DesktopShell.ps1'; To='Uninstall-DesktopShell.ps1' },
+    @{ From='scripts\Repair-CostMeterLedger.ps1'; To='Repair-CostMeterLedger.ps1' }
 )
 foreach ($f in $filesToCopy) {
     Copy-Item -LiteralPath (Join-Path $repoRoot $f.From) -Destination (Join-Path $desktopDir $f.To) -Force
@@ -133,13 +134,21 @@ $sdkVersion = '1.0.4078.44'
 $needSdk = -not ((Test-Path $coreDll) -and (Test-Path $winFormsDll) -and (Test-Path $loaderDll))
 
 if (-not $needSdk) {
-    try {
-        $existing = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($coreDll).FileVersion
-        if ([version]$existing -lt [version]$sdkVersion) {
-            Say "现有 WebView2 SDK $existing 过旧，将升级到 $sdkVersion。"
+    # 三件套必须同版本且与固定版本一致，任一不符则整套重新下载（避免混装）
+    foreach ($dll in @($coreDll, $winFormsDll, $loaderDll)) {
+        try {
+            $existing = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($dll).FileVersion
+            if ($existing -ne $sdkVersion) {
+                Say "现有 WebView2 $(Split-Path $dll -Leaf) 版本 $existing 与固定版本 $sdkVersion 不一致，将重新下载整套。"
+                $needSdk = $true
+                break
+            }
+        } catch {
+            Say "无法读取 WebView2 $(Split-Path $dll -Leaf) 版本，将重新下载整套。"
             $needSdk = $true
+            break
         }
-    } catch { $needSdk = $true }
+    }
 }
 
 if ($needSdk) {
@@ -176,15 +185,25 @@ $manifest = Join-Path $desktopDir 'app.manifest'
 $icon = Join-Path $desktopDir 'DeepSeekHarness.ico'
 $exe = Join-Path $desktopDir 'DeepSeekHarness.exe'
 
+# EXE 版本元数据由构建脚本注入（与 install-state/version 一致）
+$versionInfo = Join-Path $env:TEMP ("dsh-versioninfo-" + [Guid]::NewGuid().ToString('N') + '.cs')
+@"
+using System.Reflection;
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyInformationalVersion("1.0.0")]
+"@ | Set-Content -LiteralPath $versionInfo -Encoding ascii
+
 Say '编译 DeepSeekHarness.exe...'
 $compilerArgs = @(
     '/nologo','/target:winexe','/platform:anycpu','/optimize+',
     "/out:$exe", "/win32icon:$icon", "/win32manifest:$manifest",
     '/reference:System.dll','/reference:System.Core.dll','/reference:System.Drawing.dll',
     '/reference:System.Windows.Forms.dll','/reference:System.Web.Extensions.dll',
-    "/reference:$coreDll", "/reference:$winFormsDll", $source
+    "/reference:$coreDll", "/reference:$winFormsDll", $source, $versionInfo
 )
 & $csc @compilerArgs
+Remove-Item -LiteralPath $versionInfo -Force -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Fail "C# 编译失败，退出码 $LASTEXITCODE。" }
 Ok "已生成: $exe"
 

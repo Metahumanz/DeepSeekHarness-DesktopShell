@@ -147,6 +147,9 @@ $appFiles = @(
     'version.txt'
 )
 
+# 随包分发但非必需的文件（旧版发布包没有也不影响安装）
+$optionalFiles = @('install.bat', 'Repair-CostMeterLedger.ps1')
+
 try {
     $missing = @($appFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $SetupDir $_) -PathType Leaf) })
     if ($missing.Count -gt 0) { Fail ("安装包不完整，缺少：{0}" -f ($missing -join '；')) }
@@ -168,7 +171,7 @@ try {
         $entries = @(Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue)
         if ($entries.Count -gt 0) {
             # 豁免：就地安装（SetupDir == InstallDir）且目录内只有发布包自身文件
-            $known = @($appFiles) + @('install.bat')
+            $known = @($appFiles) + $optionalFiles
             $allKnown = $true
             foreach ($e in $entries) {
                 if ($e.PSIsContainer -or ($known -notcontains $e.Name)) { $allKnown = $false; break }
@@ -197,6 +200,11 @@ try {
     if (-not $inPlace) {
         foreach ($f in $appFiles) {
             Copy-Item -LiteralPath (Join-Path $SetupDir $f) -Destination (Join-Path $InstallDir $f) -Force
+        }
+        foreach ($f in $optionalFiles) {
+            if (Test-Path -LiteralPath (Join-Path $SetupDir $f)) {
+                Copy-Item -LiteralPath (Join-Path $SetupDir $f) -Destination (Join-Path $InstallDir $f) -Force
+            }
         }
         $copied = @($appFiles | Where-Object { Test-Path -LiteralPath (Join-Path $InstallDir $_) -PathType Leaf }).Count
         if ($copied -ne $appFiles.Count) { Fail "文件复制不完整（$copied/$($appFiles.Count)）。" }
