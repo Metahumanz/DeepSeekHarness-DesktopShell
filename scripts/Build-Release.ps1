@@ -1,7 +1,9 @@
 param(
     [string]$Version = '1.0.0',
     [string]$OutDir = '',
-    [string]$SdkDir = ''
+    [string]$SdkDir = '',
+    [ValidateSet('x64', 'arm64', 'x86')]
+    [string]$Arch = 'x64'
 )
 
 <#
@@ -11,6 +13,7 @@ param(
 .DESCRIPTION
     1. 定位固定版本（1.0.4078.44）的 WebView2 SDK 三件套：-SdkDir 覆盖（版本必须一致）
        → 同版本 NuGet 包目录 → NuGet 在线下载；不再从多个来源拼凑
+       -Arch 决定 WebView2Loader.dll 变体（x64/arm64/x86，默认 x64；v1.0.0 首发 x64）
     2. 用 .NET Framework csc 编译 DeepSeekHarness.exe，EXE 的
        AssemblyVersion / FileVersion / InformationalVersion 与 -Version 同步
     3. 组装自包含目录（含 Repair-CostMeterLedger.ps1 手工修复工具）并打包 zip
@@ -36,6 +39,8 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # 发布构建固定的 WebView2 SDK 版本（可复现性：三件套必须来自同一个 NuGet 包目录）
 $SdkVersion = '1.0.4078.44'
+# 目标架构决定 WebView2Loader.dll 的变体；默认 x64（v1.0.0 首发只支持 x64 发布包）
+$ArchLoader = switch ($Arch) { 'arm64' { 'win-arm64' } 'x86' { 'win-x86' } default { 'win-x64' } }
 
 function Resolve-Assembly([string]$root, [string]$name, [string]$archFilter = '') {
     if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
@@ -53,10 +58,9 @@ function Resolve-Assembly([string]$root, [string]$name, [string]$archFilter = ''
 }
 
 function Resolve-SdkFromDir([string]$root) {
-    $arch = switch ($env:PROCESSOR_ARCHITECTURE) { 'ARM64' {'win-arm64'} 'x86' {'win-x86'} default {'win-x64'} }
     $core = Resolve-Assembly $root 'Microsoft.Web.WebView2.Core.dll'
     $wf = Resolve-Assembly $root 'Microsoft.Web.WebView2.WinForms.dll'
-    $loader = Resolve-Assembly $root 'WebView2Loader.dll' $arch
+    $loader = Resolve-Assembly $root 'WebView2Loader.dll' $ArchLoader
     if (-not ($core -and $wf -and $loader)) { return $null }
     return [pscustomobject]@{ Core = $core; WinForms = $wf; Loader = $loader; Root = $root }
 }
@@ -130,7 +134,7 @@ try {
         }
         if (-not $sdk) { Fail "无法获取固定版本 $SdkVersion 的 WebView2 SDK 三件套。可用 -SdkDir 指定同一版本的三个 DLL 所在目录。" }
     }
-    Ok ("WebView2 SDK：{0}（固定 {1}）" -f $sdk.Root, $SdkVersion)
+    Ok ("WebView2 SDK：{0}（固定 {1}，目标 {2}）" -f $sdk.Root, $SdkVersion, $Arch)
 
     $staging = Join-Path $env:TEMP ("dsh-release-" + [Guid]::NewGuid().ToString('N'))
     $appDir = Join-Path $staging 'DeepSeek Harness DesktopShell'
