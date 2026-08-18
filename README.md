@@ -1,212 +1,202 @@
 # DeepSeek Harness DesktopShell
 
-Windows 桌面宿主：把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）包装成独立桌面应用。包含 C# WinForms + WebView2 桌面壳、PowerShell 安装 / 管理 / 卸载脚本、插件与兼容配置向导。
+把DeepSeek Harness变成真正的Windows桌面应用。
 
-> 版本：v1.0.0 · 运行环境：Windows 10/11，PowerShell 7
+DesktopShell不是DSH的替代实现：
+它负责Windows窗口、WebView2、托盘、进程管理、安装与插件向导；
+实际Agent仍然运行官方DeepSeek Harness。
 
----
+- 原生Windows窗口与托盘
+- 自动启动/复用DSH
+- 无全局DSH时按官方npx方式运行
+- 插件安装与配置向导
+- Better Sidebar / Rewind / Skills等常用增强
+- 深浅色、DPI、多屏、通知、原生右键菜单
+- DSH崩溃与WebView2异常恢复
+- 安全的端口/进程识别和卸载边界
 
-## 特性
+> 当前基线：DesktopShell v1.0.0 · DSH 0.1.0-rc.7
 
-- **原生桌面窗口**：WebView2 承载 DSH Web 界面，自动适配深色/浅色主题、每显示器 DPI（PerMonitorV2）
-- **按官方方式运行 DSH**：已有 `dsh` 命令直接用；没有则 `npx -y @deepseek-ai/dsh@<版本> web`；**绝不执行 `npm install -g`**
-- **边界安全**：只信任回环地址上的 DSH 页面；端口被非 DSH 进程占用时拒绝附着/结束；未知进程绝不强杀
-- **安装目录所有权**：安装器写入 `.dsh-desktop-shell-root` 所有权标记；卸载器验证标记后才允许递归删除程序目录；拒绝盘符根/用户主目录/系统目录/非空共享目录
-- **供应链校验**：一键安装下载发布包后强制比对同源 `SHA256SUMS.txt`，不一致即中止
-- **进程托管**：Job Object 托管 DSH 后端，桌面壳退出即回收；日志自动轮转（保留 40 个 / 30 天）
-- **单实例**：重复启动会激活已有窗口
-- **托盘与关闭策略**：每次询问 / 关闭到托盘 / 关闭并退出
-- **插件向导**：19 个社区插件目录（推荐/可选）；推荐组合锁定精确版本/commit（可复现），可选插件保留 `@latest`；自动匹配 Profile 的 pnpm store 版本（v10/v11），GitHub git+ssh 传输自动降级为 https
-- **兼容修复**：Sentinel client-id 特征修复、Cost Meter × ModLens 合成提供方重复计费去重（幂等、带标记、原子写入带备份）；每次启动 DSH 前（含"重启 DSH 后端"）自动执行
+## 安装
 
-## 核心原则
+### 前置条件
 
-DeepSeek Harness 官方 README 的运行命令是：
+- Windows 10/11 x64（当前 Release 为 x64 构建）
+- PowerShell 7（需要提前安装，安装器不会自动装）
+- 网络连接
+- WebView2 Runtime：多数 Windows 已自带；安装器会预检，缺失时给出下载入口
 
-```
-npx @deepseek-ai/dsh web
-```
+Node.js不需要提前准备。
+如果未安装兼容版本，首次向导会询问是否通过winget安装。
 
-DesktopShell v1.0.0 按这个模型工作：
+### 一键安装
 
-1. 系统已存在 `dsh` 命令 → 直接使用，不重装、不移动
-2. 系统没有 `dsh` 命令 → 使用 `npx -y @deepseek-ai/dsh@<版本>`
-3. 不执行 `npm install -g`
-
-npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 npm 全局安装。
-
-### 目录边界
-
-| 内容 | 位置 |
-| --- | --- |
-| DesktopShell 程序 | `%LOCALAPPDATA%\Programs\DeepSeek Harness DesktopShell` |
-| DSH 用户数据（Profile/插件/会话/设置/storage） | `%USERPROFILE%\.dsh`（设置 `DSH_HOME` 则使用该路径） |
-
-`~/.dsh` 是 DSH 用户状态目录，**不是** `@deepseek-ai/dsh` 的安装目录。删除 `~/.dsh` 等于清空 DSH 用户状态，但不等于 npm uninstall；DesktopShell 卸载不会删除 `~/.dsh`（除非选择"完整卸载"）。
-
-### 安装目录所有权
-
-卸载器会递归删除 DesktopShell 所在目录，因此安装器必须先证明目录所有权：
-
-- 安装时写入 `.dsh-desktop-shell-root` 标记（卸载前再次验证；旧版安装凭 `install-state.json` 的 `product` 字段）
-- 自定义 `-InstallDir` 指向**已存在且非空**的目录、且不是已有 DesktopShell 安装时，安装被拒绝（就地安装且目录内只有发布包文件时豁免）
-- 盘符根、用户主目录、系统目录、Program Files、AppData、临时目录、DSH_HOME 等已知大目录一律拒绝
-- 卸载器的延迟自删除脚本在执行前会再次验证标记，验证失败只跳过删除
-
-## 目录结构
-
-```
-.
-├── assets/                 # 图标（.ico/.svg，源自官方 favicon.svg）
-├── scripts/                # PowerShell：安装 / 管理 / 卸载 / 发布 / 修复
-│   ├── Install-Desktop.ps1      # 源码安装器（编译 + 向导）
-│   ├── Install-Release.ps1      # 发布包安装器（zip 内，免编译）
-│   ├── Install-FromGitHub.ps1   # 从 GitHub Releases 一条命令安装（SHA256 校验）
-│   ├── Build-Release.ps1        # 构建发布 zip（免编译安装包，WebView2 固定版本）
-│   ├── Manage-Dsh.ps1
-│   ├── Uninstall-DesktopShell.ps1
-│   └── Repair-CostMeterLedger.ps1  # 清理 ModLens 双倍计价入账
-├── src/                    # C# 桌面宿主源码 + app.manifest
-│   ├── DeepSeekHarness.cs  # 窗口/WebView2/进程托管/兼容修复
-│   └── app.manifest
-├── tests/                  # 回归测试：安装目录所有权 / 卸载守卫 / 账本正则
-├── .github/workflows/      # CI（push/PR）与 GitHub Release 工作流
-├── install.bat             # 双击入口：从 GitHub 一条命令安装
-├── LICENSE                 # MIT
-├── THIRD_PARTY_NOTICES.md  # 第三方组件与许可声明
-├── .gitignore
-├── ICON_SOURCE.txt         # 图标来源与处理说明
-└── README.md
-```
-
-## 安装（普通用户，免编译）
-
-### 方式一：GitHub 一键安装
+在PowerShell 7中运行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.0/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.0
 ```
 
-引导命令固定指向 **v1.0.0 tag**（不追 `main`），安装脚本从同源 Release 下载
-`DeepSeekHarness-DesktopShell.zip` **和** `SHA256SUMS.txt`，SHA256 不一致即中止。
-发布 v1.0.0 时必须把这两个文件都作为 Release 资产上传。
+> 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
+> 无法从 git remote 推断仓库。`-Tag` 同时把下载锁定到对应 Release，
+> 并强制校验同源 `SHA256SUMS.txt`（不一致即中止）。
+> 如果 `v1.0.0` 尚未发布，可改用仓库根目录的 `install.bat`（main 分支脚本）或源码安装。
 
-也可以双击仓库根目录的 `install.bat`（自动推断 git remote 的 metahumanz/DeepSeekHarness-DesktopShell；同样的哈希校验）。
-
-### 方式二：发布包 zip
-
-1. 下载 Release 中的 `DeepSeekHarness-DesktopShell.zip`
-2. 解压后**双击 `install.bat`**（或运行 `Install-Release.ps1`）
-3. 跟随首次配置向导
-
-无需编译器、无需下载 WebView2 SDK——exe 与运行库已预编译打包。
-
-### 方式三：从源码安装（开发者）
-
-PowerShell 7：
+#### 无人值守安装
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\Install-Desktop.ps1
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.0 `
+    -NoWizard -NoShortcuts -NoLaunch
 ```
 
-首次向导内容：现有 dsh / npx 运行方式、npx DSH 版本、Profile、Web 端口、默认工作目录、关闭窗口行为、WebView2 开发者模式、插件安装方案。已有 Profile 默认不改现有插件。
+`-NoWizard` 不会跳过初始化：仍会以非交互方式检查 Node、解析现有 DSH（或准备官方 npx）、
+初始化 Profile——缺少 Node.js 时直接中止，避免"安装成功、首次启动才发现缺 Node"。
 
-源码安装器行为：
+## 安装器会做什么？
 
-- 自动下载/复用 WebView2 SDK（`Microsoft.Web.WebView2`，版本不足则升级）
-- 用 .NET Framework 自带 `csc.exe` 编译 `DeepSeekHarness.exe`（winexe + manifest + icon）
-- 创建开始菜单入口：应用、管理 DSH、卸载 DesktopShell
-- 自动清理旧版 `~/.dsh/desktop` 残留（仅该目录，其它 `~/.dsh` 数据不动）
+1. 下载并校验DesktopShell Release
+2. 安装到LocalAppData
+3. 检测Node.js
+4. 检测现有DSH
+5. 没有DSH时使用官方npx方式
+6. 创建/复用web Profile
+7. 询问插件方案
+8. 写入桌面设置
+9. 创建开始菜单入口
+10. 启动DesktopShell
 
-### 无人值守安装
+## 推荐插件
 
-```powershell
-.\scripts\Install-Desktop.ps1 -NoWizard -NoLaunch
-```
+### 核心推荐
+| 插件 | 用途 |
+| --- | --- |
+| dshmarket | 插件市场 |
+| Better Sidebar | 文件、终端、Git、编辑器工作台 |
+| Skills Manager | 管理Skills |
+| @file | 在对话中引用文件 |
+| Rewind | 编辑历史消息并从原位置重新运行 |
 
-`-NoWizard`：发现现有 dsh 就使用，否则走 npx，不改现有插件。
+### 体验增强
 
-## 构建发布包（开发者）
+UI 与操作效率增强，不装也不影响 DSH 核心：
 
-```powershell
-.\scripts\Build-Release.ps1            # 默认版本 1.0.0
-.\scripts\Build-Release.ps1 -Version 1.1.0
-```
+| 插件 | 用途 |
+| --- | --- |
+| File Mentions | 对话中的文件路径点击/提及 |
+| Auto Collapse | Tool/Think 输出自动折叠 |
+| Chat Tidy | Codex 风格对话排版 |
+| Side Outline | 对话侧边大纲 |
+| Better Archive | 会话归档整理 |
+| Model Picker | 模型选择器增强 |
 
-- WebView2 SDK 三件套**固定 1.0.4078.44**，且必须来自同一个 NuGet 包目录（可复现构建；`-SdkDir` 覆盖时版本不一致会直接失败）
-- `-Version` 会同步 `version.txt` 与 EXE 的 AssemblyVersion / FileVersion / InformationalVersion
-- 发布包内包含 `Repair-CostMeterLedger.ps1` 手工修复工具（14 个文件自校验）
-- 产物：`release\DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
+### 高级功能
 
-发布到 GitHub Release 时，**zip 与 `SHA256SUMS.txt` 必须同时上传为资产**，一键安装的哈希校验才能通过。
+默认不装（会改变 Agent 行为或涉及估算/兼容修复）：
 
-### 发布（GitHub Actions）
+| 插件 | 用途 | 备注 |
+| --- | --- | --- |
+| Auto Mode | 自动连续执行模式 | 会改变 Agent 行为 |
+| Cost Meter | 用量与费用统计 | 统计参考，不等于官方账单 |
+| Dream Skin | 主题皮肤 | |
+| Status Rotator | 状态栏文案轮换 | |
+| Sentinel | 条件唤醒 | |
+| ModLens | 视觉包装 | |
+| Remote SSH | 远程 SSH 工作区 | |
+| Video Preview | 视频预览 | |
 
-推荐直接用 `Release` 工作流发布：
+内置目录全部锁定精确版本 / commit（可复现），"全部已审核插件"也只安装锁定版本；
+需要追新的用户可在向导的"额外插件"步骤粘贴自定义 spec。
 
-1. GitHub 仓库 → **Actions → Release → Run workflow**，输入版本号（如 `1.1.0`）
-2. 工作流会：跑全部回归测试 → `Build-Release -Version` → 创建 `v1.1.0` tag → 创建 GitHub Release 并上传 zip 与 `SHA256SUMS.txt`
-3. 推送 `v*` tag 也会自动触发同样流程（版本取 tag 去掉 `v` 前缀）
+## 第一次启动
 
-手动发布也可以：先 `git tag v1.1.0 && git push origin v1.1.0`，然后在 Release 页面把两个产物作为资产上传。
+- DesktopShell 启动后会等待 DSH Web 就绪，窗口直接显示官方 DeepSeek Harness 界面
+- 模型凭据由 DSH 自身处理，DesktopShell 不接管
+- 托盘图标：显示窗口 / 设置 / 重新加载页面 / **重启 DSH 后端** / 打开日志目录 / 退出
+- 关闭窗口行为可在向导或设置中改为"关闭到托盘"
 
-安全审计记录见 [docs/AUDIT.md](docs/AUDIT.md)。
+## 日常管理
 
-## 管理
+开始菜单 →「管理 DSH - 插件与配置」：检查 DSH / 修改 npx 版本、Profile、Web 端口、
+默认工作目录、关闭行为、开发者模式；安装插件；查看插件列表与诊断。
 
-开始菜单 →「管理 DSH - 插件与配置」（或直接运行 `scripts\Manage-Dsh.ps1`）：
+## 更新插件
 
-1. 检查 DSH / 设置 npx 版本
-2. 修改桌面与 DSH 启动配置
-3. 安装插件（推荐组合 / 全部 / 自定义）
-4. 查看插件列表 / 诊断
-
-插件命令跟随当前 DSH 运行方式：有现有 dsh → `dsh plugin ...`；npx 模式 → `npx -y @deepseek-ai/dsh@<版本> plugin ...`。
-
-### 兼容配置
-
-- Better Sidebar 可固定 `pwsh.exe`（用户环境变量 `DSH_SIDEBAR_SHELL`）
-- Status Rotator 可关闭 gradient 炫彩
-- Sentinel client-id 特征式兼容修复
-- Cost Meter × ModLens 双倍计价防护：记账守卫（llm/stream）+ 历史回填守卫（backfill.js）+ 账本自动清理（**每次启动 DSH 前**执行，包括菜单里的"重启 DSH 后端"；也可手动运行 `scripts\Repair-CostMeterLedger.ps1`）
-- Profile pnpm store v10/v11 匹配，避免交叉迁移
-
-### 插件版本策略
-
-推荐组合里的 13 个插件全部锁定**精确 npm 版本或 GitHub commit**（今天安装和下周安装得到相同的代码）；可选插件保留 `@latest`，属于用户主动选择。升级锁定版本前需人工审核新版本与兼容修复的相容性，再更新 `Manage-Dsh.ps1` 里的 `$PluginCatalog`。
+- 管理器菜单 3（安装插件），或在 DSH 内使用插件市场
+- 安装/更新完成后：**托盘 → 重启 DSH 后端**，让新插件生效
+- 兼容修复（Sentinel / Cost Meter 等）在每次 DSH 启动前自动执行
 
 ## 卸载
 
-开始菜单 →「卸载 DesktopShell」。两种方式：
+开始菜单 →「卸载 DesktopShell」：
 
 1. **完整卸载**：删除 DesktopShell + DSH_HOME（Profile、插件、会话、设置、storage）
-2. **仅卸载桌面壳**：保留 DSH_HOME，适合以后继续单独使用 DSH
+2. **仅卸载桌面壳**：保留 DSH_HOME，可继续单独使用 DSH
 
-卸载器**不会**删除：`~/.dsh`（仅卸载桌面壳时）、`~/.modlens`、Node.js/npm、npm 缓存、用户自己已有的 dsh。若 DesktopShell 安装前 DSH_HOME 已存在，卸载器会显式警告。完整卸载带路径安全守卫：DSH_HOME 为空、等于/包含用户主目录、盘符根、系统目录、Program Files、AppData、桌面壳目录（任一方向）时，拒绝删除并降级为仅卸载桌面壳；卸载器本身也只有验证 `.dsh-desktop-shell-root` / `install-state.json` 所有权标记后才允许递归删除程序目录。
+卸载器带路径安全守卫：验证安装目录所有权标记后才删除程序目录；
+DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路径时拒绝删除并降级为仅卸载壳。
 
-## 开发与构建
+## 故障排查
 
-桌面壳用 .NET Framework 4 C# 编译（无需安装任何 SDK）：
+| 症状 | 处理 |
+| --- | --- |
+| 启动失败 / 界面空白 | 安装目录 `logs\` 下的 `dsh-*.log` 与 `plugin-compat.log` |
+| 缺少 WebView2 Runtime | 安装器会预检并给下载入口；也可直接装 <https://go.microsoft.com/fwlink/p/?LinkId=2124703> |
+| 提示 Node.js 过旧/缺失 | 需要 Node 22.19+ 或 24+；向导可代跑 `winget install OpenJS.NodeJS.LTS` |
+| 端口被占用 | 设置里换一个端口；占用进程不是 DSH 时桌面壳会拒绝附着并提示 |
+| 插件安装失败 | 管理器菜单 4 诊断；`plugin add` 失败不影响其他插件 |
+
+## 安全设计
+
+完整记录见 [docs/AUDIT.md](docs/AUDIT.md)，摘要：
+
+- **安装目录所有权**：`.dsh-desktop-shell-root` 标记；非空且非本产品目录拒绝安装；卸载前再次验证
+- **卸载守卫**：DSH_HOME 危险路径双向检查；延迟自删除脚本执行前第三次验证标记
+- **端口/进程**：只信任回环 DSH 源；端口占用先查 PID+命令行，非 DSH 进程拒绝附着/强杀；Job Object 回收自家后端
+- **发布链**：一键安装强制校验 SHA256SUMS；插件推荐全部锁定版本
+- **页面边界**：主导航回环白名单；外链 http/https 白名单，其余协议弹确认；DevTools 默认关闭
+
+## 从源码构建
+
+开发者（普通用户不需要）：
 
 ```powershell
-$csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-& $csc /nologo /target:winexe /platform:anycpu /optimize+ `
-  /out:DeepSeekHarness.exe /win32icon:assets\DeepSeekHarness.ico `
-  /win32manifest:src\app.manifest `
-  /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll `
-  /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll `
-  /reference:path\to\Microsoft.Web.WebView2.Core.dll `
-  /reference:path\to\Microsoft.Web.WebView2.WinForms.dll `
-  src\DeepSeekHarness.cs
+.\scripts\Install-Desktop.ps1    # 源码安装：csc 编译 + 向导
+.\scripts\Build-Release.ps1      # 构建发布 zip（WebView2 固定 1.0.4078.44）
+.\scripts\Build-Release.ps1 -Version 1.1.0 -Arch arm64
 ```
 
-需要 WebView2 SDK 程序集（`Microsoft.Web.WebView2.Core.dll` / `WinForms.dll` / `WebView2Loader.dll`），安装器会从 NuGet 自动获取（固定 1.0.4078.44）。
+需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
+回归测试在 `tests\`，CI 每次 push/PR 自动运行。
 
-> 直接裸调 `csc` 编译不带版本元数据（EXE 显示 0.0.0.0）。正式构建请使用
-> `Build-Release.ps1` / `Install-Desktop.ps1`，它们会注入 AssemblyVersion/FileVersion。
+## Release 流程
 
-回归测试：`tests\` 下的 PowerShell 测试（安装目录所有权、卸载守卫、账本正则），
-CI 工作流（`.github/workflows/ci.yml`）在每次 push/PR 自动运行。
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.0`）：
+
+1. 跑全部回归测试
+2. `Build-Release -Version`（x64）
+3. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
+4. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
+
+推送 `v*` tag 也会触发同样流程。两个资产必须同时上传，一键安装的哈希校验才能通过。
+
+## 项目结构
+
+```
+.
+├── assets/                 # 图标（源自官方 favicon.svg）
+├── scripts/                # 安装 / 管理 / 卸载 / 发布 / 修复脚本
+├── src/                    # C# 桌面宿主源码（窗口/WebView2/进程托管/兼容修复）
+├── tests/                  # 回归测试：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛
+├── .github/workflows/      # CI 与 GitHub Release 工作流
+├── docs/AUDIT.md           # 安全审计记录
+├── install.bat             # 双击入口（git clone 后使用）
+├── LICENSE                 # MIT
+└── THIRD_PARTY_NOTICES.md  # 第三方组件与许可声明
+```
+
+## 第三方许可
+
+本项目 MIT（见 `LICENSE`）。图标源自官方 DeepSeek Harness favicon（MIT，保留版权声明）；
+WebView2 SDK 按 Microsoft 许可条款分发。详见 `THIRD_PARTY_NOTICES.md`。

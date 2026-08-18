@@ -142,3 +142,20 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 
 发布提醒：README 一键安装引导命令钉在 `v1.0.0` tag，远端当前还没有任何 tag/Release；
 首次发布请用 `Release` 工作流（或手动打 tag 并上传 zip + `SHA256SUMS.txt` 两个资产）。
+
+## 8. 2026-08-19 第四轮修复（第三方审计响应：发布前收口）
+
+| # | 级别 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 1 | P1 | 一键安装引导与脚本互相矛盾：脚本下载到 `%TEMP%` 后无法从 git remote 推断 Owner/Repo，而 README 钉住的 `v1.0.0` tag 尚未创建 | README 命令显式传 `-Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.0`（发布 tag 后用 `Release` 工作流创建）；`Install-FromGitHub.ps1` 报错提示补全三参数 |
+| 2 | P1 | rc.7 版本门槛用 `[version]` 强转，`0.1.0-rc.6` 等预发布 SemVer 抛异常后被当"无法判断"静默放行 | `Manage-Dsh.ps1` 实现真正的 SemVer 比较（`ConvertTo-SemVerParts` / `Compare-DshVersion`：核心三段数值 + 预发布逐标识比较，正式版 > 预发布）；无法解析的版本串按"未验证"走门槛；`tests/test-dsh-version.ps1` 用 AST 提取真实函数做回归（rc.5/rc.6 拒绝、rc.7/1.0.0 放行等 15 项断言） |
+| 3 | P1 | Release 工作流默认版本 1.1.0（仓库是 1.0.0）；tag 已存在时只提示不校验 | 默认版本改 `1.0.0`；"Ensure tag"步骤校验已存在 tag 必须指向当前 HEAD，否则拒绝发布 |
+| 4 | P1 | `-NoWizard` 语义不一致：源码安装器跑非交互初始化，Release 安装器直接跳过（CI 环境会出现"Release 包装好、启动才发现缺 Node"） | 统一为两者都执行 `Manage-Dsh -FirstInstall -NonInteractive`（检查 Node、解析 DSH/npx、初始化 Profile；缺 Node 即中止）；回归测试改为隔离环境（假 node/npx shim + 临时 DSH_HOME + 受限 PATH）覆盖该路径 |
+| 5 | P2 | 缺少 WebView2 Runtime 时用户等到首次启动才看到"启动失败" | 两个安装器增加 Evergreen Runtime 注册表预检（EdgeUpdate Clients `{F3017226-…}`），缺失时给出官方下载入口；C# 启动失败检测 WebView2 异常并显示"下载 WebView2 Runtime"按钮（`OnOverlayOpenWebView2Download`） |
+| 6 | P2 | 预编译 Release 的 `WebView2Loader.dll` 跟随构建机架构，README 只笼统写 Windows 10/11 | `Build-Release.ps1` 增加 `-Arch`（x64/arm64/x86，默认 x64）；v1.0.0 首发明确 x64（README 前置条件、Release body 注明）；ARM64 上运行 x64 发布包时安装器给出提示（模拟运行或改用源码安装） |
+| 7 | P2 | 新 Profile 默认"推荐组合"一次装 13 个插件，官方/附加体验不分层；6 个可选插件仍追 `@latest`，"全部"按钮引入不可复现模式 | 插件目录改为三层：`core`（5 个默认勾选）/ `enhanced`（6 个默认展示可取消）/ `advanced`（8 个默认不装，Cost Meter 标注"统计参考，不等于官方账单"）；**全部 19 项锁定精确版本/commit**，"全部已审核插件"也只装锁定版本；追新走"额外插件"自定义 spec；安装完成后提示"托盘 → 重启 DSH 后端" |
+| 8 | P3 | README 结构像维护文档，安全细节前置、普通用户路径不清晰 | README 重写为：前置条件 → 一键安装（含无人值守）→ 安装器行为 → 插件分层表 → 第一次启动/日常管理/更新插件/卸载/故障排查 → 安全设计摘要 → 源码构建/Release 流程/项目结构/第三方许可（细节链接 `docs/AUDIT.md`） |
+
+验证：四项回归测试全部通过（版本门槛 15 断言、账本正则、安装所有权 10 项、卸载守卫 3 项）；
+`csc` 编译通过；全部脚本 `[Parser]::ParseFile` 通过；`Build-Release`（x64，固定 SDK 1.0.4078.44，
+EXE FileVersion 1.0.0.0）成功，zip 自校验 14 文件。
