@@ -1,8 +1,20 @@
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $installer = Join-Path $repo 'scripts\Install-Release.ps1'
+$pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
 $base = Join-Path $env:TEMP ('dsh-own-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $base | Out-Null
+
+# 隔离环境：假 node/npx（满足 -NoWizard 的非交互初始化）+ 临时 DSH_HOME + 受限 PATH
+# （-NoWizard 语义与源码安装器一致：仍执行无人值守初始化，检查 Node / 解析 DSH）
+$shimDir = Join-Path $base 'shim'
+New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
+"@echo off`r`necho 22.19.0`r`n" | Set-Content -LiteralPath (Join-Path $shimDir 'node.cmd') -Encoding ascii
+"@echo off`r`necho 0.1.0-rc.7`r`n" | Set-Content -LiteralPath (Join-Path $shimDir 'npx.cmd') -Encoding ascii
+$testDshHome = Join-Path $base 'dsh-home'
+New-Item -ItemType Directory -Force -Path $testDshHome | Out-Null
+$origPath = $env:Path
+$origDshHome = $env:DSH_HOME
 
 $appFiles = @(
     'DeepSeekHarness.exe','Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.WinForms.dll',
@@ -13,12 +25,22 @@ $appFiles = @(
 function New-FakePkg([string]$dir) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     foreach ($f in $appFiles) { Set-Content -LiteralPath (Join-Path $dir $f) -Value 'x' -Encoding ascii }
+    # -NoWizard 会真实执行管理器/后续卸载会真实执行卸载器：这两个脚本必须是真实副本
+    Copy-Item -LiteralPath (Join-Path $repo 'scripts\Manage-Dsh.ps1') -Destination (Join-Path $dir 'Manage-Dsh.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $repo 'scripts\Uninstall-DesktopShell.ps1') -Destination (Join-Path $dir 'Uninstall-DesktopShell.ps1') -Force
     Set-Content -LiteralPath (Join-Path $dir 'install.bat') -Value '@echo off' -Encoding ascii
 }
 
 function Invoke-Install([string]$setup, [string]$target, [string]$label) {
-    & pwsh -NoProfile -File $installer -SetupDir $setup -InstallDir $target -NoShortcuts -NoLaunch -NoWizard *> $null
-    $code = [int]$LASTEXITCODE
+    $env:Path = "$shimDir;$env:SystemRoot\System32;$env:SystemRoot"
+    $env:DSH_HOME = $testDshHome
+    try {
+        & $pwsh -NoProfile -File $installer -SetupDir $setup -InstallDir $target -NoShortcuts -NoLaunch -NoWizard *> $null
+        $code = [int]$LASTEXITCODE
+    } finally {
+        $env:Path = $origPath
+        $env:DSH_HOME = $origDshHome
+    }
     Write-Host ("{0}: exit={1}" -f $label, $code)
     return $code
 }
@@ -71,9 +93,8 @@ Write-Host ("T7 extra-kept={0}" -f (Test-Path -LiteralPath (Join-Path $t7 'user-
 # T8: 已拥有目录上的重复安装（升级）-> 成功
 if ((Invoke-Install $pkg $t1 'T8 upgrade-over-owned') -ne 0) { $fail++; 'T8 FAILED' }
 
-# T9: DSH_HOME 内部 -> 拒绝（目标在 ~/.dsh 内部）
-$dshHomeReal = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
-$t9 = Join-Path $dshHomeReal 'desktop-inner-test'
+# T9: DSH_HOME 内部 -> 拒绝（目标在 DSH_HOME 内部；此处用隔离的测试 DSH_HOME）
+$t9 = Join-Path $testDshHome 'desktop-inner-test'
 if ((Invoke-Install $pkg $t9 'T9 inside-dsh-home') -eq 0) { $fail++; 'T9 FAILED: should refuse' }
 Write-Host ("T9 dir-created={0}" -f (Test-Path -LiteralPath $t9))
 
@@ -86,5 +107,4 @@ Write-Host ("T10 marker-still-bad={0}" -f (Test-Path -LiteralPath (Join-Path $t1
 
 if ($fail -eq 0) { Write-Host 'ALL INSTALL TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $t9 -Recurse -Force -ErrorAction SilentlyContinue
 exit $(if ($fail -eq 0) { 0 } else { 1 })

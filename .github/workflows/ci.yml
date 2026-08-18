@@ -40,6 +40,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File tests/test-repair-regex.ps1
 
+      - name: DSH version gate test (SemVer)
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/test-dsh-version.ps1
+
       - name: Install directory ownership tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/test-install-ownership.ps1
