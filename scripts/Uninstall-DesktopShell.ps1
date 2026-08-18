@@ -1,4 +1,4 @@
-param([switch]$Force, [switch]$Full)
+﻿param([switch]$Force, [switch]$Full)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms

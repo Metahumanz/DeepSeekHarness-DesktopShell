@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Owner = '',
     [string]$Repo = '',
     [string]$Tag = '',
@@ -30,6 +30,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# Windows PowerShell 5.1 与 PowerShell 7 均支持
+if ($PSVersionTable.PSVersion -lt [version]'5.1') {
+    Write-Host '[DSH Desktop] 需要 Windows PowerShell 5.1 或 PowerShell 7。' -ForegroundColor Red
+    exit 1
+}
 
 function Say([string]$text) { Write-Host "[DSH Desktop] $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "[OK] $text" -ForegroundColor Green }

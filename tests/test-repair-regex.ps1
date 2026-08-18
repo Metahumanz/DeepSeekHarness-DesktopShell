@@ -1,6 +1,8 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $repair = Join-Path $repo 'scripts\Repair-CostMeterLedger.ps1'
+# 宿主无关：用当前运行测试的 PowerShell 本体执行子进程（pwsh 与 5.1 均可）
+$hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
 $testDir = Join-Path $env:TEMP ('dsh-ledger-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $testDir | Out-Null
 
@@ -29,7 +31,7 @@ $ledger = Join-Path $testDir 'ledger.json'
 }
 '@ | Set-Content -LiteralPath $ledger -Encoding UTF8
 
-$output = & pwsh -NoProfile -File $repair -LedgerPath $ledger -DryRun 2>&1 | Out-String
+$output = & $hostExe -NoProfile -File $repair -LedgerPath $ledger -DryRun 2>&1 | Out-String
 $code = $LASTEXITCODE
 Write-Host $output
 

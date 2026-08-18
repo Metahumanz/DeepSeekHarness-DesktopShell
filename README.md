@@ -22,7 +22,7 @@ DesktopShell不是DSH的替代实现：
 ### 前置条件
 
 - Windows 10/11 x64（当前 Release 为 x64 构建）
-- PowerShell 7（需要提前安装，安装器不会自动装）
+- Windows PowerShell 5.1 或 PowerShell 7（需要提前安装，安装器不会自动装；两者均可）
 - 网络连接
 - WebView2 Runtime：多数 Windows 已自带；安装器会预检，缺失时给出下载入口
 
@@ -31,7 +31,7 @@ Node.js不需要提前准备。
 
 ### 一键安装
 
-在PowerShell 7中运行：
+在 Windows PowerShell 5.1 或 PowerShell 7 中运行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass

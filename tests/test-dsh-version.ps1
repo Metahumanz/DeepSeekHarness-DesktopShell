@@ -1,10 +1,10 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $manager = Join-Path $repo 'scripts\Manage-Dsh.ps1'
 
 # 从真实脚本中按名字提取函数定义（AST），直接测试真实实现，
 # 避免复制一份逻辑导致测试与产品代码脱节。
-$tokens = $null; $errors = $null
+$tokens = @(); $errors = @()   # 5.1 下 $null 赋值会让变量消失，[ref] 会报错，用空数组占位
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($manager, [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { Write-Error "Manage-Dsh.ps1 解析失败"; exit 1 }
 $names = @('ConvertTo-SemVerParts', 'Compare-DshVersion', 'Test-DshVersionSupported')

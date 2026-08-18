@@ -1,8 +1,9 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $installer = Join-Path $repo 'scripts\Install-Release.ps1'
 $uninstaller = Join-Path $repo 'scripts\Uninstall-DesktopShell.ps1'
-$pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+# 宿主无关：用当前运行测试的 PowerShell 本体执行子进程（pwsh 与 5.1 均可）
+$hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
 $base = Join-Path $env:TEMP ('dsh-uninst-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $base | Out-Null
 
@@ -20,7 +21,7 @@ function Invoke-HermeticInstall([string]$target) {
     $env:Path = "$shimDir;$env:SystemRoot\System32;$env:SystemRoot"
     $env:DSH_HOME = $testDshHome
     try {
-        & $pwsh -NoProfile -File $installer -SetupDir $pkg -InstallDir $target -NoShortcuts -NoLaunch -NoWizard *> $null
+        & $hostExe -NoProfile -File $installer -SetupDir $pkg -InstallDir $target -NoShortcuts -NoLaunch -NoWizard *> $null
         return [int]$LASTEXITCODE
     } finally {
         $env:Path = $origPath
@@ -54,7 +55,7 @@ try {
     New-Item -ItemType Directory -Force -Path $u1 | Out-Null
     Set-Content -LiteralPath (Join-Path $u1 'user-file.txt') -Value 'keep me'
     Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $u1 'Uninstall-DesktopShell.ps1') -Force
-    & $pwsh -NoProfile -File (Join-Path $u1 'Uninstall-DesktopShell.ps1') -Force *> $null
+    & $hostExe -NoProfile -File (Join-Path $u1 'Uninstall-DesktopShell.ps1') -Force *> $null
     $u1code = $LASTEXITCODE
     Write-Host ("U1 non-owned exit={0} user-file-kept={1}" -f $u1code, (Test-Path -LiteralPath (Join-Path $u1 'user-file.txt')))
     if ($u1code -eq 0) { $fail++; 'U1 FAILED: should refuse' }
@@ -65,7 +66,7 @@ try {
     if ((Invoke-HermeticInstall $u2app) -ne 0) { $fail++; 'U2 FAILED: setup install' }
     # 假发布包里的卸载器是占位文件，覆盖为真实卸载器
     Copy-Item -LiteralPath $uninstaller -Destination (Join-Path $u2app 'Uninstall-DesktopShell.ps1') -Force
-    & $pwsh -NoProfile -File (Join-Path $u2app 'Uninstall-DesktopShell.ps1') -Force *> $null
+    & $hostExe -NoProfile -File (Join-Path $u2app 'Uninstall-DesktopShell.ps1') -Force *> $null
     $u2code = $LASTEXITCODE
     Write-Host ("U2 owned-shell-only exit={0}" -f $u2code)
     Start-Sleep -Seconds 6
@@ -82,10 +83,10 @@ try {
     # 改 install-state.json：dshHome = app 的父目录（模拟危险的 DSH_HOME 配置）
     $st = Get-Content -LiteralPath (Join-Path $u3app 'install-state.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $st.dshHome = $u3parent
-    $st | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $u3app 'install-state.json') -Encoding utf8NoBOM
+    [System.IO.File]::WriteAllText((Join-Path $u3app 'install-state.json'), ($st | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
     # 父目录里放一个哨兵文件，验证没被删除
     Set-Content -LiteralPath (Join-Path $u3parent 'sentinel.txt') -Value 'keep me'
-    & $pwsh -NoProfile -File (Join-Path $u3app 'Uninstall-DesktopShell.ps1') -Force -Full *> $null
+    & $hostExe -NoProfile -File (Join-Path $u3app 'Uninstall-DesktopShell.ps1') -Force -Full *> $null
     $u3code = $LASTEXITCODE
     Write-Host ("U3 full-uninstall-with-parent-dshhome exit={0}" -f $u3code)
     Start-Sleep -Seconds 6

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$FirstInstall,
     [switch]$NonInteractive,
     [string]$DshVersion = '',
@@ -11,6 +11,12 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
+# Windows PowerShell 5.1 与 PowerShell 7 均支持
+if ($PSVersionTable.PSVersion -lt [version]'5.1') {
+    Write-Host '[DSH] 需要 Windows PowerShell 5.1 或 PowerShell 7。' -ForegroundColor Red
+    exit 1
+}
+
 function Title([string]$text) {
     Write-Host ''
     Write-Host ('=' * 72) -ForegroundColor DarkGray
@@ -21,6 +27,11 @@ function Say([string]$text) { Write-Host "[DSH] $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "[OK]  $text" -ForegroundColor Green }
 function Warn([string]$text) { Write-Host "[!]   $text" -ForegroundColor Yellow }
 function Fail([string]$text) { throw $text }
+
+# utf8NoBOM 在 Windows PowerShell 5.1 不可用，统一用 .NET 写无 BOM UTF-8
+function Write-Utf8NoBom([string]$Path, [string]$Content) {
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
 
 $homeDir = [Environment]::GetFolderPath('UserProfile')
 $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $homeDir '.dsh' }
@@ -367,7 +378,7 @@ function Save-DesktopSettings([string]$dshPath, [string]$version, [string]$profi
     if (-not ($obj.PSObject.Properties.Name -contains 'windowMaximized')) { Set-Property $obj 'windowMaximized' $false }
 
     $tmp = "$settingsPath.tmp-$PID"
-    $obj | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tmp -Encoding utf8NoBOM
+    Write-Utf8NoBom $tmp (($obj | ConvertTo-Json -Depth 20))
     Move-Item -LiteralPath $tmp -Destination $settingsPath -Force
     Ok "桌面设置已写入：$settingsPath"
 }
@@ -529,7 +540,7 @@ function Configure-StatusRotator([string]$profile) {
         if (-not $json.config) { $json | Add-Member -NotePropertyName config -NotePropertyValue ([pscustomobject]@{}) }
         if ($json.config.PSObject.Properties.Name -contains 'gradient') { $json.config.gradient = $false }
         else { $json.config | Add-Member -NotePropertyName gradient -NotePropertyValue $false }
-        $json | ConvertTo-Json -Depth 100 | Set-Content $cfg -Encoding utf8NoBOM
+        $json | ConvertTo-Json -Depth 100 | ForEach-Object { Write-Utf8NoBom $cfg $_ }
         Ok 'Status Rotator 炫彩已关闭。'
     } catch { Warn "Status Rotator 配置失败：$($_.Exception.Message)" }
 }

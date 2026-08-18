@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SetupDir = '',
     [string]$InstallDir = '',
     [switch]$NoShortcuts,
@@ -36,10 +36,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Windows PowerShell 5.1 与 PowerShell 7 均支持
+if ($PSVersionTable.PSVersion -lt [version]'5.1') {
+    Write-Host '[DSH Desktop] 需要 Windows PowerShell 5.1 或 PowerShell 7。' -ForegroundColor Red
+    exit 1
+}
+
 function Say([string]$text) { Write-Host "[DSH Desktop] $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "[OK] $text" -ForegroundColor Green }
 function Warn([string]$text) { Write-Host "[!]   $text" -ForegroundColor Yellow }
 function Fail([string]$text) { throw $text }
+
+# utf8NoBOM 在 Windows PowerShell 5.1 不可用，统一用 .NET 写无 BOM UTF-8
+function Write-Utf8NoBom([string]$Path, [string]$Content) {
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
 
 # 只关闭“指定 exe 路径”的桌面程序；路径无法读取/不匹配的进程一律不碰。
 # 绝不允许按进程名全杀：DSH 宿主本身也可能叫 DeepSeekHarness。
@@ -247,7 +258,7 @@ try {
         webProfileExistedBeforeInstall = [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
         installedAt = (Get-Date).ToString('o')
     }
-    $state | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $InstallDir 'install-state.json') -Encoding utf8NoBOM
+    Write-Utf8NoBom (Join-Path $InstallDir 'install-state.json') (($state | ConvertTo-Json -Depth 10))
 
     # 目录所有权标记：卸载器只有再次验证 marker/install-state 后才允许递归删除本目录
     $marker = [ordered]@{
@@ -255,7 +266,7 @@ try {
         product = $ProductId
         installedAt = (Get-Date).ToString('o')
     }
-    $marker | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $InstallDir $MarkerName) -Encoding utf8NoBOM
+    Write-Utf8NoBom (Join-Path $InstallDir $MarkerName) (($marker | ConvertTo-Json -Depth 10))
 
     # ---- 运行时预检 ----
     if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {

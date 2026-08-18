@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = '1.0.0',
     [string]$OutDir = '',
     [string]$SdkDir = '',
@@ -27,6 +27,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# Windows PowerShell 5.1 与 PowerShell 7 均支持
+if ($PSVersionTable.PSVersion -lt [version]'5.1') {
+    Write-Host '[Build] 需要 Windows PowerShell 5.1 或 PowerShell 7。' -ForegroundColor Red
+    exit 1
+}
 
 function Say([string]$text) { Write-Host "[Build] $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "[OK]   $text" -ForegroundColor Green }
@@ -189,13 +195,12 @@ using System.Reflection;
 @echo off
 setlocal
 where pwsh >nul 2>nul
-if errorlevel 1 (
-  echo [DSH Desktop] PowerShell 7 is required.
-  echo Download: https://github.com/PowerShell/PowerShell/releases
-  pause
-  exit /b 1
+if not errorlevel 1 (
+  pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Release.ps1" %*
+  goto :done
 )
-pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Release.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Release.ps1" %*
+:done
 pause
 '@
         Set-Content -LiteralPath (Join-Path $appDir 'install.bat') -Value $bat -Encoding ascii

@@ -1,7 +1,8 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $installer = Join-Path $repo 'scripts\Install-Release.ps1'
-$pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+# 宿主无关：用当前运行测试的 PowerShell 本体执行子进程（pwsh 与 5.1 均可）
+$hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
 $base = Join-Path $env:TEMP ('dsh-own-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $base | Out-Null
 
@@ -35,7 +36,7 @@ function Invoke-Install([string]$setup, [string]$target, [string]$label) {
     $env:Path = "$shimDir;$env:SystemRoot\System32;$env:SystemRoot"
     $env:DSH_HOME = $testDshHome
     try {
-        & $pwsh -NoProfile -File $installer -SetupDir $setup -InstallDir $target -NoShortcuts -NoLaunch -NoWizard *> $null
+        & $hostExe -NoProfile -File $installer -SetupDir $setup -InstallDir $target -NoShortcuts -NoLaunch -NoWizard *> $null
         $code = [int]$LASTEXITCODE
     } finally {
         $env:Path = $origPath

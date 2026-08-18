@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$NoLaunch,
     [switch]$NoWizard
 )
@@ -8,7 +8,14 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$text) { Write-Host "[DSH Desktop] $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "[OK] $text" -ForegroundColor Green }
+function Warn([string]$text) { Write-Host "[!]   $text" -ForegroundColor Yellow }
 function Fail([string]$text) { throw $text }
+
+# Windows PowerShell 5.1 与 PowerShell 7 均支持；utf8NoBOM 在 5.1 下不可用，
+# 统一用 .NET 写无 BOM UTF-8。
+function Write-Utf8NoBom([string]$Path, [string]$Content) {
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
 
 # WebView2 Runtime（Evergreen）预检：桌面壳依赖它承载界面，安装阶段就给出明确入口，
 # 而不是让用户等到第一次启动才看到“启动失败”。
@@ -46,8 +53,8 @@ function Stop-DesktopShellProcess([string]$exePath) {
     }
 }
 
-if ($PSVersionTable.PSVersion.Major -lt 7) {
-    Fail '安装器需要 PowerShell 7。请用 pwsh 打开后重新运行 Install-Desktop.ps1。'
+if ($PSVersionTable.PSVersion -lt [version]'5.1') {
+    Fail '安装器需要 Windows PowerShell 5.1 或 PowerShell 7。请升级后重新运行。'
 }
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -139,7 +146,7 @@ $state = [ordered]@{
     webProfileExistedBeforeInstall = [bool]$webProfileExistedBefore
     installedAt = (Get-Date).ToString('o')
 }
-$state | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $installStatePath -Encoding utf8NoBOM
+Write-Utf8NoBom $installStatePath (($state | ConvertTo-Json -Depth 10))
 
 # 目录所有权标记：卸载器只有再次验证 marker/install-state 后才允许递归删除本目录
 $marker = [ordered]@{
@@ -147,7 +154,7 @@ $marker = [ordered]@{
     product = 'DeepSeek Harness DesktopShell'
     installedAt = (Get-Date).ToString('o')
 }
-$marker | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $desktopDir '.dsh-desktop-shell-root') -Encoding utf8NoBOM
+Write-Utf8NoBom (Join-Path $desktopDir '.dsh-desktop-shell-root') (($marker | ConvertTo-Json -Depth 10))
 
 $cscCandidates = @(
     "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
