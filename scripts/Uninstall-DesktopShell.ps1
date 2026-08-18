@@ -77,6 +77,56 @@ function Stop-Shell {
     Stop-DesktopShellProcess (Join-Path $appDir 'DeepSeekHarness.exe')
 }
 
+# ---- 外部 DSH 识别与停止（完整卸载前） ----
+# 桌面壳支持附着不是自己启动的 DSH；完整卸载删除 DSH_HOME 前必须先把外部 DSH 停掉，
+# 否则运行中的 DSH 关停时会把内存中的账本/状态写回正在被删除的目录。
+function Test-PortOpen([int]$port) {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $iar = $client.BeginConnect('127.0.0.1', $port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne(250)) { return $false }
+        $client.EndConnect($iar)
+        return $true
+    } catch { return $false } finally { $client.Dispose() }
+}
+
+function Find-ListeningPid([int]$port) {
+    try {
+        $out = & netstat -ano -p tcp 2>$null
+        $suffix = ":$port"
+        foreach ($line in $out) {
+            $t = $line.Trim()
+            if (-not $t.StartsWith('TCP', [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $parts = @($t -split '\s+')
+            if ($parts.Count -lt 5) { continue }
+            if (-not $parts[1].EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (-not $parts[3].Equals('LISTENING', [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $pidNum = 0
+            if ([int]::TryParse($parts[4], [ref]$pidNum)) { return $pidNum }
+        }
+    } catch {}
+    return -1
+}
+
+function Get-ProcessCommandLine([int]$processId) {
+    try {
+        $p = Get-CimInstance Win32_Process -Filter "ProcessId = $processId"
+        if ($p) { return [string]$p.CommandLine }
+    } catch {}
+    return ''
+}
+
+# 与 C# 端 IsLikelyDshProcess 一致的特征判断
+function Test-LikelyDshCommandLine([string]$cmd) {
+    if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
+    $lower = $cmd.ToLowerInvariant()
+    $hasPackage = $lower.Contains('@deepseek-ai') -and $lower.Contains('dsh')
+    $hasPath = $lower.Contains('\dsh\') -or $lower.Contains('/dsh/') -or
+               $lower.Contains('dsh.cmd') -or $lower.Contains('dsh.exe')
+    $hasWeb = $lower.Contains(' web') -or $lower.Contains('"web"') -or $lower.Contains("'web'")
+    return $hasWeb -and ($hasPackage -or $hasPath)
+}
+
 function Ask-UninstallMode {
     if ($Force) {
         return $(if ($Full) { 'full' } else { 'shell' })
@@ -166,6 +216,57 @@ if ($mode -eq 'full' -and -not $Force) {
 }
 
 Stop-Shell
+
+# 完整卸载前：停止外部启动的 DSH（桌面壳只是附着它，退出不会带走它）。
+# 停止失败/无法确认身份时降级为仅卸载桌面壳，绝不“宣称完整卸载成功”却留下
+# 一个正在读写 DSH_HOME 的后端。
+if ($mode -eq 'full') {
+    $webPort = 3080
+    $settingsFile = Join-Path $appDir 'settings.json'
+    if (Test-Path -LiteralPath $settingsFile -PathType Leaf) {
+        try {
+            $cfg = Get-Content -LiteralPath $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($cfg.port -ge 1 -and $cfg.port -le 65535) { $webPort = [int]$cfg.port }
+        } catch {}
+    }
+
+    if (Test-PortOpen $webPort) {
+        $dshPid = Find-ListeningPid $webPort
+        $cmdLine = ''
+        if ($dshPid -gt 0) { $cmdLine = Get-ProcessCommandLine $dshPid }
+        $isDsh = Test-LikelyDshCommandLine $cmdLine
+
+        if ($dshPid -gt 0 -and $isDsh) {
+            $stopOk = $true
+            if (-not $Force) {
+                $answer = [System.Windows.Forms.MessageBox]::Show(
+                    "检测到外部启动的 DSH 仍在运行（PID $dshPid）：`r`n`r`n$cmdLine`r`n`r`n" +
+                    "完整卸载会删除 DSH_HOME。为避免运行中的 DSH 关停时把内存数据写回被删除的目录，需要先停止它。是否停止？",
+                    'DeepSeek Harness DesktopShell',
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning)
+                $stopOk = ($answer -eq [System.Windows.Forms.DialogResult]::Yes)
+            }
+            if ($stopOk) {
+                try {
+                    Stop-Process -Id $dshPid -Force -ErrorAction Stop
+                    Say "已停止外部 DSH（PID $dshPid）。"
+                } catch {
+                    $stopOk = $false
+                    Warn "停止外部 DSH 失败：$($_.Exception.Message)"
+                }
+            }
+            if (-not $stopOk) {
+                Warn '外部 DSH 未停止：完整卸载降级为仅卸载桌面壳（DSH_HOME 保留）。'
+                $mode = 'shell'
+            }
+        } else {
+            Warn "端口 $webPort 有服务监听，但无法确认它是 DSH：完整卸载降级为仅卸载桌面壳（DSH_HOME 保留）。"
+            $mode = 'shell'
+        }
+    }
+}
+
 Remove-Item -LiteralPath $startMenu -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($mode -eq 'full') {
