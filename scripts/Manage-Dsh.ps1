@@ -194,11 +194,18 @@ function Normalize-Profile([string]$value) {
 function Get-ProfilePnpmVersion([string]$profile) {
     $modules = Join-Path $dshHome "profiles\$profile\node_modules\.modules.yaml"
     if (Test-Path -LiteralPath $modules) {
+        $raw = ''
         try {
             $raw = Get-Content -LiteralPath $modules -Raw -Encoding UTF8
-            if ($raw -match '(?i)store[\\/]+v11\b') { return '11.7.0' }
-            if ($raw -match '(?i)store[\\/]+v10\b') { return '10.33.2' }
-        } catch {}
+        } catch {
+            Fail "无法读取 Profile 的 .modules.yaml（$modules），中止以避免用错误 pnpm 重链接 Profile。"
+        }
+        if ($raw -match '(?i)store[\\/]+v11\b') { return '11.7.0' }
+        if ($raw -match '(?i)store[\\/]+v10\b') { return '10.33.2' }
+        if ($raw -match '(?i)store[\\/]+(v\d+)\b') {
+            Fail "Profile 的 pnpm store 版本（$($Matches[1])）尚未经 DesktopShell 审核（当前只验证 v10/v11）。请升级 DesktopShell 或改用其它 Profile。"
+        }
+        Fail 'Profile 的 .modules.yaml 中找不到 pnpm store 版本信息，中止以避免用错误 pnpm 重链接 Profile。'
     }
     return $defaultProfilePnpmVersion
 }
