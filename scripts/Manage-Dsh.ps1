@@ -31,31 +31,36 @@ $defaultDshVersion = '0.1.0-rc.7'
 $MinSupportedDshVersion = '0.1.0-rc.7'
 $defaultProfilePnpmVersion = '10.33.2'
 
-# 插件目录。可复现性规则（2026-08-19 审计后）：
-#   - 推荐组合（Recommended）必须锁定精确 npm 版本或 GitHub commit，不追 latest/main；
-#   - 可选插件（Recommended=$false）保留 @latest，属于用户主动选择。
-# 锁定版本升级须经过人工审核：先验证新版本与 PluginCompat 兼容修复、
-# 再更新此处的版本号/commit。
+# 插件目录。分层与可复现性规则（2026-08-19 第二轮审计后）：
+#   - Tier='core'      核心推荐（新 Profile 默认勾选）：插件发现/工作台/Skills/@file/历史重跑
+#   - Tier='enhanced'  体验增强（默认展示但可取消）：UI 与操作效率，不装不影响 DSH 核心
+#   - Tier='advanced'  高级/实验（默认不装）：会改变 Agent 行为或涉及估算/兼容修复
+#   - 所有内置目录一律锁定精确 npm 版本或 GitHub commit（可复现），不追 latest/main；
+#     需要追新的用户可在“额外插件”步骤粘贴自定义 spec。
+# 锁定版本升级须经过人工审核：先验证新版本与 PluginCompat 兼容修复、再更新此处。
 $PluginCatalog = @(
-    [pscustomobject]@{ No=1;  Id='market';         Name='插件市场';                  Spec='dshmarket@1.14.0'; Recommended=$true;  Full=$true;  Allow=@() },
-    [pscustomobject]@{ No=2;  Id='sidebar';        Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@0.13.1'; Recommended=$true; Full=$true; Allow=@('node-pty') },
-    [pscustomobject]@{ No=3;  Id='skills';         Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.23'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=4;  Id='auto-mode';      Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@0.1.4'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=5;  Id='at-file';        Name='@file 文件引用';            Spec='https://github.com/omdsh-dev/dsh-at-file/archive/898369ece56ae6ec41afd8e014f187bb5b723409.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=6;  Id='file-mentions';  Name='文件路径点击/提及';          Spec='https://github.com/a903067276-rgb/dsh-file-mentions/archive/a303b81a32a890be02bc57fabd1e28583040ac12.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=7;  Id='collapse';       Name='Tool/Think 自动折叠';        Spec='https://github.com/a179-sanae/dsh-auto-collapse/archive/9d02fb02e8dd2fb56c5e82fcc5d68b5a5b62efcd.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=8;  Id='tidy';           Name='Codex 风格对话排版';        Spec='dsh-chat-tidy@0.2.0'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=9;  Id='outline';        Name='对话侧边大纲';              Spec='https://github.com/EnkiduGilgamesh/dsh-codex-side-outline/archive/2e923efab570557d056ba8cbbb915f55ff878ff7.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=10; Id='cost';           Name='Cost Meter';                Spec='dsh-cost-meter@1.5.10'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=11; Id='model-picker';   Name='模型选择器增强';            Spec='dsh-model-picker@1.0.2'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=12; Id='archive';        Name='Better Archive';             Spec='https://github.com/huahai0202/dsh-better-archive/archive/fa31fc486d35b1e270828fd068a240f1775fb992.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=13; Id='rewind';         Name='历史消息回退/重跑';          Spec='https://github.com/XSJUSTC/dsh-rewind/archive/6dcfcc9c4bf388519eb51a6ca312a140b8552154.tar.gz'; Recommended=$true; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=14; Id='dream-skin';     Name='Dream Skin 主题';            Spec='dsh-dream-skin@latest'; Recommended=$false; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=15; Id='status';         Name='Status Rotator 状态文案';    Spec='dsh-status-rotator@latest'; Recommended=$false; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=16; Id='sentinel';       Name='Sentinel 条件唤醒';          Spec='dsh-sentinel@latest'; Recommended=$false; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=17; Id='modlens';        Name='ModLens 视觉包装';           Spec='@liustack/modlens@latest'; Recommended=$false; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=18; Id='remote';         Name='Remote SSH 工作区';          Spec='dsh-remote@latest'; Recommended=$false; Full=$true; Allow=@() },
-    [pscustomobject]@{ No=19; Id='video';          Name='视频预览';                   Spec='dsh-video-preview@latest'; Recommended=$false; Full=$true; Allow=@() }
+    # ---- 核心推荐 ----
+    [pscustomobject]@{ No=1;  Id='market';        Name='插件市场';                  Spec='dshmarket@1.14.0'; Tier='core'; Allow=@() },
+    [pscustomobject]@{ No=2;  Id='sidebar';       Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@0.13.1'; Tier='core'; Allow=@('node-pty') },
+    [pscustomobject]@{ No=3;  Id='skills';        Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.23'; Tier='core'; Allow=@() },
+    [pscustomobject]@{ No=4;  Id='at-file';       Name='@file 文件引用';            Spec='https://github.com/omdsh-dev/dsh-at-file/archive/898369ece56ae6ec41afd8e014f187bb5b723409.tar.gz'; Tier='core'; Allow=@() },
+    [pscustomobject]@{ No=5;  Id='rewind';        Name='历史消息回退/重跑';         Spec='https://github.com/XSJUSTC/dsh-rewind/archive/6dcfcc9c4bf388519eb51a6ca312a140b8552154.tar.gz'; Tier='core'; Allow=@() },
+    # ---- 体验增强 ----
+    [pscustomobject]@{ No=6;  Id='file-mentions'; Name='文件路径点击/提及';         Spec='https://github.com/a903067276-rgb/dsh-file-mentions/archive/a303b81a32a890be02bc57fabd1e28583040ac12.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=7;  Id='collapse';      Name='Tool/Think 自动折叠';       Spec='https://github.com/a179-sanae/dsh-auto-collapse/archive/9d02fb02e8dd2fb56c5e82fcc5d68b5a5b62efcd.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=8;  Id='tidy';          Name='Codex 风格对话排版';        Spec='dsh-chat-tidy@0.2.0'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=9;  Id='outline';       Name='对话侧边大纲';              Spec='https://github.com/EnkiduGilgamesh/dsh-codex-side-outline/archive/2e923efab570557d056ba8cbbb915f55ff878ff7.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=10; Id='archive';       Name='Better Archive';            Spec='https://github.com/huahai0202/dsh-better-archive/archive/fa31fc486d35b1e270828fd068a240f1775fb992.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=11; Id='model-picker';  Name='模型选择器增强';            Spec='dsh-model-picker@1.0.2'; Tier='enhanced'; Allow=@() },
+    # ---- 高级/实验（默认不装） ----
+    [pscustomobject]@{ No=12; Id='auto-mode';     Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@0.1.4'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=13; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter@1.5.10'; Tier='advanced'; Allow=@(); Note='统计参考，不等于官方账单' },
+    [pscustomobject]@{ No=14; Id='dream-skin';    Name='Dream Skin 主题';           Spec='dsh-dream-skin@0.3.0'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=15; Id='status';        Name='Status Rotator 状态文案';   Spec='dsh-status-rotator@0.3.0'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=16; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=17; Id='modlens';       Name='ModLens 视觉包装';          Spec='@liustack/modlens@3.21.1'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=18; Id='remote';        Name='Remote SSH 工作区';         Spec='dsh-remote@0.5.7'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=19; Id='video';         Name='视频预览';                  Spec='dsh-video-preview@0.1.1'; Tier='advanced'; Allow=@() }
 )
 
 function Read-Default([string]$prompt, [string]$default) {
@@ -232,26 +237,81 @@ function Resolve-DshRunner([string]$version) {
 }
 
 # DSH 版本门槛：DesktopShell 验证基线为 $MinSupportedDshVersion。
-# 返回 $null 表示版本无法解析（按可用处理）；$false 表示低于基线；$true 表示支持。
-function Test-DshVersionSupported([string]$version) {
-    if ([string]::IsNullOrWhiteSpace($version)) { return $null }
-    try {
-        $v = [version]$version
-        if ($v -lt [version]$MinSupportedDshVersion) { return $false }
-        return $true
-    } catch { return $null }
+# 版本串是 SemVer（如 0.1.0-rc.7），不能用 [version] 强转——System.Version 不解析
+# 预发布后缀（0.1.0-rc.6 会抛异常被当“无法判断”而静默放行）。按 SemVer 规则比较：
+#   核心三段数字比较；正式版 > 预发布；预发布标识逐段比较
+#   （纯数字按数值；数字标识 < 字母标识；字母按 OrdinalIgnoreCase）。
+function ConvertTo-SemVerParts([string]$v) {
+    if ([string]::IsNullOrWhiteSpace($v)) { return $null }
+    if ($v -notmatch '^\s*(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?(?:\+[0-9A-Za-z.-]+)?\s*$') { return $null }
+    $pre = $Matches[4]
+    return [pscustomobject]@{
+        Major = [int]$Matches[1]
+        Minor = [int]$Matches[2]
+        Patch = [int]$Matches[3]
+        Pre = $(if ($pre) { @($pre -split '\.') } else { @() })
+    }
 }
 
-# 带版本门槛的现有 dsh 解析：低于基线时询问/自动改用 npx，而不是静默接管。
+function Compare-DshVersion([string]$a, [string]$b) {
+    # 返回 -1（a<b）、0（相等）、1（a>b）；任一方无法解析返回 $null。
+    $pa = ConvertTo-SemVerParts $a
+    $pb = ConvertTo-SemVerParts $b
+    if (-not $pa -or -not $pb) { return $null }
+    foreach ($n in @('Major', 'Minor', 'Patch')) {
+        if ($pa.$n -ne $pb.$n) { return $(if ($pa.$n -lt $pb.$n) { -1 } else { 1 }) }
+    }
+    if ($pa.Pre.Count -eq 0 -and $pb.Pre.Count -eq 0) { return 0 }
+    if ($pa.Pre.Count -eq 0) { return 1 }
+    if ($pb.Pre.Count -eq 0) { return -1 }
+    $i = 0
+    while ($i -lt [Math]::Min($pa.Pre.Count, $pb.Pre.Count)) {
+        $x = $pa.Pre[$i]
+        $y = $pb.Pre[$i]
+        $xn = $x -match '^\d+$'
+        $yn = $y -match '^\d+$'
+        if ($xn -and $yn) {
+            $xi = [int]$x; $yi = [int]$y
+            if ($xi -ne $yi) { return $(if ($xi -lt $yi) { -1 } else { 1 }) }
+        } elseif ($xn -ne $yn) {
+            return $(if ($xn) { -1 } else { 1 })
+        } else {
+            $cmp = [string]::Compare($x, $y, [StringComparison]::OrdinalIgnoreCase)
+            if ($cmp -ne 0) { return $(if ($cmp -lt 0) { -1 } else { 1 }) }
+        }
+        $i++
+    }
+    if ($pa.Pre.Count -eq $pb.Pre.Count) { return 0 }
+    return $(if ($pa.Pre.Count -lt $pb.Pre.Count) { -1 } else { 1 })
+}
+
+# $null = 版本串为空（无法读取，按可用处理）；$false = 低于基线或无法解析（未验证）；
+# $true = 支持。无法解析的版本串一律按“未验证”走门槛，而不是静默放行。
+function Test-DshVersionSupported([string]$version) {
+    if ([string]::IsNullOrWhiteSpace($version)) { return $null }
+    $cmp = Compare-DshVersion $version $MinSupportedDshVersion
+    if ($null -eq $cmp) { return $false }
+    return ($cmp -ge 0)
+}
+
+# 带版本门槛的现有 dsh 解析：低于基线/无法解析时询问或自动改用 npx，而不是静默接管。
 function Resolve-DshCommandWithGate([string]$existing) {
     $actual = Get-DshVersionFromCommand $existing
-    $support = Test-DshVersionSupported $actual
-    if ($support -ne $false) {
-        Ok "检测到现有 DSH，直接使用：$existing$(if ($actual) { "  ($actual)" } else { '' })"
-        return [pscustomobject]@{ Path=$existing; Version=$(if ($actual) {$actual} else {(Normalize-Version $defaultDshVersion)}); Mode='command' }
+    if ([string]::IsNullOrWhiteSpace($actual)) {
+        Ok "检测到现有 DSH（无法读取版本号），直接使用：$existing"
+        return [pscustomobject]@{ Path=$existing; Version=(Normalize-Version $defaultDshVersion); Mode='command' }
     }
 
-    Warn "检测到现有 DSH $actual，低于 DesktopShell 验证基线 $MinSupportedDshVersion（插件/settings 接口可能不兼容）。"
+    $cmp = Compare-DshVersion $actual $MinSupportedDshVersion
+    if ($null -eq $cmp) {
+        Warn "检测到现有 DSH，版本串无法解析（$actual），未通过验证基线 $MinSupportedDshVersion。"
+    } elseif ($cmp -ge 0) {
+        Ok "检测到现有 DSH，直接使用：$existing  ($actual)"
+        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command' }
+    } else {
+        Warn "检测到现有 DSH $actual，低于 DesktopShell 验证基线 $MinSupportedDshVersion（插件/settings 接口可能不兼容）。"
+    }
+
     if ($NonInteractive) {
         Warn "非交互模式：改用 npx @deepseek-ai/dsh@$MinSupportedDshVersion。"
         return $null
@@ -421,9 +481,13 @@ function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
 function Show-PluginCatalog {
     Write-Host ''
     foreach ($p in $PluginCatalog) {
-        $tag = if ($p.Recommended) { '推荐' } else { '可选' }
+        $tag = switch ($p.Tier) { 'core' { '核心推荐' } 'enhanced' { '体验增强' } default { '高级/实验' } }
         Write-Host ('{0,2}. {1,-28} [{2}]' -f $p.No, $p.Name, $tag)
+        if ($p.Note) { Write-Host ('      备注：{0}' -f $p.Note) -ForegroundColor DarkGray }
     }
+    Write-Host ''
+    Write-Host '内置目录全部为锁定版本（npm 精确版本 / GitHub commit），可复现。' -ForegroundColor DarkGray
+    Write-Host '需要追新版本的插件可在“额外插件”步骤粘贴自定义 spec。' -ForegroundColor DarkGray
 }
 
 function Select-Plugins([bool]$existingProfile) {
@@ -434,14 +498,16 @@ function Select-Plugins([bool]$existingProfile) {
         Write-Host '检测到已有 Profile。默认不会重装现有插件。'
         Write-Host '  0. 保留现有插件，不做变更（推荐）'
     }
-    Write-Host '  1. 推荐组合'
-    Write-Host '  2. 全部插件'
-    Write-Host '  3. 自定义选择'
+    Write-Host '  1. 核心推荐（5 个：插件市场 / 工作台 / Skills / @file / Rewind）'
+    Write-Host '  2. 核心推荐 + 体验增强（11 个）'
+    Write-Host '  3. 全部已审核插件（19 个，均为锁定版本）'
+    Write-Host '  4. 自定义选择'
     $defaultChoice = if ($existingProfile) { '0' } else { '1' }
     $choice = Read-Default '插件安装方案' $defaultChoice
     if ($choice -eq '0' -and $existingProfile) { return @() }
-    if ($choice -eq '1') { return @($PluginCatalog | Where-Object Recommended) }
-    if ($choice -eq '2') { return @($PluginCatalog | Where-Object Full) }
+    if ($choice -eq '1') { return @($PluginCatalog | Where-Object { $_.Tier -eq 'core' }) }
+    if ($choice -eq '2') { return @($PluginCatalog | Where-Object { $_.Tier -ne 'advanced' }) }
+    if ($choice -eq '3') { return @($PluginCatalog) }
 
     Show-PluginCatalog
     $raw = Read-Host '输入编号，逗号分隔（例如 1,2,10,13；留空=不装）'
@@ -507,6 +573,11 @@ function Install-Plugins([string]$profile, [object[]]$selected) {
 
     if ($failures.Count -gt 0) {
         Warn ('以下插件安装失败，但不影响其他插件：' + ($failures -join '；'))
+    }
+
+    if ($selected.Count -gt 0) {
+        Write-Host ''
+        Say '插件安装/更新完成。新插件与更新默认在 DSH 后端重启后生效：托盘图标 → 重启 DSH 后端。'
     }
 }
 
