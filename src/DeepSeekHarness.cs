@@ -953,6 +953,49 @@ namespace DeepSeekHarnessDesktop
             return IsLikelyDshProcess(pid, out commandLine);
         }
 
+        private int lastExternalPid = -1;
+        private DateTime lastExternalVerifyUtc = DateTime.MinValue;
+
+        /// <summary>
+        /// 后台健康检查专用（每 5 秒一次，避免频繁拉起 netstat/CIM 子进程）：
+        /// - 自家后端：进程存活 + TCP 即可（无需身份复验）
+        /// - 外部后端：TCP + PID 缓存，30 秒内直接复用；缓存过期/端口变化才重新验证身份
+        /// </summary>
+        public bool IsDshHealthy(int port, int timeoutMs)
+        {
+            if (OwnsBackend)
+            {
+                if (process == null || process.HasExited) return false;
+                return IsReady(port, timeoutMs);
+            }
+
+            if (!IsReady(port, timeoutMs))
+            {
+                lastExternalPid = -1;
+                return false;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            if (lastExternalPid > 0 && (now - lastExternalVerifyUtc).TotalSeconds < 30)
+                return true;
+
+            int pid = FindListeningPid(port);
+            if (pid <= 0)
+            {
+                lastExternalPid = -1;
+                return false;
+            }
+            string commandLine;
+            if (!IsLikelyDshProcess(pid, out commandLine))
+            {
+                lastExternalPid = -1;
+                return false;
+            }
+            lastExternalPid = pid;
+            lastExternalVerifyUtc = now;
+            return true;
+        }
+
         public void EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode)
         {
             if (runnerMode != "npx" && runnerMode != "command") runnerMode = "auto";
@@ -972,6 +1015,8 @@ namespace DeepSeekHarnessDesktop
                         "\r\n\r\n桌面壳拒绝把它当作 DSH。请更换端口或结束占用进程。");
 
                 OwnsBackend = false;
+                lastExternalPid = existingPid;
+                lastExternalVerifyUtc = DateTime.UtcNow;
                 return;
             }
 
@@ -2514,7 +2559,7 @@ namespace DeepSeekHarnessDesktop
 
             try
             {
-                bool ready = await Task.Run(delegate { return dsh.IsDshReady(settings.port, 350); });
+                bool ready = await Task.Run(delegate { return dsh.IsDshHealthy(settings.port, 350); });
                 if (ready)
                 {
                     healthFailures = 0;
