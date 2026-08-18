@@ -30,7 +30,6 @@ DesktopShell v1.0.0 按这个模型工作：
 1. 系统已存在 `dsh` 命令 → 直接使用，不重装、不移动
 2. 系统没有 `dsh` 命令 → 使用 `npx -y @deepseek-ai/dsh@<版本>`
 3. 不执行 `npm install -g`
-4. 不创建 `~/.dsh/runtime`
 
 npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 npm 全局安装。
 
@@ -48,8 +47,6 @@ npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 n
 ```
 .
 ├── assets/                 # 图标（.ico/.svg，源自官方 favicon.svg）
-├── docs/
-│   └── AUDIT.md            # 功能审计与边界检查报告
 ├── scripts/                # PowerShell：安装 / 管理 / 卸载 / 发布 / 修复
 │   ├── Install-Desktop.ps1      # 源码安装器（编译 + 向导）
 │   ├── Install-Release.ps1      # 发布包安装器（zip 内，免编译）
@@ -71,15 +68,13 @@ npx 只用于"获取/缓存并运行"，不会把 `@deepseek-ai/dsh` 注册成 n
 
 ### 方式一：GitHub 一键安装
 
-推送到 GitHub 并发布 Release 后，把 `OWNER/REPO` 换成实际值：
-
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/OWNER/REPO/main/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/main/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
 & "$env:TEMP\install-dsh.ps1"
 ```
 
-也可以双击仓库根目录的 `install.bat`（自动推断 git remote 的 Owner/Repo）。
+也可以双击仓库根目录的 `install.bat`（自动推断 git remote 的 metahumanz/DeepSeekHarness-DesktopShell）。
 
 ### 方式二：发布包 zip
 
@@ -168,7 +163,3 @@ $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 ```
 
 需要 WebView2 SDK 程序集（`Microsoft.Web.WebView2.Core.dll` / `WinForms.dll` / `WebView2Loader.dll`），安装器会从 NuGet 自动获取。
-
-## 审计
-
-功能审计与边界检查报告见 [docs/AUDIT.md](docs/AUDIT.md)。
