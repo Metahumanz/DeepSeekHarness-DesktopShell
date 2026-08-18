@@ -124,58 +124,8 @@ if ($missing.Count -gt 0) {
     Fail ("文件复制失败，缺少：{0}" -f ($missing -join '；'))
 }
 
-$manager = Join-Path $desktopDir 'Manage-Dsh.ps1'
-if ($NoWizard) {
-    Say 'NoWizard：发现现有 dsh 就使用；否则使用 npx；不改现有插件。'
-    & $manager -FirstInstall -NonInteractive
-} else {
-    & $manager -FirstInstall
-}
-if ($LASTEXITCODE -ne 0) {
-    Fail "初始化向导失败（退出码 $LASTEXITCODE），安装已中止。"
-}
-
-# 升级时继承第一次安装的历史事实（dshHomeExistedBeforeInstall 等），
-# 并记录 firstInstalledAt / lastUpdatedAt（见 Install-Release.ps1 同段注释）。
-$nowIso = (Get-Date).ToString('o')
-$priorState = $null
-if (Test-Path -LiteralPath $installStatePath -PathType Leaf) {
-    try { $priorState = Get-Content -LiteralPath $installStatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $priorState = $null }
-}
-$dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
-    [bool]$priorState.dshHomeExistedBeforeInstall
-} else {
-    [bool](Test-Path -LiteralPath $dshHome -PathType Container)
-}
-$webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
-    [bool]$priorState.webProfileExistedBeforeInstall
-} else {
-    [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
-}
-$firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
-    elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
-    else { $nowIso }
-
-$state = [ordered]@{
-    schemaVersion = 1
-    product = 'DeepSeek Harness DesktopShell'
-    version = '1.0.0'
-    dshHome = $dshHome
-    dshHomeExistedBeforeInstall = $dshHomeExistedBefore
-    webProfileExistedBeforeInstall = $webProfileExistedBefore
-    firstInstalledAt = $firstInstalledAt
-    installedAt = $nowIso
-    lastUpdatedAt = $nowIso
-}
-Write-Utf8NoBom $installStatePath (($state | ConvertTo-Json -Depth 10))
-
-# 目录所有权标记：卸载器只有再次验证 marker/install-state 后才允许递归删除本目录
-$marker = [ordered]@{
-    schemaVersion = 1
-    product = 'DeepSeek Harness DesktopShell'
-    installedAt = (Get-Date).ToString('o')
-}
-Write-Utf8NoBom (Join-Path $desktopDir '.dsh-desktop-shell-root') (($marker | ConvertTo-Json -Depth 10))
+# 顺序调整（事务性）：先编译，成功后才跑向导/写状态。
+# 避免旧顺序下“向导已装插件、状态已写，最后 C# 编译失败”留下半安装。
 
 $cscCandidates = @(
     "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
@@ -265,7 +215,61 @@ Remove-Item -LiteralPath $versionInfo -Force -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Fail "C# 编译失败，退出码 $LASTEXITCODE。" }
 Ok "已生成: $exe"
 
-if (Test-Path $startMenu) { Remove-Item $startMenu -Recurse -Force }
+# 编译成功后才跑初始化向导（失败则中止，不再继续写状态）
+$manager = Join-Path $desktopDir 'Manage-Dsh.ps1'
+if ($NoWizard) {
+    Say 'NoWizard：发现现有 dsh 就使用；否则使用 npx；不改现有插件。'
+    & $manager -FirstInstall -NonInteractive
+} else {
+    & $manager -FirstInstall
+}
+if ($LASTEXITCODE -ne 0) {
+    Fail "初始化向导失败（退出码 $LASTEXITCODE），安装已中止。"
+}
+
+# 升级时继承第一次安装的历史事实（dshHomeExistedBeforeInstall 等），
+# 并记录 firstInstalledAt / lastUpdatedAt（见 Install-Release.ps1 同段注释）。
+$nowIso = (Get-Date).ToString('o')
+$priorState = $null
+if (Test-Path -LiteralPath $installStatePath -PathType Leaf) {
+    try { $priorState = Get-Content -LiteralPath $installStatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $priorState = $null }
+}
+$dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
+    [bool]$priorState.dshHomeExistedBeforeInstall
+} else {
+    [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+}
+$webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
+    [bool]$priorState.webProfileExistedBeforeInstall
+} else {
+    [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+}
+$firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
+    elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
+    else { $nowIso }
+
+$state = [ordered]@{
+    schemaVersion = 1
+    product = 'DeepSeek Harness DesktopShell'
+    version = '1.0.0'
+    dshHome = $dshHome
+    dshHomeExistedBeforeInstall = $dshHomeExistedBefore
+    webProfileExistedBeforeInstall = $webProfileExistedBefore
+    firstInstalledAt = $firstInstalledAt
+    installedAt = $nowIso
+    lastUpdatedAt = $nowIso
+}
+Write-Utf8NoBom $installStatePath (($state | ConvertTo-Json -Depth 10))
+
+# 目录所有权标记：卸载器只有再次验证 marker/install-state 后才允许递归删除本目录
+$marker = [ordered]@{
+    schemaVersion = 1
+    product = 'DeepSeek Harness DesktopShell'
+    installedAt = $nowIso
+}
+Write-Utf8NoBom (Join-Path $desktopDir '.dsh-desktop-shell-root') (($marker | ConvertTo-Json -Depth 10))
+
+# 只创建/覆盖本产品自己的三个快捷方式，不整目录删除（用户可能放了自有快捷方式）
 New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
 
 $shell = New-Object -ComObject WScript.Shell

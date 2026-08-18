@@ -180,6 +180,9 @@ $appFiles = @(
 # 随包分发但非必需的文件（旧版发布包没有也不影响安装）
 $optionalFiles = @('install.bat', 'Repair-CostMeterLedger.ps1')
 
+$stage = $null
+$rollback = $null
+
 try {
     $missing = @($appFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $SetupDir $_) -PathType Leaf) })
     if ($missing.Count -gt 0) { Fail ("安装包不完整，缺少：{0}" -f ($missing -join '；')) }
@@ -188,7 +191,7 @@ try {
     $targetFull = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
     $inPlace = $setupFull -eq $targetFull
 
-    # ---- 安装目录所有权检查（在任何写入之前） ----
+    # ---- Preflight（任何写入之前；失败不留半安装） ----
     if (Test-DangerousInstallPath $targetFull) {
         Fail "安装目录不安全：$InstallDir 。不能使用盘符根、用户主目录、系统目录、Program Files、DSH_HOME 等已知大目录。"
     }
@@ -214,37 +217,63 @@ try {
         }
     }
 
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
+        Warn '此发布包为 x64 构建；ARM64 设备会通过 x64 模拟运行，或改用源码安装（Install-Desktop.ps1）获取原生构建。'
+    }
+    $webView2 = Get-WebView2RuntimeVersion
+    if (-not $webView2) {
+        $url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
+        $msg = "未检测到 WebView2 Runtime（Evergreen）。DesktopShell 依赖它承载界面。下载地址：$url"
+        if ($NoWizard) { Fail $msg }
+        Warn $msg
+        Read-Host '按 Enter 打开下载页（安装完成后重新运行本安装程序）' | Out-Null
+        Start-Process $url
+        Fail '请先安装 WebView2 Runtime，然后重新运行安装程序。'
+    }
+    Ok "WebView2 Runtime：$webView2"
+
+    # ---- Stage（事务式安装：先在旁路目录组装，成功后才换入正式目录） ----
+    $workTarget = $InstallDir
+    $legacyDesktopDir = Join-Path $dshHome 'desktop'
+
+    if (-not $inPlace) {
+        $stage = Join-Path (Split-Path -Parent $targetFull) ('.dsh-stage-' + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+        foreach ($f in $appFiles) {
+            Copy-Item -LiteralPath (Join-Path $SetupDir $f) -Destination (Join-Path $stage $f) -Force
+        }
+        foreach ($f in $optionalFiles) {
+            if (Test-Path -LiteralPath (Join-Path $SetupDir $f)) {
+                Copy-Item -LiteralPath (Join-Path $SetupDir $f) -Destination (Join-Path $stage $f) -Force
+            }
+        }
+        $copied = @($appFiles | Where-Object { Test-Path -LiteralPath (Join-Path $stage $_) -PathType Leaf }).Count
+        if ($copied -ne $appFiles.Count) { Fail "文件暂存不完整（$copied/$($appFiles.Count)）。" }
+
+        # 携带旧安装的用户数据（设置/日志/WebView2 数据）
+        $existingSettings = Join-Path $InstallDir 'settings.json'
+        $oldSettings = Join-Path $legacyDesktopDir 'settings.json'
+        if (Test-Path -LiteralPath $existingSettings -PathType Leaf) {
+            Copy-Item -LiteralPath $existingSettings -Destination (Join-Path $stage 'settings.json') -Force
+        } elseif (Test-Path -LiteralPath $oldSettings -PathType Leaf) {
+            Copy-Item -LiteralPath $oldSettings -Destination (Join-Path $stage 'settings.json') -Force
+            Ok '已迁移旧 DesktopShell settings.json；~/.dsh 的 DSH 数据保持原位。'
+        }
+        foreach ($carry in @('logs', 'webview2-data')) {
+            $src = Join-Path $InstallDir $carry
+            if (Test-Path -LiteralPath $src) {
+                Copy-Item -LiteralPath $src -Destination (Join-Path $stage $carry) -Recurse -Force
+            }
+        }
+        $workTarget = $stage
+    }
 
     # 只关闭将被覆盖的旧版桌面壳（路径精确匹配），不影响其它同名进程
     Stop-DesktopShellProcess (Join-Path $InstallDir 'DeepSeekHarness.exe')
 
-    $newSettings = Join-Path $InstallDir 'settings.json'
-    $legacyDesktopDir = Join-Path $dshHome 'desktop'
-    $oldSettings = Join-Path $legacyDesktopDir 'settings.json'
-    if (-not (Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $oldSettings)) {
-        Copy-Item -LiteralPath $oldSettings -Destination $newSettings -Force
-        Ok '已迁移旧 DesktopShell settings.json；~/.dsh 的 DSH 数据保持原位。'
-    }
-
-    if (-not $inPlace) {
-        foreach ($f in $appFiles) {
-            Copy-Item -LiteralPath (Join-Path $SetupDir $f) -Destination (Join-Path $InstallDir $f) -Force
-        }
-        foreach ($f in $optionalFiles) {
-            if (Test-Path -LiteralPath (Join-Path $SetupDir $f)) {
-                Copy-Item -LiteralPath (Join-Path $SetupDir $f) -Destination (Join-Path $InstallDir $f) -Force
-            }
-        }
-        $copied = @($appFiles | Where-Object { Test-Path -LiteralPath (Join-Path $InstallDir $_) -PathType Leaf }).Count
-        if ($copied -ne $appFiles.Count) { Fail "文件复制不完整（$copied/$($appFiles.Count)）。" }
-        Ok "已安装到：$InstallDir"
-    } else {
-        Ok "就地安装：$InstallDir"
-    }
-
     $stateVersion = '1.0.0'
-    $versionFile = Join-Path $InstallDir 'version.txt'
+    $versionFile = Join-Path $workTarget 'version.txt'
     if (Test-Path -LiteralPath $versionFile) {
         $raw = (Get-Content -LiteralPath $versionFile -Raw -ErrorAction SilentlyContinue).Trim()
         if ($raw) { $stateVersion = $raw }
@@ -284,35 +313,59 @@ try {
         installedAt = $nowIso
         lastUpdatedAt = $nowIso
     }
-    Write-Utf8NoBom (Join-Path $InstallDir 'install-state.json') (($state | ConvertTo-Json -Depth 10))
+    Write-Utf8NoBom (Join-Path $workTarget 'install-state.json') (($state | ConvertTo-Json -Depth 10))
 
     # 目录所有权标记：卸载器只有再次验证 marker/install-state 后才允许递归删除本目录
     $marker = [ordered]@{
         schemaVersion = 1
         product = $ProductId
-        installedAt = (Get-Date).ToString('o')
+        installedAt = $nowIso
     }
-    Write-Utf8NoBom (Join-Path $InstallDir $MarkerName) (($marker | ConvertTo-Json -Depth 10))
+    Write-Utf8NoBom (Join-Path $workTarget $MarkerName) (($marker | ConvertTo-Json -Depth 10))
 
-    # ---- 运行时预检 ----
-    if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
-        Warn '此发布包为 x64 构建；ARM64 设备会通过 x64 模拟运行，或改用源码安装（Install-Desktop.ps1）获取原生构建。'
+    # ---- Initialize（在暂存目录上执行管理器；失败则整体丢弃，不留半安装） ----
+    # -NoWizard 与源码安装器语义一致：仍然执行无人值守初始化（检查 Node、
+    # 解析现有 DSH / 准备 npx、初始化 Profile），只是不交互；缺少 Node 时中止，
+    # 避免“安装成功、首次启动才发现缺 Node”。
+    $manager = Join-Path $workTarget 'Manage-Dsh.ps1'
+    if ($NoWizard) {
+        Say 'NoWizard：无人值守初始化（发现现有 dsh 就使用；否则使用 npx；不改现有插件）。'
+        & $manager -FirstInstall -NonInteractive
+        if ($LASTEXITCODE -ne 0) { Fail "无人值守初始化失败（退出码 $LASTEXITCODE）。" }
+    } else {
+        & $manager -FirstInstall
+        if ($LASTEXITCODE -ne 0) { Fail "初始化向导失败（退出码 $LASTEXITCODE）。" }
     }
-    $webView2 = Get-WebView2RuntimeVersion
-    if (-not $webView2) {
-        $url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703'
-        $msg = "未检测到 WebView2 Runtime（Evergreen）。DesktopShell 依赖它承载界面。下载地址：$url"
-        if ($NoWizard) { Fail $msg }
-        Warn $msg
-        Read-Host '按 Enter 打开下载页（安装完成后重新运行本安装程序）' | Out-Null
-        Start-Process $url
-        Fail '请先安装 WebView2 Runtime，然后重新运行安装程序。'
+
+    # ---- Commit（非就地：目录交换 + 保留升级前的 exe 以便回滚） ----
+    if (-not $inPlace) {
+        $rollback = $targetFull + '.dsh-rollback-' + [Guid]::NewGuid().ToString('N')
+        $hadOld = Test-Path -LiteralPath $InstallDir -PathType Container
+        if ($hadOld) { Move-Item -LiteralPath $InstallDir -Destination $rollback }
+        try {
+            Move-Item -LiteralPath $stage -Destination $InstallDir
+        } catch {
+            if ($hadOld -and -not (Test-Path -LiteralPath $InstallDir)) {
+                Move-Item -LiteralPath $rollback -Destination $InstallDir -ErrorAction SilentlyContinue
+            }
+            Fail ("安装目录切换失败：{0}。旧安装已保留。" -f $_.Exception.Message)
+        }
+        if ($hadOld) {
+            $oldExe = Join-Path $rollback 'DeepSeekHarness.exe'
+            if (Test-Path -LiteralPath $oldExe -PathType Leaf) {
+                Copy-Item -LiteralPath $oldExe -Destination (Join-Path $InstallDir 'DeepSeekHarness.exe.previous') -Force
+                Ok '已保留升级前的 DeepSeekHarness.exe.previous（回滚用）。'
+            }
+            Remove-Item -LiteralPath $rollback -Recurse -Force -ErrorAction SilentlyContinue
+            $rollback = $null
+        }
+        $stage = $null
     }
-    Ok "WebView2 Runtime：$webView2"
+    Ok "已安装到：$InstallDir"
 
     if (-not $NoShortcuts) {
         $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeepSeek Harness'
-        if (Test-Path $startMenu) { Remove-Item $startMenu -Recurse -Force }
+        # 只创建/覆盖本产品自己的三个快捷方式，不整目录删除（用户可能放了自有快捷方式）
         New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
 
         $shell = New-Object -ComObject WScript.Shell
@@ -359,19 +412,6 @@ try {
         }
     }
 
-    # -NoWizard 与源码安装器语义一致：仍然执行无人值守初始化（检查 Node、
-    # 解析现有 DSH / 准备 npx、初始化 Profile），只是不交互；缺少 Node 时中止，
-    # 避免“安装成功、首次启动才发现缺 Node”。
-    $manager = Join-Path $InstallDir 'Manage-Dsh.ps1'
-    if ($NoWizard) {
-        Say 'NoWizard：无人值守初始化（发现现有 dsh 就使用；否则使用 npx；不改现有插件）。'
-        & $manager -FirstInstall -NonInteractive
-        if ($LASTEXITCODE -ne 0) { Fail "无人值守初始化失败（退出码 $LASTEXITCODE）。" }
-    } else {
-        & $manager -FirstInstall
-        if ($LASTEXITCODE -ne 0) { Fail "初始化向导失败（退出码 $LASTEXITCODE）。" }
-    }
-
     Ok "DeepSeek Harness DesktopShell $stateVersion 安装完成。"
     Write-Host "程序目录：$InstallDir"
     Write-Host "DSH_HOME：$dshHome"
@@ -382,6 +422,15 @@ try {
     }
     exit 0
 } catch {
+    # 事务清理：丢弃暂存目录；若交换失败且正式目录缺失，恢复旧安装
+    if ($stage -and (Test-Path -LiteralPath $stage)) {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($rollback -and (Test-Path -LiteralPath $rollback)) {
+        if (-not (Test-Path -LiteralPath $InstallDir)) {
+            Move-Item -LiteralPath $rollback -Destination $InstallDir -ErrorAction SilentlyContinue
+        }
+    }
     Write-Host ''
     Write-Host "失败：$($_.Exception.Message)" -ForegroundColor Red
     exit 1
