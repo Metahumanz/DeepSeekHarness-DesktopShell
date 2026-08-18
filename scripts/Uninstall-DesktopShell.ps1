@@ -267,7 +267,14 @@ if ($mode -eq 'full') {
     }
 }
 
-Remove-Item -LiteralPath $startMenu -Recurse -Force -ErrorAction SilentlyContinue
+# 只删除本产品自己的三个快捷方式；目录里若有用户自有文件则保留目录
+foreach ($lnk in @('DeepSeek Harness.lnk', '管理 DSH - 插件与配置.lnk', '卸载 DesktopShell.lnk')) {
+    Remove-Item -LiteralPath (Join-Path $startMenu $lnk) -Force -ErrorAction SilentlyContinue
+}
+$remaining = @(Get-ChildItem -LiteralPath $startMenu -Force -ErrorAction SilentlyContinue)
+if ($remaining.Count -eq 0) {
+    Remove-Item -LiteralPath $startMenu -Force -ErrorAction SilentlyContinue
+}
 
 if ($mode -eq 'full') {
     # 边界守卫：DSH_HOME 为空、等于或包含任何受保护目录、或位于桌面壳目录内时，
