@@ -1470,7 +1470,7 @@ namespace DeepSeekHarnessDesktop
                     effectiveVersion = actualCommandVersion;
             }
 
-            bool noOpen = SupportsNoOpen(command, usingNpx, version, profile);
+            bool noOpen = SupportsNoOpen(command, usingNpx, effectiveVersion, profile);
             string arguments = BuildWebLaunchArguments(usingNpx, version, profile, port, noOpen);
             AppendLog("CLI capabilities noOpen=" + noOpen.ToString() + " effectiveVersion=" + effectiveVersion);
 
@@ -2045,7 +2045,9 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private bool SupportsNoOpen(string command, bool usingNpx, string version, string profile)
         {
-            string key = (usingNpx ? "npx:" : "cmd:") + version + ":" + profile;
+            // 缓存 key 必须包含实际 command path 与 effectiveVersion：command/auto 模式下
+            // PATH 里的 DSH 可能被升级，不能用原始 settings 版本命中旧缓存。
+            string key = (usingNpx ? "npx:" : "cmd:") + command + ":" + version + ":" + profile;
             if (supportsNoOpenCache.HasValue && cliCapabilityKey == key)
                 return supportsNoOpenCache.Value;
 
