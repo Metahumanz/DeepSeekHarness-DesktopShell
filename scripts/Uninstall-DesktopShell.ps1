@@ -197,6 +197,35 @@ function Ask-UninstallMode {
 $mode = Ask-UninstallMode
 if ($mode -eq 'cancel') { exit 0 }
 
+# DSH_HOME 单一事实源冲突检测：运行期以环境变量为准，而 install-state 记录安装时的路径。
+# 两者不一致时不得静默二选一——交互模式列出两个路径让用户选择；无人值守拒绝猜测并降级。
+if ($mode -eq 'full' -and $state -and $state.dshHome) {
+    $envDshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $homeDir '.dsh' }
+    $drift = $false
+    try {
+        $a = [IO.Path]::GetFullPath([string]$state.dshHome).TrimEnd('\')
+        $b = [IO.Path]::GetFullPath($envDshHome).TrimEnd('\')
+        if ($a -ne $b) { $drift = $true }
+    } catch {}
+    if ($drift) {
+        if ($Force) {
+            Write-Host "[!] 当前 DSH_HOME（$envDshHome）与安装时记录（$($state.dshHome)）不一致；无人值守模式拒绝猜测，已降级为仅卸载桌面壳（DSH_HOME 保留）。" -ForegroundColor Yellow
+            $mode = 'shell'
+        } else {
+            $answer = [System.Windows.Forms.MessageBox]::Show(
+                "检测到 DSH_HOME 不一致：`r`n`r`n安装时记录：$($state.dshHome)`r`n当前环境：$envDshHome`r`n`r`n" +
+                "完整卸载需要删除 DSH_HOME，请选择删除哪一个：`r`n`r`n" +
+                "[是] 删除安装时记录的路径`r`n[否] 删除当前环境变量路径`r`n[取消] 仅卸载桌面壳，两者都保留",
+                'DeepSeek Harness DesktopShell',
+                [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+                [System.Windows.Forms.MessageBoxIcon]::Warning)
+            if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) { $dshHome = [string]$state.dshHome }
+            elseif ($answer -eq [System.Windows.Forms.DialogResult]::No) { $dshHome = $envDshHome }
+            else { $mode = 'shell' }
+        }
+    }
+}
+
 if ($mode -eq 'full' -and -not $Force) {
     $detail =
         "将永久删除：`r`n`r`n" +
@@ -263,6 +292,48 @@ if ($mode -eq 'full') {
         } else {
             Warn "端口 $webPort 有服务监听，但无法确认它是 DSH：完整卸载降级为仅卸载桌面壳（DSH_HOME 保留）。"
             $mode = 'shell'
+        }
+    }
+
+    # 枚举其它明显属于 DSH Web 的进程：同一 DSH_HOME 可能有第二个实例
+    # （dsh --profile other web --port 3090 等），它们同样可能正在读写 DSH_HOME。
+    if ($mode -eq 'full') {
+        $otherDsh = @()
+        try {
+            foreach ($p in (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+                if ($p.ProcessId -eq $PID) { continue }
+                if ($dshPid -gt 0 -and $p.ProcessId -eq $dshPid) { continue }
+                if (Test-LikelyDshCommandLine ([string]$p.CommandLine)) {
+                    $otherDsh += [pscustomobject]@{ Pid = $p.ProcessId; CommandLine = [string]$p.CommandLine }
+                }
+            }
+        } catch {}
+        if ($otherDsh.Count -gt 0) {
+            $list = ($otherDsh | ForEach-Object { "PID $($_.Pid): $($_.CommandLine)" }) -join "`r`n"
+            $stopOthers = $true
+            if (-not $Force) {
+                $a = [System.Windows.Forms.MessageBox]::Show(
+                    "仍检测到其它 DSH 实例在运行：`r`n`r`n$list`r`n`r`n" +
+                    '它们可能正在读写 DSH_HOME。是否停止它们并继续完整卸载？（否=降级为仅卸载桌面壳）',
+                    'DeepSeek Harness DesktopShell',
+                    [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning)
+                $stopOthers = ($a -eq [System.Windows.Forms.DialogResult]::Yes)
+            }
+            if ($stopOthers) {
+                $failedStop = @()
+                foreach ($o in $otherDsh) {
+                    try { Stop-Process -Id $o.Pid -Force -ErrorAction Stop } catch { $failedStop += $o.Pid }
+                }
+                if ($failedStop.Count -gt 0) {
+                    Warn "部分 DSH 实例停止失败（PID $($failedStop -join ',')），完整卸载降级为仅卸载桌面壳。"
+                    $mode = 'shell'
+                } else {
+                    Say "已停止其它 DSH 实例（$($otherDsh.Count) 个）。"
+                }
+            } else {
+                $mode = 'shell'
+            }
         }
     }
 }
@@ -343,7 +414,8 @@ if ($mode -eq 'full') {
         try {
             Remove-Item -LiteralPath $dshHome -Recurse -Force -ErrorAction Stop
         } catch {
-            $warnText = "删除 DSH_HOME 失败：$($_.Exception.Message)`r`n桌面壳仍会继续卸载。"
+            # 结果状态改为 partial：不能宣称“完整卸载成功”而 DSH_HOME 其实还在
+            $warnText = "删除 DSH_HOME 失败：$($_.Exception.Message)`r`n桌面壳仍会继续卸载（结果：部分卸载）。"
             if ($Force) { Write-Host "[!] $warnText" -ForegroundColor Yellow }
             else {
                 [System.Windows.Forms.MessageBox]::Show(
@@ -352,6 +424,7 @@ if ($mode -eq 'full') {
                     [System.Windows.Forms.MessageBoxButtons]::OK,
                     [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
             }
+            $mode = 'partial'
         }
     }
 }
@@ -385,6 +458,8 @@ Start-Process -FilePath $runner -ArgumentList @('-NoProfile','-ExecutionPolicy',
 
 $msg = if ($mode -eq 'full') {
     '完整卸载已开始：DesktopShell 和 DSH_HOME 都会删除。'
+} elseif ($mode -eq 'partial') {
+    '部分卸载完成：DesktopShell 已删除，但 DSH_HOME 删除失败（已保留）。请检查后手动清理。'
 } else {
     'DesktopShell 卸载已开始；DSH_HOME 保留，可继续单独使用 DSH。'
 }
