@@ -6,6 +6,9 @@ name: Release
 # - 或推送 v* tag 自动触发（版本号取 tag，去掉 v 前缀）
 # 产物：release/DeepSeekHarness-DesktopShell.zip + SHA256SUMS.txt（x64）
 # （一键安装 Install-FromGitHub.ps1 会下载这两个资产并强制校验 SHA256）
+#
+# 结构：build job 只读验证+构建（无写权限）；publish job 持有 contents:write，
+# 负责打 tag、删除旧 Release（仅重发布场景）与创建 Release。所有 Actions 钉 commit SHA。
 
 on:
   workflow_dispatch:
@@ -18,16 +21,11 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
-
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
 
       - name: Resolve version
         id: version
@@ -44,9 +42,13 @@ jobs:
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Resolved version: $v"
 
-      - name: Run verify gate
+      - name: Run verify gate (PowerShell 7)
         shell: pwsh
         run: pwsh -NoProfile -File tests/verify.ps1
+
+      - name: Run verify gate (Windows PowerShell 5.1)
+        shell: pwsh
+        run: powershell -NoProfile -File tests/verify.ps1 -SkipAnalyzer
 
       - name: Build release package
         shell: pwsh
@@ -56,13 +58,48 @@ jobs:
         shell: pwsh
         run: |
           $zip = 'release/DeepSeekHarness-DesktopShell.zip'
-          $expected = 14
+          $expected = 15
           $tmp = Join-Path $env:TEMP ('rel-verify-' + [guid]::NewGuid().ToString('N'))
           Expand-Archive -Path $zip -DestinationPath $tmp -Force
           $actual = @(Get-ChildItem -Path (Join-Path $tmp 'DeepSeek Harness DesktopShell') -File).Count
           if ($actual -ne $expected) { throw "zip file count $actual != $expected" }
           if (-not (Test-Path 'release/SHA256SUMS.txt')) { throw 'SHA256SUMS.txt missing' }
           Write-Host "Package verified ($actual files)."
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4.6.2
+        with:
+          name: release-package
+          path: |
+            release/DeepSeekHarness-DesktopShell.zip
+            release/SHA256SUMS.txt
+
+  publish:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "push") {
+            $v = "${{ github.ref_name }}".TrimStart('v')
+          } else {
+            $v = "${{ github.event.inputs.version }}".TrimStart('v')
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e   # v4.2.1
+        with:
+          name: release-package
+          path: ./release/
 
       - name: Ensure tag (manual dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -100,7 +137,7 @@ jobs:
           }
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda   # v2.2.1
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: DeepSeek Harness DesktopShell v${{ steps.version.outputs.version }}
@@ -110,9 +147,13 @@ jobs:
             同时匹配才继续）。
             本发布包面向 Windows 10/11 **x64**（WebView2Loader 为 win-x64 变体）。
 
-            **第六轮审计修复**：DSH_HOME 迁移检测与元数据重算；升级先停旧壳再复制 webview2-data；
-            Cost Meter 账本修复改为从剩余合法桶重新汇总（顺带归一化）；新 Profile 默认纯 DSH 不装
-            社区插件；SHA256SUMS 校验要求文件名+hash 同时匹配；文案收敛为完整性校验。
+            **第七轮修复**：修复启动命令非法拼接（--profile X 后多余的 web 子命令，DSH
+            rejectParentOptions 拒绝导致无法启动）；启动前重新验证现有 dsh 版本；DSH_HOME
+            漂移确认；移除常驻 DSH 进程的 Git rewrite；源码安装器复用发布安装核心；卸载
+            多 DSH 实例与 partial 状态；健康检查改用原生 TCP 表 owner PID；版本/兼容基线
+            单一来源（VERSION + COMPATIBILITY.json）；SHA256SUMS 文件名+hash 双匹配。
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
           files: |
             release/DeepSeekHarness-DesktopShell.zip

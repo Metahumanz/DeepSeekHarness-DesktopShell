@@ -9,9 +9,9 @@ jobs:
   verify:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
 
-      # 统一门禁（tests/verify.ps1）：解析 + PSScriptAnalyzer + 五项回归测试
+      # 统一门禁（tests/verify.ps1）：解析 + PSScriptAnalyzer + 六项回归测试
       - name: Verify gate (PowerShell 7)
         shell: pwsh
         run: pwsh -NoProfile -File tests/verify.ps1
@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           $zip = 'release/DeepSeekHarness-DesktopShell.zip'
-          $expected = 14
+          $expected = 15
           $tmp = Join-Path $env:TEMP ('ci-verify-' + [guid]::NewGuid().ToString('N'))
           Expand-Archive -Path $zip -DestinationPath $tmp -Force
           $actual = @(Get-ChildItem -Path (Join-Path $tmp 'DeepSeek Harness DesktopShell') -File).Count
@@ -37,7 +37,7 @@ jobs:
           Write-Host "zip content verified ($actual files)."
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4.6.2
         with:
           name: release-package
           path: |
