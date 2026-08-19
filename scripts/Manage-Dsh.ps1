@@ -581,14 +581,16 @@ function Select-Plugins([bool]$existingProfile) {
     if ($existingProfile) {
         Write-Host '检测到已有 Profile。默认不会重装现有插件。'
         Write-Host '  0. 保留现有插件，不做变更（推荐）'
+    } else {
+        # 默认 0：纯 DSH，不自动执行第三方代码；核心推荐标为推荐但需主动选择
+        Write-Host '  0. 纯 DSH，不安装社区插件（推荐）'
     }
     Write-Host '  1. 核心推荐（5 个：插件市场 / 工作台 / Skills / @file / Rewind）'
     Write-Host '  2. 核心推荐 + 体验增强（11 个）'
     Write-Host '  3. 全部已审核插件（19 个，均为锁定版本）'
     Write-Host '  4. 自定义选择'
-    $defaultChoice = if ($existingProfile) { '0' } else { '1' }
-    $choice = Read-Default '插件安装方案' $defaultChoice
-    if ($choice -eq '0' -and $existingProfile) { return @() }
+    $choice = Read-Default '插件安装方案' '0'
+    if ($choice -eq '0') { return @() }
     if ($choice -eq '1') { return @($PluginCatalog | Where-Object { $_.Tier -eq 'core' }) }
     if ($choice -eq '2') { return @($PluginCatalog | Where-Object { $_.Tier -ne 'advanced' }) }
     if ($choice -eq '3') { return @($PluginCatalog) }
