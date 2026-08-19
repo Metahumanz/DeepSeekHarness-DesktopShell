@@ -10,11 +10,11 @@ function Assert-Equal([string]$label, $actual, $expected) {
     else { $fail++; Write-Host "FAIL: $label  (actual=<$actual> expected=<$expected>)" }
 }
 
-# ---- 1. 纯函数：Resolve-RunnerMode / Normalize-Profile / Test-ReservedProfileName（AST 提取真实实现） ----
+# ---- 1. 纯函数：Resolve-RunnerMode / Normalize-Profile / Test-ReservedProfileName / Resolve-DshCommandForOps（AST 提取真实实现） ----
 $tokens = @(); $errors = @()
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($manager, [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { Write-Error "Manage-Dsh.ps1 解析失败"; exit 1 }
-$names = @('Resolve-RunnerMode', 'Normalize-Profile', 'Test-ReservedProfileName')
+$names = @('Resolve-RunnerMode', 'Normalize-Profile', 'Test-ReservedProfileName', 'Resolve-DshCommandForOps')
 $funcs = $ast.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $names
@@ -22,6 +22,10 @@ $funcs = $ast.FindAll({
 if ($funcs.Count -ne $names.Count) { Write-Error "函数提取失败"; exit 1 }
 $text = (@($funcs) | ForEach-Object { $_.Extent.Text }) -join "`n"
 $ReservedProfileNames = @('node_modules', 'con', 'prn', 'aux', 'nul')
+# Resolve-DshCommandForOps 引用的依赖在本测试作用域内提供桩实现
+$script:fakeDsh = $null
+function Fail([string]$m) { throw $m }
+function Get-DshCommand { return $script:fakeDsh }
 . ([scriptblock]::Create($text))
 
 Assert-Equal "mode npx"          (Resolve-RunnerMode 'npx') 'npx'
@@ -39,6 +43,21 @@ Assert-Equal "profile lpt1 reserved" (Normalize-Profile 'lpt1') 'web'
 Assert-Equal "profile nul reserved"  (Normalize-Profile 'nul') 'web'
 Assert-Equal "profile dots invalid"  (Normalize-Profile 'a..b') 'web'
 Assert-Equal "profile valid"     (Normalize-Profile 'my-profile') 'my-profile'
+
+# ---- 1b. Resolve-DshCommandForOps：与 C# EnsureStarted 完全一致的 runnerMode 决策 ----
+$existingFile = $MyInvocation.MyCommand.Path
+Assert-Equal "ops npx never picks PATH dsh" (Resolve-DshCommandForOps 'npx' $existingFile) $null
+Assert-Equal "ops auto uses saved path"     (Resolve-DshCommandForOps 'auto' $existingFile) $existingFile
+$script:fakeDsh = $existingFile
+Assert-Equal "ops auto falls back to PATH"  (Resolve-DshCommandForOps 'auto' 'C:\missing\no-such-dsh.cmd') $existingFile
+Assert-Equal "ops command uses saved path"  (Resolve-DshCommandForOps 'command' $existingFile) $existingFile
+$script:fakeDsh = $null
+$cmdErr = ''
+try { Resolve-DshCommandForOps 'command' 'C:\missing\no-such-dsh.cmd' | Out-Null }
+catch { $cmdErr = $_.Exception.Message }
+Assert-Equal "ops command without dsh fails" ($cmdErr -match 'dshRunnerMode=command') $true
+$script:fakeDsh = $null
+Assert-Equal "ops auto without dsh -> npx"   (Resolve-DshCommandForOps 'auto' 'C:\missing\no-such-dsh.cmd') $null
 
 # ---- 2. 端到端：runnerMode 持久化（修掉“选 npx 最后又跑 PATH dsh”的回归） ----
 $base = Join-Path $env:TEMP ('dsh-runner-test-' + [guid]::NewGuid().ToString('N'))
@@ -111,6 +130,14 @@ if ((Invoke-HermeticInstall $tD) -ne 0) { $fail++; 'D FAILED: install' }
 $sD = Get-InstalledSettings $tD
 Assert-Equal "D mode=npx (rc.8 unverified)" $sD.dshRunnerMode 'npx'
 Assert-Equal "D path empty" ([string]$sD.dshPath) ''
+
+# 场景 E：PATH 里有 dsh 但 --version 失败/无输出（读不到版本）-> 未验证，非交互自动改 npx
+"@echo off`r`nexit /b 1`r`n" | Set-Content -LiteralPath $dshCmd -Encoding ascii
+$tE = Join-Path $base 'caseE'
+if ((Invoke-HermeticInstall $tE) -ne 0) { $fail++; 'E FAILED: install' }
+$sE = Get-InstalledSettings $tE
+Assert-Equal "E mode=npx (version unreadable)" $sE.dshRunnerMode 'npx'
+Assert-Equal "E path empty" ([string]$sE.dshPath) ''
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail -eq 0) { Write-Host 'RUNNER MODE TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
