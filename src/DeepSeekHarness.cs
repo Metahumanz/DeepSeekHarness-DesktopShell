@@ -2728,7 +2728,10 @@ namespace DeepSeekHarnessDesktop
         private StartupPhase currentPhase = StartupPhase.CommandVerify;
         private string overlayReason;
         private Icon runtimeIcon;
-        private ContextMenuStrip activeWebContextMenu;
+        // WebView 右键菜单：MainForm 生命周期内复用一个实例，不在 Closed/替换路径 Dispose。
+        private ContextMenuStrip webContextMenu;
+        private CoreWebView2Deferral webContextDeferral;
+        private bool webContextDeferralCompleted;
 
         private const int VK_CONTROL = 0x11;
         private const int VK_SHIFT = 0x10;
@@ -3544,20 +3547,19 @@ namespace DeepSeekHarnessDesktop
 
             try
             {
-                if (activeWebContextMenu != null)
-                {
-                    ContextMenuStrip previous = activeWebContextMenu;
-                    activeWebContextMenu = null;
-                    // 只关闭旧菜单，Dispose 延迟到当前 WinForms 菜单消息处理完成之后，
-                    // 避免在 ToolStripDropDown 的 Close/SetVisibleCore 调用栈中同步释放。
-                    if (!previous.IsDisposed)
-                        previous.Close();
-                    DisposeWebContextMenuDeferred(previous);
-                }
+                // 复用同一个 ContextMenuStrip：先结束上一个 request 的 deferral，再清空重填。
+                // 菜单本体只在 MainForm.Dispose 中释放，绝不在 Closed/替换路径 Dispose。
+                CompleteWebContextDeferral();
 
-                ContextMenuStrip menu = new ContextMenuStrip();
-                ApplyMenuTheme(menu, currentDark);
-                activeWebContextMenu = menu;
+                ContextMenuStrip menu = EnsureWebContextMenu();
+                if (menu.Visible)
+                    menu.Close();
+
+                webContextDeferral = deferral;
+                webContextDeferralCompleted = false;
+
+                menu.SuspendLayout();
+                menu.Items.Clear();
 
                 CoreWebView2ContextMenuTarget target = e.ContextMenuTarget;
                 bool any = false;
@@ -3637,66 +3639,48 @@ namespace DeepSeekHarnessDesktop
                 }
 
                 TrimContextSeparators(menu);
+                menu.ResumeLayout();
 
                 if (!any || menu.Items.Count == 0)
                 {
-                    menu.Dispose();
-                    activeWebContextMenu = null;
-                    deferral.Complete();
+                    CompleteWebContextDeferral();
+                    if (menu.Visible)
+                        menu.Close();
                     return;
                 }
-
-                bool deferralCompleted = false;
-
-                menu.Closed += delegate
-                {
-                    if (!deferralCompleted)
-
-                    {
-
-                        try { deferral.Complete(); } catch { }
-
-                        deferralCompleted = true;
-
-                    }
-
-                    DisposeWebContextMenuDeferred(menu);
-
-                    if (Object.ReferenceEquals(activeWebContextMenu, menu))
-                        activeWebContextMenu = null;
-                };
 
                 Point screenPoint = webView.PointToScreen(e.Location);
                 menu.Show(screenPoint);
             }
             catch
             {
-                try { deferral.Complete(); } catch { }
+                CompleteWebContextDeferral();
             }
         }
 
-        /// <summary>
-        /// 延迟释放 WebView 右键菜单。菜单的 Closed/替换路径可能正处在 WinForms
-        /// ToolStripDropDown 的关闭消息处理中，此时同步 Dispose 会让框架继续访问已释放对象；
-        /// 放到 UI 线程下一条消息再释放，避免 ObjectDisposedException。
-        /// </summary>
-        private void DisposeWebContextMenuDeferred(ContextMenuStrip menu)
+        private ContextMenuStrip EnsureWebContextMenu()
         {
-            if (menu == null) return;
-            try
+            if (webContextMenu == null)
             {
-                BeginInvoke((MethodInvoker)delegate
+                webContextMenu = new ContextMenuStrip();
+                ApplyMenuTheme(webContextMenu, currentDark);
+                // Closed 只负责完成当前 request 的 deferral，绝不 Dispose 菜单本体。
+                webContextMenu.Closed += delegate
                 {
-                    if (!menu.IsDisposed)
-                        menu.Dispose();
-                });
+                    CompleteWebContextDeferral();
+                };
             }
-            catch (InvalidOperationException)
+            return webContextMenu;
+        }
+
+        private void CompleteWebContextDeferral()
+        {
+            if (webContextDeferral != null && !webContextDeferralCompleted)
             {
-                // 窗体已关闭/句柄不可用时不会有活动菜单消息，直接释放是安全的。
-                if (!menu.IsDisposed)
-                    menu.Dispose();
+                try { webContextDeferral.Complete(); } catch { }
             }
+            webContextDeferralCompleted = true;
+            webContextDeferral = null;
         }
 
 
@@ -4495,7 +4479,7 @@ namespace DeepSeekHarnessDesktop
             ThemeHelper.ApplyButtonTheme(overlaySecondaryButton, dark);
             ThemeHelper.ApplyButtonTheme(copyErrorButton, dark);
             ApplyMenuTheme(trayMenu, dark);
-            ApplyMenuTheme(activeWebContextMenu, dark);
+            ApplyMenuTheme(webContextMenu, dark);
 
             string iconFile = Path.Combine(
                 baseDirectory,
@@ -4526,7 +4510,7 @@ namespace DeepSeekHarnessDesktop
                 try { healthTimer.Stop(); healthTimer.Dispose(); } catch { }
                 try { trayIcon.Visible = false; trayIcon.Dispose(); } catch { }
                 try { trayMenu.Dispose(); } catch { }
-                try { if (activeWebContextMenu != null) activeWebContextMenu.Dispose(); } catch { }
+                try { if (webContextMenu != null) webContextMenu.Dispose(); } catch { }
                 try { dsh.Dispose(); } catch { }
                 try { webView.Dispose(); } catch { }
                 try { if (runtimeIcon != null) runtimeIcon.Dispose(); } catch { }
