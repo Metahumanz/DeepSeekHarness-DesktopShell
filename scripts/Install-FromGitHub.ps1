@@ -16,7 +16,7 @@
 .DESCRIPTION
     - 未指定 Owner/Repo 时，优先从 `git remote get-url origin` 推断
     - 指定 -Tag 下载对应版本；否则下载 latest
-    - 下载后必须通过同源 SHA256SUMS.txt 校验（供应链保护，失败即中止）
+    - 下载后必须通过同源 SHA256SUMS.txt 完整性校验（文件名与 hash 同时匹配，失败即中止）
     - 指定 -ZipPath 时使用本地 zip（离线 / 测试用；若旁边有 SHA256SUMS.txt 同样校验）
     - 其余参数透传给 Install-Release.ps1
 
@@ -43,10 +43,11 @@ function Warn([string]$text) { Write-Host "[!]   $text" -ForegroundColor Yellow 
 function Fail([string]$text) { throw $text }
 
 # 校验 zip 的 SHA256 与 SHA256SUMS.txt 一致（兼容 "SHA256  <hash>  <name>" 与 "<hash>  <name>" 两种格式）。
+# 要求「文件名 + hash 同时匹配」，不允许退化成“任意条目 hash 相同也算通过”。
 # -Mandatory 时缺失/解析失败/不匹配一律 Fail（网络下载链必须校验）。
 function Confirm-ZipHash([string]$zipFile, [string]$sumsPath, [bool]$mandatory) {
     if (-not (Test-Path -LiteralPath $sumsPath -PathType Leaf)) {
-        if ($mandatory) { Fail '无法获取 SHA256SUMS.txt（供应链校验缺失），安装已中止。' }
+        if ($mandatory) { Fail '无法获取 SHA256SUMS.txt（Release 完整性校验缺失），安装已中止。' }
         Warn '未找到 SHA256SUMS.txt，跳过本地发布包校验（离线/测试路径）。'
         return
     }
@@ -60,11 +61,10 @@ function Confirm-ZipHash([string]$zipFile, [string]$sumsPath, [bool]$mandatory) 
     if ($entries.Count -eq 0) { Fail 'SHA256SUMS.txt 内容无法解析，安装已中止。' }
     $zipName = [IO.Path]::GetFileName($zipFile)
     $byName = @($entries | Where-Object { $_.Name -eq $zipName })
-    $ok = if ($byName.Count -gt 0) {
-        @($byName | Where-Object { $_.Hash -eq $actual }).Count -gt 0
-    } else {
-        @($entries | Where-Object { $_.Hash -eq $actual }).Count -gt 0
+    if ($byName.Count -eq 0) {
+        Fail "SHA256SUMS.txt 中没有找到与发布包同名（$zipName）的条目，安装已中止。"
     }
+    $ok = @($byName | Where-Object { $_.Hash -eq $actual }).Count -gt 0
     if (-not $ok) {
         Fail ("SHA256 校验失败：$zipName 与 SHA256SUMS.txt 不一致，安装已中止。")
     }
