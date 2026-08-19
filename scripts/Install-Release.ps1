@@ -184,7 +184,8 @@ $appFiles = @(
     'DeepSeekHarness.svg',
     'Manage-Dsh.ps1',
     'Uninstall-DesktopShell.ps1',
-    'version.txt'
+    'version.txt',
+    'COMPATIBILITY.json'
 )
 
 # 随包分发但非必需的文件（旧版发布包没有也不影响安装）

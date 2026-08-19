@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '1.0.0',
+    [string]$Version = '',
     [string]$OutDir = '',
     [string]$SdkDir = '',
     [ValidateSet('x64', 'arm64', 'x86')]
@@ -15,9 +15,11 @@
        → 同版本 NuGet 包目录 → NuGet 在线下载；不再从多个来源拼凑
        -Arch 决定 WebView2Loader.dll 变体（x64/arm64/x86，默认 x64；v1.0.0 首发 x64）
     2. 用 .NET Framework csc 编译 DeepSeekHarness.exe，EXE 的
-       AssemblyVersion / FileVersion / InformationalVersion 与 -Version 同步
-    3. 组装自包含目录（含 Repair-CostMeterLedger.ps1 手工修复工具）并打包 zip
+       AssemblyVersion / FileVersion / InformationalVersion / manifest 版本与 -Version 同步
+    3. 组装自包含目录（含 Repair-CostMeterLedger.ps1、COMPATIBILITY.json）并打包 zip
     4. 自校验 zip 内容并输出 SHA256SUMS.txt
+
+    版本单一来源：不传 -Version 时读取根目录 VERSION 文件。
 
 .EXAMPLE
     .\scripts\Build-Release.ps1
@@ -27,6 +29,16 @@
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# 版本单一来源：未显式传 -Version 时读取根目录 VERSION
+if (-not $Version) {
+    $rootVersionFile = Join-Path (Split-Path -Parent $PSScriptRoot) 'VERSION'
+    if (Test-Path -LiteralPath $rootVersionFile -PathType Leaf) {
+        $raw = (Get-Content -LiteralPath $rootVersionFile -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($raw) { $Version = $raw }
+    }
+    if (-not $Version) { $Version = '1.0.0' }
+}
 
 # Windows PowerShell 5.1 与 PowerShell 7 均支持
 if ($PSVersionTable.PSVersion -lt [version]'5.1') {
@@ -158,11 +170,17 @@ using System.Reflection;
 [assembly: AssemblyInformationalVersion("$Version")]
 "@ | Set-Content -LiteralPath $versionInfo -Encoding ascii
 
+        # manifest assemblyIdentity 版本同样与 -Version 同步（避免 EXE 显示新版本而清单还是 1.0.0.0）
+        $manifestText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'src\app.manifest'))
+        $manifestText = $manifestText -replace 'version="\d+\.\d+\.\d+\.\d+"', ("version=`"{0}`"" -f $assemblyVersion)
+        $manifestTemp = Join-Path $staging 'app.manifest'
+        [System.IO.File]::WriteAllText($manifestTemp, $manifestText, [System.Text.UTF8Encoding]::new($true))
+
         $compilerArgs = @(
             '/nologo', '/target:winexe', '/platform:anycpu', '/optimize+',
             "/out:$exe",
             "/win32icon:$(Join-Path $repoRoot 'assets\DeepSeekHarness.ico')",
-            "/win32manifest:$(Join-Path $repoRoot 'src\app.manifest')",
+            "/win32manifest:$manifestTemp",
             '/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Drawing.dll',
             '/reference:System.Windows.Forms.dll', '/reference:System.Web.Extensions.dll',
             "/reference:$($sdk.Core)", "/reference:$($sdk.WinForms)",
@@ -189,6 +207,7 @@ using System.Reflection;
         Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Uninstall-DesktopShell.ps1') -Destination (Join-Path $appDir 'Uninstall-DesktopShell.ps1') -Force
         Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Install-Release.ps1') -Destination (Join-Path $appDir 'Install-Release.ps1') -Force
         Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Repair-CostMeterLedger.ps1') -Destination (Join-Path $appDir 'Repair-CostMeterLedger.ps1') -Force
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'COMPATIBILITY.json') -Destination (Join-Path $appDir 'COMPATIBILITY.json') -Force
         Set-Content -LiteralPath (Join-Path $appDir 'version.txt') -Value $Version -Encoding ascii
 
         $bat = @'
@@ -214,7 +233,7 @@ pause
         $verify = Join-Path $env:TEMP ("dsh-release-verify-" + [Guid]::NewGuid().ToString('N'))
         try {
             Expand-Archive -LiteralPath $zip -DestinationPath $verify -Force
-            $expected = 14
+            $expected = 15
             $actual = @(Get-ChildItem -LiteralPath (Join-Path $verify 'DeepSeek Harness DesktopShell') -File -ErrorAction SilentlyContinue).Count
             if ($actual -ne $expected) { Fail "zip 自校验失败：期望 $expected 个文件，实际 $actual。" }
             Ok "zip 自校验通过（$actual 个文件）。"
