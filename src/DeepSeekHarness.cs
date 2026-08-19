@@ -924,6 +924,11 @@ namespace DeepSeekHarnessDesktop
         private int ownedPort = -1;
         private string ownedProfile = "";
 
+        // 本次启动的 DSH 进程树是否已输出官方 ready banner（辅助信号，不取代 Job/PID 检查）
+        private bool sawReadyBanner;
+        // 端口身份转换日志去重：只记录状态变化
+        private string lastPortLog = "";
+
         /// <summary>启动时保存的 wrapper（cmd/npx 包装进程）PID；无则 -1。</summary>
         public int WrapperPid
         {
@@ -999,6 +1004,12 @@ namespace DeepSeekHarnessDesktop
 
         [DllImport("kernel32.dll")]
         private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool IsProcessInJob(
+            IntPtr processHandle,
+            IntPtr jobHandle,
+            out bool result);
 
         public bool IsReady(int port, int timeoutMs)
         {
@@ -1186,7 +1197,14 @@ namespace DeepSeekHarnessDesktop
             return true;
         }
 
-        public void EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowUnverifiedAttach)
+        /// <summary>启动结果：wrapper（cmd/npx 包装进程）与真正 listener 的 PID。</summary>
+        public class BackendStartResult
+        {
+            public int WrapperPid;
+            public int ListenerPid;
+        }
+
+        public BackendStartResult EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowUnverifiedAttach)
         {
             if (runnerMode != "npx" && runnerMode != "command") runnerMode = "auto";
 
@@ -1220,7 +1238,7 @@ namespace DeepSeekHarnessDesktop
                 ownedPort = -1;
                 ownedProfile = "";
                 lastExternalPid = existingPid;
-                return;
+                return new BackendStartResult { WrapperPid = -1, ListenerPid = existingPid };
             }
 
             if (!Directory.Exists(logsDirectory)) Directory.CreateDirectory(logsDirectory);
@@ -1311,30 +1329,181 @@ namespace DeepSeekHarnessDesktop
             ownedPort = port;
             ownedProfile = profile;
             ownedListenerPid = -1;
+            sawReadyBanner = false;
+            lastPortLog = "";
             TryAttachJob(process);
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            int waited = 0;
-            while (waited < 120000)
+            try
             {
-                if (IsDshReady(port, 300))
+                // 身份状态机（四态）：端口刚打开时 PID/命令行可能滞后数百毫秒（Pending），
+                // 绝不把 Pending 当 Foreign 立即报错；Foreign 需要 PID 稳定 + 命令行可读 +
+                // 连续 3~4 次确认。Job 归属证明（OwnedJob）优先于命令行字符串。
+                int waited = 0;
+                int foreignPid = -1;
+                int foreignStable = 0;
+                while (waited < 120000)
                 {
-                    // DSH 首次就绪：记录真正监听端口的 Node PID（停止时兜底结束用）
-                    CaptureOwnedListenerPid(port);
-                    return;
+                    if (!IsReady(port, 100))
+                    {
+                        foreignPid = -1;
+                        foreignStable = 0;
+                        LogPortState(port, -1, ListenerIdentity.None, 0);
+                        Thread.Sleep(120);
+                        waited += 120;
+                        continue;
+                    }
+
+                    int pid = FindListeningPid(port);
+                    string commandLine;
+                    ListenerIdentity identity = ProbeListenerIdentity(port, pid, out commandLine);
+
+                    if (identity == ListenerIdentity.OwnedJob || identity == ListenerIdentity.VerifiedDsh)
+                    {
+                        // 归属已确认（Job 证明优先，命令行证明次之）：记录 listener PID 即成功
+                        if (pid > 0) ownedListenerPid = pid;
+                        LogPortState(port, pid, identity, 0);
+                        HostLog.Line("BACKEND ready wrapper=" + ownedWrapperPid.ToString() +
+                            " listener=" + pid.ToString() + " identity=" + identity.ToString() +
+                            " sawReadyBanner=" + sawReadyBanner.ToString());
+                        AppendLog("Listener PID: " + pid.ToString() + " identity=" + identity.ToString());
+                        return new BackendStartResult { WrapperPid = ownedWrapperPid, ListenerPid = pid };
+                    }
+
+                    if (identity == ListenerIdentity.Foreign)
+                    {
+                        if (pid == foreignPid) foreignStable++;
+                        else { foreignPid = pid; foreignStable = 1; }
+                        LogPortState(port, pid, identity, foreignStable);
+                        if (foreignStable >= 4)
+                            throw new InvalidOperationException(
+                                "端口 " + port.ToString() + " 在 DSH 就绪前被非 DSH 进程占用（PID " + pid.ToString() +
+                                "）。桌面壳拒绝把它当作 DSH。请查看日志：" + logPath);
+                    }
+                    else
+                    {
+                        // Pending：身份信息暂时不可用——记录转换，重置 Foreign 稳定计数，继续等待
+                        LogPortState(port, pid, identity, 0);
+                        foreignPid = -1;
+                        foreignStable = 0;
+                    }
+
+                    if (process.HasExited)
+                        throw new InvalidOperationException("DSH 在 Web 服务就绪前退出，退出码 " +
+                            process.ExitCode.ToString() + "。请查看日志：" + logPath);
+
+                    Thread.Sleep(120);
+                    waited += 120;
                 }
-                if (IsReady(port, 300))
-                    throw new InvalidOperationException(
-                        "端口 " + port.ToString() + " 在 DSH 就绪前被非 DSH 进程占用。桌面壳拒绝把它当作 DSH。请查看日志：" + logPath);
-                if (process.HasExited)
-                    throw new InvalidOperationException("DSH 在 Web 服务就绪前退出，退出码 " +
-                        process.ExitCode.ToString() + "。请查看日志：" + logPath);
-                Thread.Sleep(250);
-                waited += 250;
+
+                throw new TimeoutException("等待 DSH Web 启动超时（120 秒）。请查看日志：" + logPath);
+            }
+            catch
+            {
+                // 半失败清理：UI 会报失败，绝不能留下“OwnsBackend=true 但 DSH 还在后台跑”；
+                // 只清理本次刚创建的 Job/process（未验证身份的监听者绝不动）。
+                HostLog.Line("START-CLEANUP begin (failed backend start, port=" + port.ToString() + ")");
+                StopOwnedWrapper();
+                TryStopListenerFallback(port);
+                OwnsBackend = false;
+                ownedListenerPid = -1;
+                ownedWrapperPid = -1;
+                ownedPort = -1;
+                ownedProfile = "";
+                sawReadyBanner = false;
+                try { if (process != null) process.Dispose(); } catch { }
+                process = null;
+                HostLog.Line("START-CLEANUP done");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// 端口监听者身份探测（四态）。任何“暂时读不到”都归 Pending：
+        /// PID 查不到 → Pending；PID 有但 Job 判定失败且命令行读不到 → Pending；
+        /// 属于本壳 Job → OwnedJob（最强证明，无需命令行字符串）；
+        /// 命令行非空 → VerifiedDsh / Foreign。
+        /// </summary>
+        private ListenerIdentity ProbeListenerIdentity(int port, int pid, out string commandLine)
+        {
+            commandLine = null;
+            if (pid <= 0) return ListenerIdentity.Pending;
+
+            // 归属证明优先：属于本壳 Job 的进程树 = 自己的 DSH（无需等 CIM 字符串识别）
+            if (jobHandle != IntPtr.Zero)
+            {
+                try
+                {
+                    using (Process p = Process.GetProcessById(pid))
+                    {
+                        bool inJob;
+                        if (IsProcessInJob(p.Handle, jobHandle, out inJob) && inJob)
+                            return ListenerIdentity.OwnedJob;
+                    }
+                }
+                catch { /* 句柄打开失败（权限等）→ 退回命令行判定 */ }
             }
 
-            throw new TimeoutException("等待 DSH Web 启动超时（120 秒）。请查看日志：" + logPath);
+            commandLine = GetProcessCommandLine(pid);
+            if (String.IsNullOrWhiteSpace(commandLine)) return ListenerIdentity.Pending;
+
+            string dummy;
+            if (IsLikelyDshCommandLine(commandLine, port, out dummy))
+                return ListenerIdentity.VerifiedDsh;
+            return ListenerIdentity.Foreign;
+        }
+
+        /// <summary>端口身份状态转换日志：每次状态变化记录一次（Foreign 带 stableCount）。</summary>
+        private void LogPortState(int port, int pid, ListenerIdentity identity, int stableCount)
+        {
+            string line;
+            switch (identity)
+            {
+                case ListenerIdentity.None:
+                    line = "PORT closed";
+                    break;
+                case ListenerIdentity.Pending:
+                    line = "PORT open pid=" + pid.ToString() + " identity=pending";
+                    break;
+                case ListenerIdentity.OwnedJob:
+                    line = "PORT open pid=" + pid.ToString() + " inOwnJob=true";
+                    break;
+                case ListenerIdentity.VerifiedDsh:
+                    line = "PORT open pid=" + pid.ToString() + " identity=verified-dsh";
+                    break;
+                default:
+                    line = "PORT open pid=" + pid.ToString() + " identity=foreign stableCount=" + stableCount.ToString();
+                    break;
+            }
+            if (line != lastPortLog)
+            {
+                HostLog.Line(line);
+                lastPortLog = line;
+            }
+        }
+
+        /// <summary>
+        /// 停止前冻结 listener 身份：旧进程还活着时，把当前监听 PID 验证后写入 ownedListenerPid
+        /// （Job 归属证明优先，否则命令行验证 DSH+profile+port）。供重启的 snapshot 阶段调用，
+        /// 让 fallback 能杀“刚刚确认过的精确 PID”，而不是 wrapper 死后重读不可靠的命令行。
+        /// </summary>
+        public void FreezeOwnedListener(int port)
+        {
+            if (port <= 0 || !IsReady(port, 300)) return;
+            int pid = FindListeningPid(port);
+            if (pid <= 0) return;
+            string commandLine;
+            ListenerIdentity identity = ProbeListenerIdentity(port, pid, out commandLine);
+            if (identity == ListenerIdentity.OwnedJob || identity == ListenerIdentity.VerifiedDsh)
+            {
+                ownedListenerPid = pid;
+                HostLog.Line("FREEZE-LISTENER pid=" + pid.ToString() + " identity=" + identity.ToString());
+            }
+            else
+            {
+                HostLog.Line("FREEZE-LISTENER refused pid=" + pid.ToString() + " identity=" + identity.ToString());
+            }
         }
 
         public int FindListeningPid(int port)
@@ -1482,32 +1651,6 @@ namespace DeepSeekHarnessDesktop
                 waited += 250;
             }
             return closedCount >= 2;
-        }
-
-        /// <summary>
-        /// DSH 首次就绪时记录真正监听端口的进程 PID：重试几次（端口刚打开时原生 TCP 表
-        /// 可能还没刷出条目），并验证它确实是本次启动的 DSH，否则不记录（保持 -1，
-        /// 停止时走命令行复验兜底）。
-        /// </summary>
-        private void CaptureOwnedListenerPid(int port)
-        {
-            for (int attempt = 0; attempt < 5; attempt++)
-            {
-                int pid = FindListeningPid(port);
-                if (pid > 0)
-                {
-                    string commandLine;
-                    if (IsLikelyDshProcess(pid, out commandLine, port))
-                    {
-                        ownedListenerPid = pid;
-                        AppendLog("Listener PID: " + pid.ToString());
-                        return;
-                    }
-                }
-                Thread.Sleep(200);
-            }
-            ownedListenerPid = -1;
-            AppendLog("Listener PID: unknown (stop fallback will re-verify identity)");
         }
 
         /// <summary>
@@ -1690,7 +1833,19 @@ namespace DeepSeekHarnessDesktop
 
         private void OnOutput(object sender, DataReceivedEventArgs e)
         {
-            if (e.Data != null) AppendLog(e.Data);
+            if (e.Data != null)
+            {
+                AppendLog(e.Data);
+                // DSH 官方 ready banner（如 "dsh web: http://127.0.0.1:3080"）来自本次自己
+                // 启动的进程树时是额外强信号；只记录标志作辅助，不取代 Job/PID 归属检查。
+                if (!sawReadyBanner && ownedPort > 0 &&
+                    e.Data.IndexOf("dsh web", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    e.Data.IndexOf("127.0.0.1:" + ownedPort.ToString(), StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    sawReadyBanner = true;
+                    HostLog.Line("READY-BANNER seen port=" + ownedPort.ToString());
+                }
+            }
         }
 
         private void AppendLog(string text)
@@ -2258,6 +2413,19 @@ namespace DeepSeekHarnessDesktop
     }
 
     /// <summary>启动阶段（用于宿主日志与“按阶段重试”路由）。</summary>
+    /// <summary>
+    /// 端口监听者身份四态。关键约束：任何“暂时读不到”都必须归 Pending，
+    /// 绝不能等价于 Foreign——端口刚打开时 PID/命令行可能滞后数百毫秒。
+    /// </summary>
+    internal enum ListenerIdentity
+    {
+        None,           // 端口未监听
+        Pending,        // 端口已开，但 PID 查不到 / 命令行暂时读不到
+        OwnedJob,       // PID 属于本 DesktopShell 创建的 Job → 自己的 DSH 进程树（最强证明）
+        VerifiedDsh,    // 命令行明确是 DSH（package/path + profile + port）
+        Foreign         // 命令行明确不是 DSH（需 PID 稳定 + 连续多次确认）
+    }
+
     internal enum StartupPhase
     {
         CommandVerify,
@@ -2307,8 +2475,9 @@ namespace DeepSeekHarnessDesktop
         // 后端“代”：每次重启/停止递增；已飞出的健康检查完成时对比代数，旧代结果直接丢弃，
         // 避免重启期间健康检查把“后端被主动停掉”误报成“后端中断”。
         private long backendGeneration;
-        // 重启当前所处阶段（失败时记录到宿主日志，区分“停不下来”还是“新进程起不来”）
-        private string restartPhase = "";
+        // 重启当前所处阶段（RestartPhase 进入每阶段即更新；失败时外层 catch 打印它，
+        // 不再停留在 preflight 误导排查）
+        private string activeRestartPhase = "";
         private int healthFailures;
         private int compatPendingAtStartup;
         private StartupPhase currentPhase = StartupPhase.CommandVerify;
@@ -3342,9 +3511,11 @@ namespace DeepSeekHarnessDesktop
             }
         }
 
-        /// <summary>重启事务的阶段包装：ENTER / OK / FAIL（失败记录后原样抛出，中止后续阶段）。</summary>
-        private static void RestartPhase(string phase, Action action)
+        /// <summary>重启事务的阶段包装：进入即更新 activeRestartPhase，ENTER / OK / FAIL
+        ///（失败记录后原样抛出，中止后续阶段；外层 catch 打印 activeRestartPhase 定位失败阶段）。</summary>
+        private void RestartPhase(string phase, Action action)
         {
+            activeRestartPhase = phase;
             HostLog.Enter("RESTART phase=" + phase);
             try
             {
@@ -3435,7 +3606,7 @@ namespace DeepSeekHarnessDesktop
         {
             if (restartBusy) return;
             restartBusy = true;
-            restartPhase = "restart.preflight";
+            activeRestartPhase = "restart.preflight";
             HostLog.Enter("RESTART phase=restart.preflight");
 
             // 重启期间停掉 5 秒健康检查并递增代数：已飞出的旧代检查结果全部作废，
@@ -3477,9 +3648,11 @@ namespace DeepSeekHarnessDesktop
 
                 await Task.Run(delegate
                 {
-                    // restart.snapshot：记录旧 wrapper/listener PID、ownsBackend、port
+                    // restart.snapshot：旧进程还活着、命令行还可读时冻结 listener 身份
+                    //（写入 ownedListenerPid），记录旧 wrapper/listener PID、ownsBackend、port
                     RestartPhase("restart.snapshot", delegate
                     {
+                        dsh.FreezeOwnedListener(settings.port);
                         int oldWrapperPid = dsh.WrapperPid;
                         int oldListenerPid = dsh.OwnedListenerPid > 0
                             ? dsh.OwnedListenerPid
@@ -3524,10 +3697,12 @@ namespace DeepSeekHarnessDesktop
                         PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
                     });
 
-                    // restart.start：启动（或附着）新后端
+                    // restart.start：启动（或附着）新后端——EnsureStarted 成功即已确认
+                    // listener 归属并写入 ownedListenerPid，直接返回结果
+                    DshProcessManager.BackendStartResult startResult = null;
                     RestartPhase("restart.start", delegate
                     {
-                        dsh.EnsureStarted(
+                        startResult = dsh.EnsureStarted(
                             settings.port,
                             settings.workingDirectory,
                             logsDirectory,
@@ -3541,6 +3716,8 @@ namespace DeepSeekHarnessDesktop
                     // restart.wait-ready：确认新后端就绪并记录新 wrapper/listener PID
                     RestartPhase("restart.wait-ready", delegate
                     {
+                        if (startResult == null || startResult.ListenerPid <= 0)
+                            throw new InvalidOperationException("重启后无法确认 DSH 监听进程。");
                         int waited = 0;
                         while (waited < 15000 && !dsh.IsDshReady(settings.port, 300))
                         {
@@ -3549,13 +3726,13 @@ namespace DeepSeekHarnessDesktop
                         }
                         if (!dsh.IsDshReady(settings.port, 300))
                             throw new InvalidOperationException("重启后 DSH Web 未在预期时间内就绪。");
-                        HostLog.Line("SNAPSHOT-NEW newWrapperPid=" + dsh.WrapperPid.ToString() +
-                            " newListenerPid=" + dsh.OwnedListenerPid.ToString());
+                        HostLog.Line("SNAPSHOT-NEW newWrapperPid=" + startResult.WrapperPid.ToString() +
+                            " newListenerPid=" + startResult.ListenerPid.ToString());
                     });
                 });
 
                 // restart.navigate：页面恢复
-                restartPhase = "restart.navigate";
+                activeRestartPhase = "restart.navigate";
                 HostLog.Enter("RESTART phase=restart.navigate");
                 healthFailures = 0;
                 compatPendingAtStartup = 0;
@@ -3565,12 +3742,12 @@ namespace DeepSeekHarnessDesktop
                 HostLog.Ok("RESTART phase=restart.navigate");
 
                 // restart.complete
-                restartPhase = "restart.complete";
+                activeRestartPhase = "restart.complete";
                 HostLog.Ok("RESTART phase=restart.complete");
             }
             catch (Exception ex)
             {
-                HostLog.Fail("RESTART failed phase=" + restartPhase, ex);
+                HostLog.Fail("RESTART failed phase=" + activeRestartPhase, ex);
                 HandleRestartError(ex);
             }
             finally

@@ -307,9 +307,28 @@ PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:w
 | 11 | 最后硬编码 | `AppSettings.Load` 缺省 `dshVersion = DshProcessManager.VerifiedDshVersion`（src 中 rc.7 仅剩 VerifiedDshVersion 的合法回退 1 处） |
 | 12 | 门禁 11 → 15 | 新增 `test-restart-state`（ownedListenerPid/WaitForExit/身份兜底/generation/十阶段日志/A·B·C 分流）、`test-dream-skin-pin`（无 @0.3.0、40 位 commit、marker 检测 + 行为矩阵）、`test-release-immutable`（gh view 门禁、无删除步骤、v1.0.0/v1.0.1 tag 仍在且为祖先）、`test-version-source`（C#/PS 硬编码清零、VERSION=1.0.2 与 release.yml 默认一致） |
 
+### 14.1 追加：启动身份状态机（用户本机暴露的"重启失败/半失败"根因）
+
+| # | 项目 | 实现 |
+| --- | --- | --- |
+| 1 | 四态状态机 | `ListenerIdentity { None, Pending, OwnedJob, VerifiedDsh, Foreign }`；删除 `IsDshReady→IsReady→立即 NonDsh` 旧逻辑；PID 查不到 / 命令行读不到一律 `Pending` |
+| 2 | Job 归属证明 | `IsProcessInJob` P/Invoke：监听者属于本壳 Job → `OwnedJob`（无需 CIM 字符串），直接写 ownedListenerPid |
+| 3 | Foreign 宽限期 | 等待循环每 ~120ms 探测；Foreign 需同一 PID + 命令行可读 + 明确非 DSH + `foreignStable >= 4` 才拒绝；Pending 重置稳定计数 |
+| 4 | unknown ≠ foreign | `ProbeListenerIdentity`：`GetProcessCommandLine()==null` → `Pending`，绝不 `Foreign` |
+| 5 | 成功即确认归属 | `EnsureStarted` 返回 `BackendStartResult{WrapperPid, ListenerPid}`；成功=进程活+端口监听+归属确认+ownedListenerPid 已写入 |
+| 6 | 半失败清理 | 启动抛异常（超时/真 Foreign/提前退出）→ catch 内 `StopOwnedWrapper`+`TryStopListenerFallback`+状态清零+`process.Dispose()`，再 `throw`；不留"UI 失败但 DSH 后台跑" |
+| 7 | 停止前冻结身份 | 重启 snapshot 阶段先 `FreezeOwnedListener(port)`（Job 证明优先、否则命令行验证 DSH+profile+port）再关 wrapper |
+| 8 | 真回归测试 | `test-startup-identity.ps1`：csc 编译产品真实源码+测试 Main；场景 A=fake dsh 晚 500ms 监听必须成功（本机 1387ms）、场景 B=harness 自身（不在 Job、命令行无 DSH 特征）占端口 → stableCount=4 后拒绝且不误杀 |
+| 9 | 日志阶段错乱 | `activeRestartPhase` 由 `RestartPhase` 进入即更新，外层 catch 打印真实失败阶段 |
+| 10 | 身份转换日志 | `PORT closed` / `identity=pending` / `inOwnJob=true` / `BACKEND ready wrapper=… listener=…` / `identity=foreign stableCount=1..4` |
+| 11 | ready banner | `OnOutput` 匹配 `dsh web` + `127.0.0.1:<port>` → `sawReadyBanner`（辅助信号，不取代 Job/PID 检查） |
+| 12 | 暂停无关压力测试 | 本轮不跑 Dream Skin/WebView/托盘压力；状态机验证后恢复（冷启动 20 / 重启 20 / 托盘 20 / 午夜皮肤 / WebView 恢复） |
+
 ### 验证
 
-- 15 项回归测试 PowerShell 7 先行全绿（csc 编译无警告）；双宿主全量在提交前跑；
+- 16 项回归测试 PowerShell 7 先行全绿（csc 编译无警告）；双宿主全量在提交前跑；
+- `test-startup-identity.ps1` 实测：晚就绪 DSH 1387ms 成功（无 NonDsh 抛错）、真 Foreign
+  稳定 4 次后拒绝（日志 stableCount=4）、未验证身份进程不被误杀；
 - Dream Skin 固定 commit 已实测：`client.js` 含两个 marker，package.json 版本仍为 0.3.0
   （印证不能靠版本号判断）；
 - 托盘、WebView2、连续重启、Dream Skin 真实恢复：保留人工 Windows 验收（不发布

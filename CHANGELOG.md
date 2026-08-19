@@ -40,6 +40,32 @@
   test-release-immutable / test-version-source；托盘、WebView2、连续重启、Dream Skin
   真实恢复保留人工 Windows 验收（docs/DREAM_SKIN_ACCEPTANCE.md）
 
+### v1.0.2 追加：启动身份状态机（重启反复失败的根因修复）
+
+- **端口监听者身份四态状态机**：`None / Pending / OwnedJob / VerifiedDsh / Foreign`。
+  删掉"TCP 一开但身份暂未验证 → 立即判非 DSH"的旧逻辑——"查不到 PID"与"刚查到 PID
+  但 CIM 暂时读不到命令行"一律归 `Pending`，**绝不等于 Foreign**
+- **Job Object 归属证明**（`IsProcessInJob`）：监听者属于本壳创建的 Job → 自己的 DSH
+  进程树 → 无需等 CIM 字符串识别，直接记录 ownedListenerPid
+- **Foreign 判定宽限期**：每 100~150ms 重试；只有 PID 稳定为同一 PID + 命令行成功读取 +
+  明确不符合 DSH + 连续 4 次，才报"非 DSH 进程"
+- **启动成功即确认归属**：`EnsureStarted` 返回 `BackendStartResult{WrapperPid, ListenerPid}`；
+  成功 = 进程存活 + 端口监听 + listener 归属已确认 + ownedListenerPid 已写入
+- **半失败清理**：启动最终抛异常（超时/真 Foreign/提前退出）时清理本次刚创建的
+  Job/process，不再残留"UI 报失败、OwnsBackend=true、DSH 还在后台跑"
+- **停止前冻结 listener 身份**：重启 snapshot 阶段在旧进程还活着时先
+  `FreezeOwnedListener` 验证并写入 ownedListenerPid，再关 wrapper——fallback 杀的是
+  "刚刚确认过的精确 PID"，而不是 wrapper 死后重读不可靠的命令行
+- **重启日志阶段错乱修复**：`activeRestartPhase` 随每个阶段进入即更新，外层 catch
+  打印真实失败阶段（不再停留在 restart.preflight 误导排查）
+- **启动身份转换日志**：`PORT closed` / `PORT open pid=... identity=pending` /
+  `inOwnJob=true` / `BACKEND ready wrapper=... listener=...` / `identity=foreign stableCount=1..4`
+- **ready banner 辅助信号**：`OnOutput` 识别 `dsh web: http://127.0.0.1:<port>` 记录
+  `sawReadyBanner`，仅辅助、不取代 Job/PID 归属检查
+- **验证门禁 15 → 16 项**：新增 `test-startup-identity.ps1`——编译产品真实源码做行为回归：
+  自己的 DSH 晚就绪（~500ms 后开始监听）必须成功且不抛 NonDsh；真 Foreign（本进程占端口、
+  命令行无 DSH 特征）稳定确认后才拒绝；日志断言 BACKEND ready / identity 转换 / stableCount=4
+
 ## v1.0.1（第八轮修复：启动运行期稳健性，2026-08-19）
 
 v1.0.0 冻结后的第一个修复版本。

@@ -14,9 +14,30 @@ $cs = [System.IO.File]::ReadAllText($source)
 
 # ---- 1. 记录真正 listener PID（wrapper 只是 cmd/npx 包装进程） ----
 Assert-True "ownedListenerPid field exists" ($cs -match 'private int ownedListenerPid = -1;')
-Assert-True "listener PID captured on first ready" ($cs -match 'CaptureOwnedListenerPid\(port\)')
-Assert-true "listener capture verifies it is this DSH" ($cs -match 'if \(IsLikelyDshProcess\(pid, out commandLine, port\)\)')
+Assert-True "listener PID recorded on identity confirmed" ($cs -match 'if \(pid > 0\) ownedListenerPid = pid;')
+Assert-True "identity probe verifies it is this DSH" ($cs -match 'ProbeListenerIdentity\(int port, int pid' -and $cs -match 'IsLikelyDshCommandLine\(commandLine, port, out dummy\)')
 Assert-True "wrapper PID recorded at start" ($cs -match 'ownedWrapperPid = process\.Id;')
+
+# ---- 1b. 四态状态机（P0-1/2/3/4）：Pending 绝不等于 Foreign ----
+Assert-True "ListenerIdentity enum has five states" ($cs -match 'enum ListenerIdentity' -and $cs -match 'Pending' -and $cs -match 'OwnedJob' -and $cs -match 'VerifiedDsh' -and $cs -match 'Foreign')
+Assert-True "no immediate NonDsh on open port (old bug pattern gone)" ($cs -notmatch 'IsDshReady\(port, 300\)')
+Assert-True "PID missing -> Pending" ($cs -match 'if \(pid <= 0\) return ListenerIdentity\.Pending;')
+Assert-True "command line unreadable -> Pending" ($cs -match 'if \(String\.IsNullOrWhiteSpace\(commandLine\)\) return ListenerIdentity\.Pending;')
+Assert-True "IsProcessInJob declared" ($cs -match 'static extern bool IsProcessInJob')
+Assert-True "job ownership proves own DSH tree" ($cs -match 'if \(IsProcessInJob\(p\.Handle, jobHandle, out inJob\) && inJob\)\s*return ListenerIdentity\.OwnedJob;')
+Assert-True "foreign needs 4 stable confirmations" ($cs -match 'foreignStable >= 4')
+Assert-True "grace retry every ~120ms" ($cs -match 'Thread\.Sleep\(120\);')
+Assert-True "pending resets foreign stability counter" ($cs -match 'foreignPid = -1;\r?\n\s*foreignStable = 0;')
+
+# ---- 1c. 启动成功即确认归属（P0-5） + 半失败清理（P0-6） ----
+Assert-True "BackendStartResult returned by EnsureStarted" ($cs -match 'public class BackendStartResult' -and $cs -match 'public BackendStartResult EnsureStarted')
+Assert-True "success requires confirmed listener" ($cs -match 'BACKEND ready wrapper=')
+Assert-True "failed start cleans up owned job/process" ($cs -match 'START-CLEANUP begin' -and $cs -match 'START-CLEANUP done')
+Assert-True "cleanup runs before rethrow" ($cs -match 'HostLog\.Line\("START-CLEANUP done"\);\r?\n\s*throw;')
+
+# ---- 1d. 停止前冻结 listener 身份（P0-7） ----
+Assert-True "FreezeOwnedListener exists" ($cs -match 'public void FreezeOwnedListener\(int port\)')
+Assert-True "snapshot freezes listener before stopping" ($cs -match 'dsh\.FreezeOwnedListener\(settings\.port\);')
 
 # ---- 2. 停止链：WaitForExit + 身份验证兜底 + 端口两次确认 ----
 Assert-True "stop waits for wrapper exit (3s)" ($cs -match 'process\.WaitForExit\(3000\)')
@@ -55,6 +76,22 @@ Assert-True "case A: original backend still healthy" ($cs -match '重启未完�
 Assert-True "case B: old backend stopped" ($cs -match '旧后端已经停止')
 Assert-True "case C: new backend listening, page restore failed" ($cs -match '新后端已就绪，页面恢复失败')
 Assert-True "webViewReady recomputed from actual health" ($cs -match 'webViewReady = backendStillHealthy;')
+
+# ---- 6. 日志阶段错乱修复（P1-9）：RestartPhase 进入即更新 activeRestartPhase ----
+Assert-True "activeRestartPhase updated on every phase entry" ($cs -match 'activeRestartPhase = phase;')
+Assert-True "outer catch prints activeRestartPhase" ($cs -match 'HostLog\.Fail\("RESTART failed phase=" \+ activeRestartPhase, ex\);')
+Assert-True "no stale restartPhase field remains" ($cs -notmatch 'private string restartPhase')
+
+# ---- 7. 启动身份状态转换日志（P1-10） ----
+Assert-True "PORT closed transition logged" ($cs -match '"PORT closed"')
+Assert-True "pending transition logged" ($cs -match 'identity=pending')
+Assert-True "inOwnJob transition logged" ($cs -match 'inOwnJob=true')
+Assert-True "foreign stableCount logged" ($cs -match 'identity=foreign stableCount=')
+
+# ---- 8. ready banner 辅助信号（P1-11） ----
+Assert-True "sawReadyBanner field exists" ($cs -match 'private bool sawReadyBanner;')
+Assert-True "banner detected in OnOutput" ($cs -match 'READY-BANNER seen port=')
+Assert-True "banner is auxiliary only (job check still primary)" ($cs -match 'ProbeListenerIdentity\(port, pid, out commandLine\)')
 
 if ($fail -eq 0) { Write-Host 'RESTART STATE TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })
