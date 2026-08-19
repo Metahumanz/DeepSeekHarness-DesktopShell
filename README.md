@@ -16,9 +16,10 @@ DesktopShell不是DSH的替代实现：
 - Better Sidebar / Rewind / Skills等常用增强
 - 深浅色、DPI、多屏、通知、原生右键菜单
 - DSH崩溃与WebView2异常恢复
+- 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> 当前基线：DesktopShell v1.0.0 · DSH 0.1.0-rc.7
+> 当前基线：DesktopShell v1.0.1 · DSH 0.1.0-rc.7（v1.0.0 已冻结，不再同 tag 覆盖发布）
 
 ## 安装
 
@@ -38,20 +39,20 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.0/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.0
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.1/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.1
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
 > 无法从 git remote 推断仓库。`-Tag` 同时把下载锁定到对应 Release，
 > 并强制校验同源 `SHA256SUMS.txt`（不一致即中止）。
-> 如果 `v1.0.0` 尚未发布，可双击仓库根目录的 `install-from-source.bat`（从当前 checkout
-> 源码安装，与 Release 共用同一安装核心），或直接运行 `scripts/Install-Desktop.ps1`。
+> 也可以双击仓库根目录的 `install-latest.bat`（GitHub latest Release）或
+> `install-from-source.bat`（从当前 checkout 源码安装，与 Release 共用同一安装核心）。
 
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.0 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.1 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -119,8 +120,11 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 
 - DesktopShell 启动后会等待 DSH Web 就绪，窗口直接显示官方 DeepSeek Harness 界面
 - 模型凭据由 DSH 自身处理，DesktopShell 不接管
-- 托盘图标：显示窗口 / 设置 / 重新加载页面 / **重启 DSH 后端** / 打开日志目录 / 退出
-- 关闭窗口行为可在向导或设置中改为"关闭到托盘"
+- 托盘图标：显示窗口 / 设置 / 重新加载页面 / **重启 DSH 后端** / 打开日志目录 / 关闭行为 / 退出
+- 关闭窗口行为可在向导或设置中改为"关闭到托盘"（关闭后任务栏隐藏、托盘常驻，双击托盘图标恢复）
+- 启动失败时窗口会显示错误覆盖层：大标题 + 可滚动异常详情 + **复制错误**按钮；后端类失败
+  重试只重启后端、WebView2 类失败只重建 WebView2（不会误杀已健康的 DSH 后端）
+- 启动过程按阶段记录在 `logs\desktop-shell.log`（含失败原因与完整异常），排查问题先看它
 
 ## 日常管理
 
@@ -147,7 +151,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 | 症状 | 处理 |
 | --- | --- |
-| 启动失败 / 界面空白 | 安装目录 `logs\` 下的 `dsh-*.log` 与 `plugin-compat.log` |
+| 启动失败 / 界面空白 | 安装目录 `logs\` 下：`desktop-shell.log`（宿主启动分阶段日志）、`dsh-*.log`（后端）、`plugin-compat.log`（兼容修复）；失败界面自带错误详情与"复制错误"按钮 |
 | 缺少 WebView2 Runtime | 安装器会预检并给下载入口；也可直接装 <https://go.microsoft.com/fwlink/p/?LinkId=2124703> |
 | 提示 Node.js 过旧/缺失 | 需要 Node 22.19+ 或 24+；向导可代跑 `winget install OpenJS.NodeJS.LTS` |
 | 端口被占用 | 设置里换一个端口；占用进程不是 DSH 时桌面壳会拒绝附着并提示 |
@@ -170,18 +174,20 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 ```powershell
 .\scripts\Install-Desktop.ps1    # 源码安装：csc 编译 + 向导
 .\scripts\Build-Release.ps1      # 构建发布 zip（WebView2 固定 1.0.4078.44）
-.\scripts\Build-Release.ps1 -Version 1.1.0 -Arch arm64
+.\scripts\Build-Release.ps1 -Version 1.1.0
 ```
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
-回归测试在 `tests\`，CI 每次 push/PR 自动运行。
+**发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
+回归测试在 `tests\`（11 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.0`）：
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.1`，必须与根目录
+`VERSION` 文件一致，否则门禁直接失败）：
 
-1. 跑全部回归测试
-2. `Build-Release -Version`（x64）
+1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（11 项，PowerShell 7 + 5.1）
+2. `Build-Release -Version`（仅 x64）
 3. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
 4. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
 
@@ -194,7 +200,8 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.0`�
 ├── assets/                 # 图标（源自官方 favicon.svg）
 ├── scripts/                # 安装 / 管理 / 卸载 / 发布 / 修复脚本
 ├── src/                    # C# 桌面宿主源码（窗口/WebView2/进程托管/兼容修复）
-├── tests/                  # 回归测试：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛
+├── tests/                  # 回归测试（11 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
+│                           #   启动参数 / 端口归属 / 宿主日志 / 壳运行期 / 重验证 / 构建接线
 ├── .github/workflows/      # CI 与 GitHub Release 工作流
 ├── docs/AUDIT.md           # 安全审计记录
 ├── install-latest.bat        # 双击入口：从 GitHub 下载 latest Release 安装
