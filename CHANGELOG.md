@@ -3,6 +3,17 @@
 本项目的用户可见变更记录。安全边界与修复细节见 [docs/AUDIT.md](docs/AUDIT.md)。
 
 
+
+## v1.0.0 修订三（同 tag 覆盖发布，2026-08-19）
+
+第六轮审计（6-10 项 + 小清理）修复：
+
+- **DSH_HOME 迁移检测**：升级时检测 `priorState.dshHome` 与当前 DSH_HOME 不一致，按迁移事件处理——告警并重新计算 `dshHomeExistedBeforeInstall`/`webProfileExistedBeforeInstall`/`firstInstalledAt`（交互模式要求确认，非交互告警后重算），不再新路径配旧历史
+- **升级先停旧壳再复制动态数据**：`webview2-data`/`logs` 在 `Stop-DesktopShellProcess` 之后携带，避免 WebView2 数据库/缓存锁文件与不一致快照
+- **Cost Meter 账本修复改为重新汇总**：删除合成桶后从剩余合法 `byProviderModel` 重新计算 day/session totals（PS 与 C# 双端一致），旧账本本身已不一致时也能归一化，不再"总计减桶"出负值
+- **新 Profile 默认不装社区插件**：默认选项 0（纯 DSH），按一路 Enter 不执行第三方代码；核心推荐仍需主动按 1
+- **SHA256SUMS 校验收紧**：要求文件名 + hash 同时匹配，不允许退化为任意条目匹配；文案收敛为"完整性校验"（去掉残留"供应链"字样）
+
 ## v1.0.0 修订二（同 tag 覆盖发布，2026-08-19）
 
 第五轮审计（前 5 项）修复：

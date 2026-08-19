@@ -106,12 +106,13 @@ jobs:
           name: DeepSeek Harness DesktopShell v${{ steps.version.outputs.version }}
           body: |
             安装：见仓库 README 的“一键安装”（引导命令钉在本 tag，并显式传入 Owner/Repo/Tag）。
-            一键安装会下载本 Release 的 zip 与 SHA256SUMS.txt 并做完整性校验（SHA256 一致才继续）。
+            一键安装会下载本 Release 的 zip 与 SHA256SUMS.txt 并做完整性校验（文件名与 SHA256
+            同时匹配才继续）。
             本发布包面向 Windows 10/11 **x64**（WebView2Loader 为 win-x64 变体）。
 
-            **第五轮审计修复**：读不到版本的现有 dsh 不再静默放行；外部已运行的 DSH 同样必须通过
-            验证基线（rc.7）才允许附着；端口已打开时启动前兼容修复一律只读；健康检查缓存校验原
-            PID 存活；PowerShell 插件管理与 C# 启动逻辑完全遵守 dshRunnerMode。
+            **第六轮审计修复**：DSH_HOME 迁移检测与元数据重算；升级先停旧壳再复制 webview2-data；
+            Cost Meter 账本修复改为从剩余合法桶重新汇总（顺带归一化）；新 Profile 默认纯 DSH 不装
+            社区插件；SHA256SUMS 校验要求文件名+hash 同时匹配；文案收敛为完整性校验。
           generate_release_notes: true
           files: |
             release/DeepSeekHarness-DesktopShell.zip

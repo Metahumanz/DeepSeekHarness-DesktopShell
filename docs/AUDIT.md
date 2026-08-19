@@ -216,3 +216,19 @@ U3 卸载守卫测试一度按默认 3080 端口把宿主机真实 DSH 当外部
 - #9 Cost Meter 账本修复改为"从剩余合法 bucket 重新汇总"（当前减法在旧账本已不一致时可能出负值）
 - #10 新 Profile 默认选项改 0（纯 DSH），核心推荐标为推荐但需主动按 1
 - 小清理：Install-FromGitHub 注释/文案残留"供应链"字样；SHA256SUMS 校验要求文件名+hash 同时匹配（当前退化为任意条目匹配）；main 分支保护（GitHub 设置，非代码）
+
+## 11. 2026-08-19 第七轮修复（审计 6-10 项 + 小清理）
+
+| # | 级别 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 6 | P2 | 升级时 DSH_HOME 变化导致 install-state 历史串线（新路径配旧历史） | 两个安装器检测 `priorState.dshHome` 与当前 DSH_HOME 不一致 → 迁移事件：告警并重新计算 `dshHomeExistedBeforeInstall`/`webProfileExistedBeforeInstall`/`firstInstalledAt`；交互模式 Read-YesNo 确认（否则中止），`-NoWizard` 告警后重算 |
+| 7 | P2 | README "失败不留半安装"过度承诺（DSH_HOME 副作用不参与回滚） | README 安全设计收窄为"**程序目录**事务式提交（升级保留旧 exe 回滚，失败可恢复旧安装；首次向导对 DSH_HOME 的初始化不在回滚范围）" |
+| 8 | P2 | 升级先复制 webview2-data 再停旧壳，可能撞锁文件 | `Install-Release.ps1` 顺序调整：settings.json 先携带 → 停旧壳 → 再携带 logs/webview2-data |
+| 9 | P2 | 账本修复"总计减合成桶"在旧账本不一致时出负值/偏差 | PS `Repair-CostMeterLedger.ps1` 与 C# `PluginCompat` 双端改为：删除合成桶 → 从剩余合法 `byProviderModel` 重新汇总 day/session totals（`RecomputeLedgerTotals`/`Set-NodeTotals`）；`tests/test-repair-regex.ps1` 新增脏账本（totals=999）写入修复断言：修复后 totals 精确等于剩余桶之和 |
+| 10 | P3 | 新 Profile 默认装 5 个第三方插件 | `Select-Plugins` 默认选项改 0（纯 DSH，推荐）；核心推荐需主动按 1；README 说明 |
+| 小 | P3 | SHA256SUMS 退化为任意条目匹配；文案残留"供应链" | `Confirm-ZipHash` 要求文件名+hash 同时匹配（无同名条目即中止）；`.DESCRIPTION`/报错文案收敛为"完整性校验" |
+
+### 遗留
+
+- 代码层面 6-10 + 小清理已全部收口；仅剩 GitHub 仓库设置（非代码）：main 分支保护 + required CI（当前 `protected:false`）、提交签名（Vigilant Mode）
+- v1.1 产品化（下载管理/权限中心/自动更新/Apps & Features/代码签名/主题事件驱动/artifact attestation）不在 v1.0.0 范围
