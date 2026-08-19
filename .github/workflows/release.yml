@@ -13,7 +13,7 @@ name: Release
 #
 # 冻结策略（2026-08-19 起）：已发布的 tag 不再覆盖发布——本工作流不再删除已有 Release；
 # 若对某个已发布 tag 重新构建会因 Release 已存在而失败，这是有意行为。
-# 后续修复请发新版本（如 v1.0.1）。
+# 后续修复请发新版本（如 v1.0.2）。
 #
 # 结构：build job 只读验证+构建（无写权限）；publish job 持有 contents:write，
 # 负责打 tag 与创建 Release。所有 Actions 钉 commit SHA。
@@ -160,13 +160,13 @@ jobs:
             同时匹配才继续）。
             本发布包面向 Windows 10/11 **x64**（WebView2Loader 为 win-x64 变体）。
 
-            **v1.0.1 修复轮**：宿主日志（logs\desktop-shell.log，启动分阶段 ENTER/OK/FAIL）；
-            启动失败错误覆盖层（大标题 + 可滚动异常详情 + 复制错误按钮）；按失败阶段定向
-            重试（后端类重启后端、WebView2 类只重建 WebView2、配置类只重配、导航类整体重试，
-            重试绝不误伤健康后端）；关闭到托盘生命周期修复（延迟隐藏，托盘恢复复用窗口）；
-            command/auto 模式启动与插件操作前的统一 dsh 版本重验证（与验证基线一致自动接受）；
-            原生 TCP 表 owner PID 回归测试；自定义 Profile 识别；版本/兼容基线单一来源
-            （release 门禁校验 workflow 版本 == VERSION）；发布包仅 x64；验证门禁扩至 11 项。
+            **v1.0.2 发布摘要**：DSH 兼容策略升级为“默认 + 最低 + 测试”
+            （默认 npx 版本 rc.7，rc.7/rc.8 已测试，未来版本按 CLI 能力 best-effort）；
+            新增 `--no-open` CLI 能力探测，npx/command 统一启动参数；WebView 右键菜单
+            生命周期修复；托盘退出延迟修复；推荐插件保持保守 pin；验证门禁扩至 19 项。
+            当前默认暂回 rc.7：上游 `@deepseek-ai/dsh@0.1.0-rc.8` npm 依赖发布暂不完整
+            （`@deepseek-ai/dsh-agent-loop@^0.1.0-rc.8` ETARGET），rc.8 仍保留在 tested
+            与 CLI capability 兼容信息中，待上游补发后仅恢复默认版本即可。
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
