@@ -262,3 +262,27 @@ U3 卸载守卫测试一度按默认 3080 端口把宿主机真实 DSH 当外部
 
 Actions 全部钉 commit SHA（checkout v4.2.2 / upload-artifact v4.6.2 / download-artifact v4.2.1 / gh-release v2.2.1）；
 PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:write 的 publish job。
+
+## 13. 2026-08-19 v1.0.1 修复轮（第八轮修复实现，v1.0.0 冻结不动）
+
+### 实现清单
+
+| # | 项目 | 实现 |
+| --- | --- | --- |
+| 1 | 宿主日志 | `src/HostLog.cs`（`logs\desktop-shell.log`，8MB 轮转，绝不记录凭据）；MainForm 构造记录环境信息，StartAsync/RestartBackendAsync/托盘/Dispose 记录阶段与结果 |
+| 2 | 错误覆盖层 | `ShowErrorOverlay`：大标题 + 可滚动详情 TextBox + 复制错误按钮，与普通覆盖层共用布局与主题（按钮统一走 `ThemeHelper.ApplyButtonTheme`） |
+| 3 | 分阶段启动 + 阶段感知重试 | `StartupPhase` 八阶段；`HandleStartupError` 按失败阶段路由：CommandVerify/BackendProbe/Backend → `RestartBackendAsync`；WebViewEnvironment/WebViewInitialize → `RetryWebViewAsync`（只重建 WebView2，不碰后端）；WebViewConfigure → `RetryConfigureAsync`（配置处理器先摘除再挂接，重试不叠加）；权限/导航/未知 → `StartAsync` 整体重试（`BackendRunning` 守卫保证不误杀健康 owned 后端）；缺 WebView2 Runtime 单独给官方下载入口 |
+| 4 | 托盘生命周期 | `HideToTray` + `trayTransition` + `BeginInvoke((MethodInvoker)...)` 延迟到 FormClosing 结束后隐藏；`RestoreFromTray` 复用原窗口（不重建 WebView）；Dispose 记录 hiddenToTray |
+| 5 | 统一 dsh 版本重验证（PS 端） | `Test-DshNeedsReacceptance`（与 C# `ConfirmCommandVersionBeforeStart` 完全同一规则）；`Invoke-ManagedDsh` 对 command/auto 解析出的 dsh 每次插件操作前重验证，与基线一致自动接受、其它交互询问/非交互中止；`$defaultDshVersion = $VerifiedDshVersion` 单一来源 |
+| 6 | 原生 TCP owner PID | `src/NativeTcpTable.cs`：dwNumEntries 表头 + 按 entryCount 行遍历 + 低 16 位字节交换 + 仅 LISTEN；`tests/test-port-owner.ps1` 编译产品同款源码做真实行为回归（owner PID == 测试进程、netstat 交叉验证、关闭端口 -1），证明原生路径真实可用而非静默退回 netstat |
+| 7 | 自定义 Profile 身份 | `IsLikelyDshCommandLine`：package/path 特征 +（web 子命令或任意合法 `--profile <name>`）+ 端口；卸载器同步同语义 |
+| 8 | VERSION/COMPATIBILITY 单一来源 | release.yml 新增"workflow 版本 == 根目录 VERSION"门禁（不满足直接失败），默认输入改 1.0.1；`test-launch-args.ps1` 探测版本改读 COMPATIBILITY.json，不再硬编码 |
+| 9 | 仅 x64 | Build-Release `-Arch` ValidateSet 只剩 `x64`，`$ArchLoader` 固定 win-x64，移除 arm64/x86 死分支 |
+| 10 | 验证门禁 6 → 11 | 新增 `test-port-owner` / `test-host-log` / `test-shell-runtime` / `test-accepted-dsh` / `test-build-x64`；pwsh 与 Windows PowerShell 5.1 双宿主全绿才允许发布 |
+
+### 验证
+
+- 11 项回归测试在 PowerShell 7 与 Windows PowerShell 5.1 双宿主通过（含 PSScriptAnalyzer 1.25.0）；
+- csc 全量编译（DeepSeekHarness.cs + HostLog.cs + NativeTcpTable.cs）无警告；
+- `tests/test-port-owner.ps1` 证明原生 TCP 解析返回真实 owner PID（与 netstat 一致）；
+- Release 工作流门禁：`workflowVersion != VERSION 文件` 直接失败，防止手滑发错版本。

@@ -2,7 +2,7 @@
     [string]$Version = '',
     [string]$OutDir = '',
     [string]$SdkDir = '',
-    [ValidateSet('x64', 'arm64', 'x86')]
+    [ValidateSet('x64')]
     [string]$Arch = 'x64'
 )
 
@@ -13,7 +13,7 @@
 .DESCRIPTION
     1. 定位固定版本（1.0.4078.44）的 WebView2 SDK 三件套：-SdkDir 覆盖（版本必须一致）
        → 同版本 NuGet 包目录 → NuGet 在线下载；不再从多个来源拼凑
-       -Arch 决定 WebView2Loader.dll 变体（x64/arm64/x86，默认 x64；v1.0.0 首发 x64）
+       -Arch 固定 x64（v1.0.1 起发布包只支持 x64，WebView2Loader.dll 取 win-x64 变体）
     2. 用 .NET Framework csc 编译 DeepSeekHarness.exe，EXE 的
        AssemblyVersion / FileVersion / InformationalVersion / manifest 版本与 -Version 同步
     3. 组装自包含目录（含 Repair-CostMeterLedger.ps1、COMPATIBILITY.json）并打包 zip
@@ -57,8 +57,8 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # 发布构建固定的 WebView2 SDK 版本（可复现性：三件套必须来自同一个 NuGet 包目录）
 $SdkVersion = '1.0.4078.44'
-# 目标架构决定 WebView2Loader.dll 的变体；默认 x64（v1.0.0 首发只支持 x64 发布包）
-$ArchLoader = switch ($Arch) { 'arm64' { 'win-arm64' } 'x86' { 'win-x86' } default { 'win-x64' } }
+# 目标架构固定 x64（v1.0.1 起发布包只支持 x64；WebView2Loader.dll 取 win-x64 变体）
+$ArchLoader = 'win-x64'
 
 function Resolve-Assembly([string]$root, [string]$name, [string]$archFilter = '') {
     if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
@@ -185,6 +185,8 @@ using System.Reflection;
             '/reference:System.Windows.Forms.dll', '/reference:System.Web.Extensions.dll',
             "/reference:$($sdk.Core)", "/reference:$($sdk.WinForms)",
             (Join-Path $repoRoot 'src\DeepSeekHarness.cs'),
+            (Join-Path $repoRoot 'src\HostLog.cs'),
+            (Join-Path $repoRoot 'src\NativeTcpTable.cs'),
             $versionInfo
         )
         & $csc @compilerArgs

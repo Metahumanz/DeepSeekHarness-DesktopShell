@@ -1,8 +1,34 @@
 # Changelog
 
 本项目的用户可见变更记录。安全边界与修复细节见 [docs/AUDIT.md](docs/AUDIT.md)。
-> **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复将发布 v1.0.1
+> **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
+
+## v1.0.1（第八轮修复：启动运行期稳健性，2026-08-19）
+
+v1.0.0 冻结后的第一个修复版本。
+
+- **宿主日志**：新增 `logs\desktop-shell.log`（与 dsh 后端日志分离），启动按阶段记录
+  ENTER/OK/FAIL，失败带完整异常信息；超过 8MB 自动轮转；绝不记录密钥/凭据
+- **启动失败错误覆盖层**：大标题 + 可滚动异常详情 + "复制错误"按钮；缺少 WebView2 Runtime
+  时单独给出官方下载入口
+- **分阶段启动 + 阶段感知重试**：启动拆为 命令验证/后端探测/后端/WebView2 环境/初始化/配置/
+  权限/导航 八个阶段；后端类失败 → 重启后端；WebView2 类失败 → 只重建 WebView2（绝不碰健康
+  后端）；配置类失败 → 只重配（处理器先摘除再挂接，不叠加）；导航类失败 → 整体重试，且
+  `BackendRunning` 守卫保证不会误杀已在运行的 owned 后端
+- **关闭到托盘生命周期修复**：延迟到 FormClosing 流程结束后再隐藏（BeginInvoke），避免残留
+  不可见窗口；从托盘恢复复用原窗口（不重建 WebView）
+- **统一 dsh 版本重验证（PS/C# 双端同一规则）**：command/auto 模式每次启动与每次插件操作前
+  重新读 `dsh --version`；accepted 路径/版本任一变化或无法读取 → 重新确认；与验证基线一致
+  的新版本自动接受、不打扰用户；PS 端新增 `Test-DshNeedsReacceptance`（行为矩阵回归）
+- **原生 TCP owner PID 回归测试**：`tests/test-port-owner.ps1` 编译产品同款
+  `src/NativeTcpTable.cs`，真实监听端口必须返回本进程 PID（netstat 交叉验证 + 关闭端口 -1）
+- **自定义 Profile 识别**：命令行身份判定接受任意合法 `--profile <name>`（不再只认 web 子命令）
+- **版本/兼容基线单一来源收口**：Release 工作流新增"版本号 == 根目录 VERSION"门禁，默认输入
+  改为 1.0.1；`test-launch-args.ps1` 探测版本改读 COMPATIBILITY.json
+- **发布包仅 x64**：Build-Release `-Arch` 校验集只剩 x64，移除 arm64/x86 死分支
+- **验证门禁 6 → 11 项**：新增 test-port-owner / test-host-log / test-shell-runtime /
+  test-accepted-dsh / test-build-x64；pwsh 与 Windows PowerShell 5.1 双宿主全绿才发布
 
 
 

@@ -38,7 +38,6 @@ $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $homeDir '.dsh'
 $desktopDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settingsPath = Join-Path $desktopDir 'settings.json'
 $legacyRuntimeDir = Join-Path $dshHome 'runtime'
-$defaultDshVersion = '0.1.0-rc.7'
 # 验证基线唯一来源：安装目录内的 COMPATIBILITY.json（由构建/安装流程随包分发），
 # 缺失或非法时回退硬编码。官方 DSH 仍是 developer preview，会发 breaking changes：
 # - 比基线旧 → 不支持，询问
@@ -55,6 +54,8 @@ if (Test-Path -LiteralPath $compatPath -PathType Leaf) {
         }
     } catch {}
 }
+# npx 回退版本与验证基线同一来源，不允许各自硬编码（单一事实来源）。
+$defaultDshVersion = $VerifiedDshVersion
 $defaultProfilePnpmVersion = '10.33.2'
 
 # 插件目录。分层与可复现性规则（2026-08-19 第二轮审计后）：
@@ -531,6 +532,22 @@ function Resolve-DshCommandForOps([string]$runnerMode, [string]$savedPath) {
     return $cmd
 }
 
+# 与 C# ConfirmCommandVersionBeforeStart 完全一致的重验证判定（单一规则，双端同语义）：
+# 只要最终解析结果是「使用现有 dsh」：
+#   acceptedPath 为空 / acceptedVersion 为空 / actualPath 为空 /
+#   acceptedPath != actualPath（accepted 非空时）/ actualVersion 为空 /
+#   actualVersion != acceptedVersion  → 需要重新验证
+function Test-DshNeedsReacceptance([string]$acceptedPath, [string]$acceptedVersion,
+    [string]$actualPath, [string]$actualVersion) {
+    if ([string]::IsNullOrWhiteSpace($acceptedPath)) { return $true }
+    if ([string]::IsNullOrWhiteSpace($acceptedVersion)) { return $true }
+    if ([string]::IsNullOrWhiteSpace($actualPath)) { return $true }
+    if (-not [string]::Equals($acceptedPath, $actualPath, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    if ([string]::IsNullOrWhiteSpace($actualVersion)) { return $true }
+    if ($actualVersion -ne $acceptedVersion) { return $true }
+    return $false
+}
+
 function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
     $current = Get-CurrentSettings
     Ensure-Node
@@ -539,26 +556,33 @@ function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
 
     $dshCommand = Resolve-DshCommandForOps $current.RunnerMode $current.DshPath
 
-    # 运行时版本重新验证（与 C# 启动前一致）：command 模式下每次执行插件操作前
-    # 重新取 dsh --version，与上次 accepted 的版本比对；变化/无法读取时询问或中止，
-    # 用户确认后更新 accepted 记录。
-    if ($dshCommand -and $current.RunnerMode -eq 'command') {
+    # 运行时版本重新验证（与 C# 启动前完全一致，command/auto 都执行——只要最终解析
+    # 结果是「使用现有 dsh」）：每次插件操作前重新读取 dsh --version，与上次 accepted
+    # 记录比对（路径或版本任一变化/无法读取 → 需要重新确认）。与验证基线一致的新版本
+    # 自动接受并写入 accepted，不打扰用户；其它变化交互询问，非交互模式直接中止。
+    if ($dshCommand) {
         $actualVer = Get-DshVersionFromCommand $dshCommand
-        $acceptedVer = [string]$current.AcceptedDshVersion
-        $needsConfirm = ($acceptedVer -ne '' -and $actualVer -ne $acceptedVer)
-        if ($needsConfirm) {
-            $verDesc = if ($actualVer) { "已从 $acceptedVer 变为 $actualVer" } else { "已无法读取（上次记录 $acceptedVer）" }
-            if ($NonInteractive) {
-                Fail "现有 DSH 版本 $verDesc，未获重新确认；请在管理器中重新确认后继续插件操作。"
+        if (Test-DshNeedsReacceptance $current.AcceptedDshPath $current.AcceptedDshVersion $dshCommand $actualVer) {
+            if (-not [string]::IsNullOrWhiteSpace($actualVer) -and (Test-DshVersionSupported $actualVer)) {
+                $obj = Get-SettingsObject
+                Set-Property $obj 'acceptedDshCommandPath' $dshCommand
+                Set-Property $obj 'acceptedDshCommandVersion' $actualVer
+                Write-Utf8NoBom $settingsPath (($obj | ConvertTo-Json -Depth 20))
+                Ok "已记住现有 DSH 版本：$actualVer"
+            } else {
+                $verDesc = if ($actualVer) { "已从 $($current.AcceptedDshVersion) 变为 $actualVer" } else { "已无法读取（上次记录 $($current.AcceptedDshVersion)）" }
+                if ($NonInteractive) {
+                    Fail "现有 DSH 版本 $verDesc，未获重新确认；请在管理器中重新确认后继续插件操作。"
+                }
+                if (-not (Read-YesNo "现有 DSH 版本 $verDesc，是否继续使用并记住新版本？" $false)) {
+                    Fail '已取消插件操作：请先在管理器中重新确认 DSH。'
+                }
+                $obj = Get-SettingsObject
+                Set-Property $obj 'acceptedDshCommandPath' $dshCommand
+                Set-Property $obj 'acceptedDshCommandVersion' $(if ($actualVer) { $actualVer } else { '' })
+                Write-Utf8NoBom $settingsPath (($obj | ConvertTo-Json -Depth 20))
+                Ok "已记住现有 DSH 版本：$(if ($actualVer) { $actualVer } else { '（无法读取）' })"
             }
-            if (-not (Read-YesNo "现有 DSH 版本 $verDesc，是否继续使用并记住新版本？" $false)) {
-                Fail '已取消插件操作：请先在管理器中重新确认 DSH。'
-            }
-            $obj = Get-SettingsObject
-            Set-Property $obj 'acceptedDshCommandPath' $dshCommand
-            Set-Property $obj 'acceptedDshCommandVersion' $(if ($actualVer) { $actualVer } else { '' })
-            Write-Utf8NoBom $settingsPath (($obj | ConvertTo-Json -Depth 20))
-            Ok "已记住现有 DSH 版本：$(if ($actualVer) { $actualVer } else { '（无法读取）' })"
         }
     }
 

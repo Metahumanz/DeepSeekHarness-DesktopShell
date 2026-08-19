@@ -22,6 +22,21 @@ Assert-True "passes --port" ($cs -match '" --port " \+ port\.ToString\(\)')
 # 旧形态必须仍被 CLI 拒绝（证明该守卫有实际意义）；新形态必须能通过 launcher 参数解析。
 # 注意：5.1 下原生 stderr（reject 错误）会变成错误记录，EAP=Stop 会中止脚本，
 # 因此探测期间临时切到 Continue 并把 stderr 并入输出字符串。
+# 探测用的 DSH 版本单一来源：仓库根 COMPATIBILITY.json（与壳的验证基线同一文件），
+# 不在此处硬编码，避免“测试里又写死一份版本号”。
+$compatPath = Join-Path $repo 'COMPATIBILITY.json'
+if (-not (Test-Path -LiteralPath $compatPath -PathType Leaf)) {
+    Write-Host "FAIL: COMPATIBILITY.json missing at $compatPath"
+    exit 1
+}
+$compat = Get-Content -LiteralPath $compatPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$probeVersion = [string]$compat.verifiedDshVersion
+if ($probeVersion -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+    Write-Host "FAIL: invalid verifiedDshVersion in COMPATIBILITY.json: $probeVersion"
+    exit 1
+}
+Write-Host "probe DSH version (from COMPATIBILITY.json): $probeVersion"
+
 function Invoke-NpxProbe([string[]]$argsList) {
     $oldEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -37,8 +52,8 @@ New-Item -ItemType Directory -Force -Path $probeHome | Out-Null
 $oldHome = $env:DSH_HOME
 $env:DSH_HOME = $probeHome
 try {
-    $oldOut = Invoke-NpxProbe @('-y', '@deepseek-ai/dsh@0.1.0-rc.7', '--profile', 'probe', 'web', '--help')
-    $newOut = Invoke-NpxProbe @('-y', '@deepseek-ai/dsh@0.1.0-rc.7', '--profile', 'probe', '--help')
+    $oldOut = Invoke-NpxProbe @('-y', "@deepseek-ai/dsh@$probeVersion", '--profile', 'probe', 'web', '--help')
+    $newOut = Invoke-NpxProbe @('-y', "@deepseek-ai/dsh@$probeVersion", '--profile', 'probe', '--help')
 } finally {
     $env:DSH_HOME = $oldHome
     Remove-Item -LiteralPath $probeHome -Recurse -Force -ErrorAction SilentlyContinue
