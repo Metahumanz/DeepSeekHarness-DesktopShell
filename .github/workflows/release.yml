@@ -1,9 +1,11 @@
 name: Release
 
 # 发布 GitHub Release：
-# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.0）
+# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.1）
 #   （tag 已存在时校验其必须指向当前 HEAD，否则拒绝发布）
 # - 或推送 v* tag 自动触发（版本号取 tag，去掉 v 前缀）
+# - 版本单一来源门禁：无论哪种触发方式，版本号必须等于仓库根目录 VERSION 文件，
+#   不一致直接失败（防止手滑发错版本）。
 # 产物：release/DeepSeekHarness-DesktopShell.zip + SHA256SUMS.txt（x64）
 # （一键安装 Install-FromGitHub.ps1 会下载这两个资产并强制校验 SHA256）
 #
@@ -18,9 +20,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 1.0.0)'
+        description: 'Version to release (e.g. 1.0.1)'
         required: true
-        default: '1.0.0'
+        default: '1.0.1'
   push:
     tags:
       - 'v*'
@@ -45,6 +47,16 @@ jobs:
           }
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Resolved version: $v"
+
+      - name: Gate version against repo VERSION (single source)
+        shell: pwsh
+        run: |
+          $repoVersion = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          if ($repoVersion -ne "${{ steps.version.outputs.version }}") {
+            Write-Error "VERSION file ($repoVersion) does not match release version (${{ steps.version.outputs.version }}). Aborting."
+            exit 1
+          }
+          Write-Host "version gate ok: $repoVersion"
 
       - name: Run verify gate (PowerShell 7)
         shell: pwsh
@@ -136,11 +148,13 @@ jobs:
             同时匹配才继续）。
             本发布包面向 Windows 10/11 **x64**（WebView2Loader 为 win-x64 变体）。
 
-            **第七轮修复**：修复启动命令非法拼接（--profile X 后多余的 web 子命令，DSH
-            rejectParentOptions 拒绝导致无法启动）；启动前重新验证现有 dsh 版本；DSH_HOME
-            漂移确认；移除常驻 DSH 进程的 Git rewrite；源码安装器复用发布安装核心；卸载
-            多 DSH 实例与 partial 状态；健康检查改用原生 TCP 表 owner PID；版本/兼容基线
-            单一来源（VERSION + COMPATIBILITY.json）；SHA256SUMS 文件名+hash 双匹配。
+            **v1.0.1 修复轮**：宿主日志（logs\desktop-shell.log，启动分阶段 ENTER/OK/FAIL）；
+            启动失败错误覆盖层（大标题 + 可滚动异常详情 + 复制错误按钮）；按失败阶段定向
+            重试（后端类重启后端、WebView2 类只重建 WebView2、配置类只重配、导航类整体重试，
+            重试绝不误伤健康后端）；关闭到托盘生命周期修复（延迟隐藏，托盘恢复复用窗口）；
+            command/auto 模式启动与插件操作前的统一 dsh 版本重验证（与验证基线一致自动接受）；
+            原生 TCP 表 owner PID 回归测试；自定义 Profile 识别；版本/兼容基线单一来源
+            （release 门禁校验 workflow 版本 == VERSION）；发布包仅 x64；验证门禁扩至 11 项。
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true

@@ -3,7 +3,7 @@
 )
 
 # 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
-# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、六项回归测试。
+# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、十一项回归测试。
 # 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,12 @@ $tests = @(
     'test-runner-mode.ps1',
     'test-repair-regex.ps1',
     'test-install-ownership.ps1',
-    'test-uninstall-guards.ps1'
+    'test-uninstall-guards.ps1',
+    'test-port-owner.ps1',
+    'test-host-log.ps1',
+    'test-shell-runtime.ps1',
+    'test-accepted-dsh.ps1',
+    'test-build-x64.ps1'
 )
 
 Write-Host "== verify: parse ($($hostExe | Split-Path -Leaf)) =="

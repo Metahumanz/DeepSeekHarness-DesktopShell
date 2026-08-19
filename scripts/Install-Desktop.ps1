@@ -183,7 +183,10 @@ using System.Reflection;
         '/reference:System.dll','/reference:System.Core.dll','/reference:System.Drawing.dll',
         '/reference:System.Windows.Forms.dll','/reference:System.Web.Extensions.dll',
         "/reference:$coreDll", "/reference:$winFormsDll",
-        (Join-Path $repoRoot 'src\DeepSeekHarness.cs'), $versionInfo
+        (Join-Path $repoRoot 'src\DeepSeekHarness.cs'),
+        (Join-Path $repoRoot 'src\HostLog.cs'),
+        (Join-Path $repoRoot 'src\NativeTcpTable.cs'),
+        $versionInfo
     )
     & $csc @compilerArgs
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Fail "C# 编译失败，退出码 $LASTEXITCODE。" }

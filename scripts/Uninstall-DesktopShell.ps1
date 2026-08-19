@@ -117,14 +117,24 @@ function Get-ProcessCommandLine([int]$processId) {
 }
 
 # 与 C# 端 IsLikelyDshProcess 一致的特征判断
-function Test-LikelyDshCommandLine([string]$cmd) {
+# 与 C# 端 IsLikelyDshCommandLine 完全一致的身份判断：
+# 官方 package/path 特征 +（legacy "web" 子命令 或 "--profile <合法profile>"）
+# + 知道端口时必须匹配 "--port <port>"。不再把字符串 "web" 当作 Web 服务身份
+# （自定义 Profile：--profile work --port 3080 同样是合法 DSH）。
+function Test-LikelyDshCommandLine([string]$cmd, [int]$port = -1) {
     if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
     $lower = $cmd.ToLowerInvariant()
     $hasPackage = $lower.Contains('@deepseek-ai') -and $lower.Contains('dsh')
     $hasPath = $lower.Contains('\dsh\') -or $lower.Contains('/dsh/') -or
                $lower.Contains('dsh.cmd') -or $lower.Contains('dsh.exe')
-    $hasWeb = $lower.Contains(' web') -or $lower.Contains('"web"') -or $lower.Contains("'web'")
-    return $hasWeb -and ($hasPackage -or $hasPath)
+    if (-not ($hasPackage -or $hasPath)) { return $false }
+    $hasWebSub = $lower.Contains(' web') -or $lower.Contains('"web"') -or $lower.Contains("'web'")
+    $hasProfile = $lower -match '--profile\s+[a-z0-9_-]+'
+    if (-not ($hasWebSub -or $hasProfile)) { return $false }
+    if ($port -gt 0) {
+        if ($lower -notmatch ('--port\s+' + [regex]::Escape([string]$port))) { return $false }
+    }
+    return $true
 }
 
 function Ask-UninstallMode {
@@ -263,7 +273,7 @@ if ($mode -eq 'full') {
         $dshPid = Find-ListeningPid $webPort
         $cmdLine = ''
         if ($dshPid -gt 0) { $cmdLine = Get-ProcessCommandLine $dshPid }
-        $isDsh = Test-LikelyDshCommandLine $cmdLine
+        $isDsh = Test-LikelyDshCommandLine $cmdLine $webPort
 
         if ($dshPid -gt 0 -and $isDsh) {
             $stopOk = $true

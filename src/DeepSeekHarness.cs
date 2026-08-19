@@ -57,7 +57,7 @@ namespace DeepSeekHarnessDesktop
             windowHeight = 900;
             windowMaximized = false;
             developerMode = false;
-            dshVersion = "0.1.0-rc.7";
+            dshVersion = DshProcessManager.VerifiedDshVersion;
             dshPath = "";
             dshRunnerMode = "auto";
             acceptedDshCommandPath = "";
@@ -143,11 +143,12 @@ namespace DeepSeekHarnessDesktop
 
         public static string NormalizeDshVersion(string value)
         {
-            string version = String.IsNullOrWhiteSpace(value) ? "0.1.0-rc.7" : value.Trim();
+            string fallback = DshProcessManager.VerifiedDshVersion;   // 单一来源：COMPATIBILITY.json
+            string version = String.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
             foreach (char c in version)
             {
                 if (!(Char.IsLetterOrDigit(c) || c == '.' || c == '-' || c == '_' || c == '+'))
-                    return "0.1.0-rc.7";
+                    return fallback;
             }
             return version;
         }
@@ -313,6 +314,32 @@ namespace DeepSeekHarnessDesktop
             ApplyNativeControlTheme(form, dark);
         }
 
+        /// <summary>
+        /// 按钮主题统一入口：对话框递归主题与 MainForm overlay 按钮都走这里，
+        /// 不允许各自复制颜色代码。
+        /// </summary>
+        public static void ApplyButtonTheme(Button button, bool dark)
+        {
+            ApplyButtonTheme(button, dark,
+                dark ? Color.FromArgb(48, 48, 48) : SystemColors.Control,
+                dark ? Color.WhiteSmoke : SystemColors.ControlText,
+                dark ? Color.FromArgb(104, 104, 104) : SystemColors.ControlDark);
+        }
+
+        private static void ApplyButtonTheme(Button btn, bool dark, Color button, Color text, Color border)
+        {
+            btn.UseVisualStyleBackColor = false;
+            btn.BackColor = button;
+            btn.ForeColor = text;
+            btn.FlatStyle = dark ? FlatStyle.Flat : FlatStyle.Standard;
+            if (dark)
+            {
+                btn.FlatAppearance.BorderColor = border;
+                btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(61, 61, 61);
+                btn.FlatAppearance.MouseDownBackColor = Color.FromArgb(72, 72, 72);
+            }
+        }
+
         private static void ApplyControlThemeRecursive(Control control, bool dark,
             Color window, Color field, Color text, Color fieldText, Color button, Color border)
         {
@@ -347,17 +374,7 @@ namespace DeepSeekHarnessDesktop
             }
             else if (control is Button)
             {
-                Button btn = (Button)control;
-                btn.UseVisualStyleBackColor = false;
-                btn.BackColor = button;
-                btn.ForeColor = text;
-                btn.FlatStyle = dark ? FlatStyle.Flat : FlatStyle.Standard;
-                if (dark)
-                {
-                    btn.FlatAppearance.BorderColor = border;
-                    btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(61, 61, 61);
-                    btn.FlatAppearance.MouseDownBackColor = Color.FromArgb(72, 72, 72);
-                }
+                ApplyButtonTheme((Button)control, dark, button, text, border);
             }
             else if (control is CheckBox)
             {
@@ -900,6 +917,12 @@ namespace DeepSeekHarnessDesktop
         private string logPath;
         public bool OwnsBackend { get; private set; }
 
+        /// <summary>自家后端是否仍存活（用于“未知宿主异常重试”时避免无意义重启健康 DSH）。</summary>
+        public bool BackendRunning
+        {
+            get { return OwnsBackend && process != null && !process.HasExited; }
+        }
+
         private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
         private const int JobObjectExtendedLimitInformation = 9;
 
@@ -984,7 +1007,7 @@ namespace DeepSeekHarnessDesktop
             if (pid <= 0) return false;
 
             string commandLine;
-            return IsLikelyDshProcess(pid, out commandLine);
+            return IsLikelyDshProcess(pid, out commandLine, port);
         }
 
         // DesktopShell 验证基线：只有该版本被审核过。外部已运行的 DSH 同样必须过这道门槛。
@@ -1093,7 +1116,7 @@ namespace DeepSeekHarnessDesktop
 
             info.Pid = FindListeningPid(port);
             string cmd;
-            info.IsDsh = IsLikelyDshProcess(info.Pid, out cmd);
+            info.IsDsh = IsLikelyDshProcess(info.Pid, out cmd, port);
             info.CommandLine = cmd ?? "";
             info.Version = ExtractDshVersionFromCommandLine(info.CommandLine);
             info.IsVerified = IsVerifiedDshVersion(info.Version);
@@ -1132,7 +1155,7 @@ namespace DeepSeekHarnessDesktop
             if (pid == lastExternalPid) return true;   // 端口 owner 未变 → 身份可信
 
             string commandLine;
-            if (!IsLikelyDshProcess(pid, out commandLine))
+            if (!IsLikelyDshProcess(pid, out commandLine, port))
             {
                 lastExternalPid = -1;
                 return false;
@@ -1153,7 +1176,7 @@ namespace DeepSeekHarnessDesktop
                         "端口 " + port.ToString() + " 已被占用，但无法确认监听进程身份。为避免误附着，桌面壳不会继续。");
 
                 string commandLine;
-                if (!IsLikelyDshProcess(existingPid, out commandLine))
+                if (!IsLikelyDshProcess(existingPid, out commandLine, port))
                     throw new InvalidOperationException(
                         "端口 " + port.ToString() + " 已被非 DSH 进程占用（PID " + existingPid.ToString() + "）。\r\n\r\n" +
                         "命令行：\r\n" + (String.IsNullOrWhiteSpace(commandLine) ? "（无法读取）" : commandLine) +
@@ -1279,62 +1302,11 @@ namespace DeepSeekHarnessDesktop
             throw new TimeoutException("等待 DSH Web 启动超时（120 秒）。请查看日志：" + logPath);
         }
 
-        [DllImport("iphlpapi.dll", SetLastError = true)]
-        private static extern uint GetExtendedTcpTable(IntPtr pTcpTable, ref int dwOutBufLen, bool sort, int ipVersion, int tblClass, uint reserved);
-
-        private const int AF_INET = 2;
-        private const int TCP_TABLE_OWNER_PID_ALL = 5;
-        private const uint MIB_TCP_STATE_LISTEN = 2;
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MIB_TCPROW_OWNER_PID
-        {
-            public uint state;
-            public uint localAddr;
-            public uint localPort;
-            public uint remoteAddr;
-            public uint remotePort;
-            public uint owningPid;
-        }
-
-        // 原生 TCP 表（GetExtendedTcpTable）：不拉 netstat 子进程即可拿到端口 owner PID。
-        // 端口在 DWORD 的高 16 位（网络字节序）。失败返回 -1，由调用方退回 netstat。
-        private static int FindListeningPidNative(int port)
-        {
-            try
-            {
-                int size = 0;
-                uint rc = GetExtendedTcpTable(IntPtr.Zero, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-                if (rc != 0 && rc != 122 /* ERROR_INSUFFICIENT_BUFFER */) return -1;
-                if (size <= 0) return -1;
-
-                IntPtr buffer = Marshal.AllocHGlobal(size);
-                try
-                {
-                    rc = GetExtendedTcpTable(buffer, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-                    if (rc != 0) return -1;
-
-                    int rowSize = Marshal.SizeOf(typeof(MIB_TCPROW_OWNER_PID));
-                    int count = size / rowSize;
-                    for (int i = 0; i < count; i++)
-                    {
-                        IntPtr rowPtr = new IntPtr(buffer.ToInt64() + (long)i * rowSize);
-                        MIB_TCPROW_OWNER_PID row =
-                            (MIB_TCPROW_OWNER_PID)Marshal.PtrToStructure(rowPtr, typeof(MIB_TCPROW_OWNER_PID));
-                        if (row.state != MIB_TCP_STATE_LISTEN) continue;
-                        int rowPort = (int)(row.localPort >> 16);
-                        if (rowPort == port) return (int)row.owningPid;
-                    }
-                }
-                finally { Marshal.FreeHGlobal(buffer); }
-            }
-            catch { }
-            return -1;
-        }
-
         public int FindListeningPid(int port)
         {
-            int pid = FindListeningPidNative(port);
+            // 原生 TCP 表优先（实现见 src/NativeTcpTable.cs，回归测试 test-port-owner.ps1 直接验证）；
+            // API 真正失败才退回 netstat。
+            int pid = TcpTableHelper.FindListeningPidNative(port);
             if (pid > 0) return pid;
 
             try
@@ -1372,22 +1344,47 @@ namespace DeepSeekHarnessDesktop
             return -1;
         }
 
+        /// <summary>
+        /// DSH 身份判断（端口未知时 port 传 -1）：
+        /// 官方 package/path 特征 +（legacy "web" 子命令 或 "--profile &lt;合法profile&gt;"）
+        /// + 调用方知道端口时必须匹配 "--port &lt;port&gt;"。
+        /// 不再把字符串 "web" 当作 Web 服务身份——自定义 Profile（--profile work）同样是合法 DSH。
+        /// </summary>
         public bool IsLikelyDshProcess(int pid, out string commandLine)
         {
-            commandLine = GetProcessCommandLine(pid);
-            if (String.IsNullOrWhiteSpace(commandLine)) return false;
+            return IsLikelyDshCommandLine(GetProcessCommandLine(pid), -1, out commandLine);
+        }
 
-            string lower = commandLine.ToLowerInvariant();
+        public bool IsLikelyDshProcess(int pid, out string commandLine, int port)
+        {
+            return IsLikelyDshCommandLine(GetProcessCommandLine(pid), port, out commandLine);
+        }
+
+        public static bool IsLikelyDshCommandLine(string rawCommandLine, int port, out string outLine)
+        {
+            outLine = rawCommandLine ?? "";
+            if (String.IsNullOrWhiteSpace(rawCommandLine)) return false;
+
+            string lower = rawCommandLine.ToLowerInvariant();
             bool hasDshPackage =
                 lower.Contains("@deepseek-ai") && lower.Contains("dsh");
             bool hasDshPath =
                 lower.Contains("\\dsh\\") || lower.Contains("/dsh/") ||
                 lower.Contains("dsh.cmd") || lower.Contains("dsh.exe");
-            bool hasWeb =
-                lower.Contains(" web") || lower.Contains("\"web\"") ||
-                lower.Contains("'web'");
+            if (!(hasDshPackage || hasDshPath)) return false;
 
-            return hasWeb && (hasDshPackage || hasDshPath);
+            // legacy 子命令形式：dsh web ...（rc.7 及更早）或 --profile 形式（任意合法 Profile 名）
+            bool hasWebSubcommand =
+                lower.Contains(" web") || lower.Contains("\"web\"") || lower.Contains("'web'");
+            bool hasProfileFlag = Regex.IsMatch(lower, @"--profile\s+[a-z0-9_-]+");
+            if (!(hasWebSubcommand || hasProfileFlag)) return false;
+
+            // 调用方知道端口时：必须匹配当前端口，防止误判其它 DSH 实例
+            if (port > 0)
+            {
+                if (!Regex.IsMatch(lower, @"--port\s+" + port.ToString())) return false;
+            }
+            return true;
         }
 
         private string GetProcessCommandLine(int pid)
@@ -1460,7 +1457,7 @@ namespace DeepSeekHarnessDesktop
                         "端口仍在监听，但无法确定监听进程 PID。桌面壳不会盲目结束未知进程。");
 
                 string commandLine;
-                if (!IsLikelyDshProcess(pid, out commandLine))
+                if (!IsLikelyDshProcess(pid, out commandLine, port))
                     throw new InvalidOperationException(
                         "拒绝结束 PID " + pid.ToString() + "：该监听进程不像 DSH Web。\r\n\r\n命令行：\r\n" +
                         (String.IsNullOrWhiteSpace(commandLine) ? "（无法读取）" : commandLine));
@@ -2099,6 +2096,20 @@ namespace DeepSeekHarnessDesktop
         }
     }
 
+    /// <summary>启动阶段（用于宿主日志与“按阶段重试”路由）。</summary>
+    internal enum StartupPhase
+    {
+        CommandVerify,
+        PluginCompat,
+        BackendProbe,
+        Backend,
+        WebViewEnvironment,
+        WebViewInitialize,
+        WebViewConfigure,
+        Permission,
+        Navigate
+    }
+
     internal sealed class MainForm : Form
     {
         private readonly string baseDirectory;
@@ -2110,12 +2121,16 @@ namespace DeepSeekHarnessDesktop
         private WebView2 webView;
         private readonly Panel loadingPanel;
         private readonly Label loadingLabel;
+        private readonly Label errorTitle;
+        private readonly TextBox errorDetails;
+        private readonly Button copyErrorButton;
         private readonly Button overlayPrimaryButton;
         private readonly Button overlaySecondaryButton;
         private readonly NotifyIcon trayIcon;
         private readonly ContextMenuStrip trayMenu;
         private readonly System.Windows.Forms.Timer themeTimer;
         private readonly System.Windows.Forms.Timer healthTimer;
+        private readonly Guid mainFormInstanceId = Guid.NewGuid();
 
         private EventHandler overlayPrimaryHandler;
         private EventHandler overlaySecondaryHandler;
@@ -2125,8 +2140,12 @@ namespace DeepSeekHarnessDesktop
         private bool webViewReady;
         private bool healthCheckBusy;
         private bool restartBusy;
+        private bool startBusy;
+        private bool hiddenToTray;
+        private bool trayTransition;
         private int healthFailures;
         private int compatPendingAtStartup;
+        private StartupPhase currentPhase = StartupPhase.CommandVerify;
         private string overlayReason;
         private Icon runtimeIcon;
         private ContextMenuStrip activeWebContextMenu;
@@ -2151,6 +2170,16 @@ namespace DeepSeekHarnessDesktop
             settings = AppSettings.Load(settingsPath);
             dsh = new DshProcessManager();
 
+            HostLog.Initialize(logsDirectory, mainFormInstanceId.ToString("N"));
+            HostLog.Line("FORM created instance=" + mainFormInstanceId.ToString("N"));
+            HostLog.Line("ENV DesktopShellVersion=" + ReadVersionText() +
+                " runnerMode=" + settings.dshRunnerMode +
+                " profile=" + settings.profileName +
+                " port=" + settings.port.ToString() +
+                " workingDirectory=" + settings.workingDirectory +
+                " dshPathExists=" + (!String.IsNullOrWhiteSpace(settings.dshPath) && File.Exists(settings.dshPath)).ToString() +
+                " verifiedDsh=" + DshProcessManager.VerifiedDshVersion);
+
             Text = "DeepSeek Harness";
             MinimumSize = new Size(960, 640);
             Width = settings.windowWidth;
@@ -2170,7 +2199,34 @@ namespace DeepSeekHarnessDesktop
             loadingLabel.TextAlign = ContentAlignment.MiddleCenter;
             loadingLabel.Text = "正在启动 DeepSeek Harness...";
             loadingLabel.Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 12F, FontStyle.Regular);
-            loadingLabel.Height = 70;
+            loadingLabel.Height = 44;
+
+            errorTitle = new Label();
+            errorTitle.AutoSize = false;
+            errorTitle.TextAlign = ContentAlignment.MiddleCenter;
+            errorTitle.Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 15F, FontStyle.Bold);
+            errorTitle.Height = 40;
+            errorTitle.Visible = false;
+
+            errorDetails = new TextBox();
+            errorDetails.Multiline = true;
+            errorDetails.ReadOnly = true;
+            errorDetails.ScrollBars = ScrollBars.Vertical;
+            errorDetails.BorderStyle = BorderStyle.FixedSingle;
+            errorDetails.BackColor = Color.FromArgb(30, 30, 30);
+            errorDetails.ForeColor = Color.Gainsboro;
+            errorDetails.Font = new Font("Consolas", 9F);
+            errorDetails.Visible = false;
+
+            copyErrorButton = new Button();
+            copyErrorButton.Text = "复制错误";
+            copyErrorButton.Width = 110;
+            copyErrorButton.Height = 34;
+            copyErrorButton.Visible = false;
+            copyErrorButton.Click += delegate
+            {
+                try { Clipboard.SetText(errorDetails.Text); } catch { }
+            };
 
             overlayPrimaryButton = new Button();
             overlayPrimaryButton.Width = 142;
@@ -2182,7 +2238,10 @@ namespace DeepSeekHarnessDesktop
             overlaySecondaryButton.Height = 34;
             overlaySecondaryButton.Visible = false;
 
+            loadingPanel.Controls.Add(errorTitle);
             loadingPanel.Controls.Add(loadingLabel);
+            loadingPanel.Controls.Add(errorDetails);
+            loadingPanel.Controls.Add(copyErrorButton);
             loadingPanel.Controls.Add(overlayPrimaryButton);
             loadingPanel.Controls.Add(overlaySecondaryButton);
             loadingPanel.Resize += delegate { LayoutOverlay(); };
@@ -2210,12 +2269,28 @@ namespace DeepSeekHarnessDesktop
             Shown += async delegate { await StartAsync(); };
             HandleCreated += delegate
             {
+                HostLog.Line("HANDLE created");
                 chromeApplied = false;
                 ApplyThemeIfChanged(true);
             };
             FormClosing += OnFormClosing;
 
             ApplyThemeIfChanged(true);
+        }
+
+        private string ReadVersionText()
+        {
+            try
+            {
+                string v = Path.Combine(baseDirectory, "version.txt");
+                if (File.Exists(v))
+                {
+                    string raw = File.ReadAllText(v, Encoding.UTF8).Trim();
+                    if (raw.Length > 0) return raw;
+                }
+            }
+            catch { }
+            return "?";
         }
 
         private WebView2 CreateWebViewControl()
@@ -2227,33 +2302,67 @@ namespace DeepSeekHarnessDesktop
 
         private void LayoutOverlay()
         {
-            int width = Math.Min(760, Math.Max(360, loadingPanel.ClientSize.Width - 80));
-            loadingLabel.Width = width;
-            loadingLabel.Left = Math.Max(20, (loadingPanel.ClientSize.Width - width) / 2);
+            int panelWidth = loadingPanel.ClientSize.Width;
+            int panelHeight = loadingPanel.ClientSize.Height;
+            int width = Math.Min(760, Math.Max(360, panelWidth - 80));
+            int left = Math.Max(20, (panelWidth - width) / 2);
+            int gap = 12;
 
-            int centerY = Math.Max(100, loadingPanel.ClientSize.Height / 2 - 50);
+            if (errorDetails.Visible)
+            {
+                // 错误模式：大标题 + 消息 + 可滚动详情 + 按钮行
+                errorTitle.Width = width;
+                errorTitle.Left = left;
+                errorTitle.Top = Math.Max(18, (panelHeight - 360) / 2 - 60);
+
+                loadingLabel.Width = width;
+                loadingLabel.Left = left;
+                loadingLabel.Top = errorTitle.Bottom + 4;
+                loadingLabel.Height = 44;
+
+                errorDetails.Width = width;
+                errorDetails.Left = left;
+                errorDetails.Top = loadingLabel.Bottom + 10;
+                errorDetails.Height = Math.Max(120, panelHeight - errorDetails.Top - 96);
+
+                int buttonRowTop = errorDetails.Bottom + 12;
+                int buttonCount = (copyErrorButton.Visible ? 1 : 0) + (overlayPrimaryButton.Visible ? 1 : 0) + (overlaySecondaryButton.Visible ? 1 : 0);
+                if (buttonCount == 0) return;
+                int total = (copyErrorButton.Visible ? copyErrorButton.Width + gap : 0) +
+                            (overlayPrimaryButton.Visible ? overlayPrimaryButton.Width + gap : 0) +
+                            (overlaySecondaryButton.Visible ? overlaySecondaryButton.Width : 0) - (buttonCount > 1 ? gap : 0);
+                int bx = Math.Max(20, (panelWidth - total) / 2);
+                if (copyErrorButton.Visible) { copyErrorButton.Left = bx; copyErrorButton.Top = buttonRowTop; bx += copyErrorButton.Width + gap; }
+                if (overlayPrimaryButton.Visible) { overlayPrimaryButton.Left = bx; overlayPrimaryButton.Top = buttonRowTop; bx += overlayPrimaryButton.Width + gap; }
+                if (overlaySecondaryButton.Visible) { overlaySecondaryButton.Left = bx; overlaySecondaryButton.Top = buttonRowTop; }
+                return;
+            }
+
+            loadingLabel.Width = width;
+            loadingLabel.Left = left;
+
+            int centerY = Math.Max(100, panelHeight / 2 - 50);
             loadingLabel.Top = centerY;
 
             int visibleButtons = (overlayPrimaryButton.Visible ? 1 : 0) + (overlaySecondaryButton.Visible ? 1 : 0);
             if (visibleButtons == 0) return;
 
-            int gap = 12;
             int totalWidth = visibleButtons == 2
                 ? overlayPrimaryButton.Width + overlaySecondaryButton.Width + gap
                 : overlayPrimaryButton.Width;
-            int left = Math.Max(20, (loadingPanel.ClientSize.Width - totalWidth) / 2);
+            int bleft = Math.Max(20, (panelWidth - totalWidth) / 2);
             int top = loadingLabel.Bottom + 18;
 
             if (overlayPrimaryButton.Visible)
             {
-                overlayPrimaryButton.Left = left;
+                overlayPrimaryButton.Left = bleft;
                 overlayPrimaryButton.Top = top;
-                left += overlayPrimaryButton.Width + gap;
+                bleft += overlayPrimaryButton.Width + gap;
             }
 
             if (overlaySecondaryButton.Visible)
             {
-                overlaySecondaryButton.Left = left;
+                overlaySecondaryButton.Left = bleft;
                 overlaySecondaryButton.Top = top;
             }
         }
@@ -2262,8 +2371,41 @@ namespace DeepSeekHarnessDesktop
             string primaryText, EventHandler primaryHandler,
             string secondaryText, EventHandler secondaryHandler)
         {
+            ShowOverlayInternal(reason, null, message, null, primaryText, primaryHandler, secondaryText, secondaryHandler);
+        }
+
+        /// <summary>
+        /// 错误型覆盖层：大标题 + 消息 + 可滚动异常详情 + 复制按钮 + 操作按钮。
+        /// detailsText 为 null 时等同 ShowOverlay（无详情区）。
+        /// </summary>
+        private void ShowErrorOverlay(string reason, string title, string message, string detailsText,
+            string primaryText, EventHandler primaryHandler,
+            string secondaryText, EventHandler secondaryHandler)
+        {
+            ShowOverlayInternal(reason, title, message, detailsText, primaryText, primaryHandler, secondaryText, secondaryHandler);
+        }
+
+        private void ShowOverlayInternal(string reason, string title, string message, string detailsText,
+            string primaryText, EventHandler primaryHandler,
+            string secondaryText, EventHandler secondaryHandler)
+        {
             overlayReason = reason;
+            bool errorMode = detailsText != null;
+
+            errorTitle.Text = title ?? "";
+            errorTitle.Visible = errorMode;
             loadingLabel.Text = message;
+            if (errorMode)
+            {
+                errorDetails.Text = detailsText;
+                errorDetails.Visible = true;
+                copyErrorButton.Visible = true;
+            }
+            else
+            {
+                errorDetails.Visible = false;
+                copyErrorButton.Visible = false;
+            }
 
             if (overlayPrimaryHandler != null) overlayPrimaryButton.Click -= overlayPrimaryHandler;
             if (overlaySecondaryHandler != null) overlaySecondaryButton.Click -= overlaySecondaryHandler;
@@ -2287,6 +2429,9 @@ namespace DeepSeekHarnessDesktop
         private void HideOverlay()
         {
             overlayReason = null;
+            errorDetails.Visible = false;
+            copyErrorButton.Visible = false;
+            errorTitle.Visible = false;
             loadingPanel.Visible = false;
         }
 
@@ -2374,26 +2519,35 @@ namespace DeepSeekHarnessDesktop
 
         private async Task StartAsync()
         {
+            if (startBusy) return;
+            startBusy = true;
+            currentPhase = StartupPhase.CommandVerify;
             ShowOverlay("startup", "正在启动 DeepSeek Harness...", null, null, null, null);
 
             try
             {
-                // 每次启动前重新验证现有 dsh 命令的版本（command/auto 模式）：
-                // 与上次 accepted 的版本比对，变化/无法读取时询问用户并更新记录。
+                // 阶段一：命令验证 —— 每次启动前重新验证现有 dsh 命令的版本
+                //（command/auto 模式）：与上次 accepted 的版本比对，变化/无法读取时询问用户。
+                HostLog.Enter("START phase=" + currentPhase.ToString());
                 ConfirmCommandVersionBeforeStart();
+                HostLog.Ok("START phase=CommandVerify");
 
                 DshProcessManager.ExternalBackendInfo probe = null;
                 bool restartExternal = false;
                 bool attachUnverified = false;
 
+                // 阶段二：后端探测 + 兼容补丁。
+                // 规则：只要端口已经打开，启动前绝不写兼容补丁（不依赖第一次 PID/命令行
+                // 识别一定成功）；只有端口原本为空时才“补丁 → 启动自己的 DSH”。
+                currentPhase = StartupPhase.BackendProbe;
+                HostLog.Enter("START phase=BackendProbe");
                 await Task.Run(delegate
                 {
-                    // 规则：只要端口已经打开，启动前绝不写兼容补丁（不依赖第一次 PID/命令行
-                    // 识别一定成功）；只有端口原本为空时才“补丁 → 启动自己的 DSH”。
                     probe = dsh.ProbeExternalDsh(settings.port);
                     compatPendingAtStartup = PluginCompat.ApplyAll(
                         baseDirectory, logsDirectory, settings.profileName, !probe.PortOpen);
                 });
+                HostLog.Ok("START phase=BackendProbe portOpen=" + (probe != null && probe.PortOpen).ToString());
 
                 // 外部 backend 必须单独通过版本验证（runnerMode 只管启动方式）。
                 if (probe != null && probe.PortOpen && probe.IsDsh && !probe.IsVerified)
@@ -2418,6 +2572,10 @@ namespace DeepSeekHarnessDesktop
                         attachUnverified = true;   // 是 / 取消都按非破坏性处理：附着
                 }
 
+                // 阶段三：启动（或附着）后端 —— 仅当本窗体不拥有、或拥有的后端已不在运行时
+                // 才真正执行；已在运行的 owned 后端绝不再启动第二次，避免“重试启动”误伤健康后端。
+                currentPhase = StartupPhase.Backend;
+                HostLog.Enter("START phase=Backend");
                 await Task.Run(delegate
                 {
                     if (restartExternal)
@@ -2427,29 +2585,55 @@ namespace DeepSeekHarnessDesktop
                         PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
                         compatPendingAtStartup = 0;
                     }
-                    dsh.EnsureStarted(
-                        settings.port,
-                        settings.workingDirectory,
-                        logsDirectory,
-                        settings.dshVersion,
-                        settings.profileName,
-                        settings.dshPath,
-                        settings.dshRunnerMode,
-                        attachUnverified);
+                    if (!dsh.BackendRunning)
+                    {
+                        dsh.EnsureStarted(
+                            settings.port,
+                            settings.workingDirectory,
+                            logsDirectory,
+                            settings.dshVersion,
+                            settings.profileName,
+                            settings.dshPath,
+                            settings.dshRunnerMode,
+                            attachUnverified);
+                    }
                 });
+                HostLog.Ok("START phase=Backend");
 
+                // 阶段四：WebView2 环境
+                currentPhase = StartupPhase.WebViewEnvironment;
+                HostLog.Enter("START phase=WebViewEnvironment");
                 loadingLabel.Text = "正在初始化 WebView2...";
                 Directory.CreateDirectory(webViewDataDirectory);
                 CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, webViewDataDirectory);
+                HostLog.Ok("START phase=WebViewEnvironment");
+
+                // 阶段五：WebView2 初始化
+                currentPhase = StartupPhase.WebViewInitialize;
+                HostLog.Enter("START phase=WebViewInitialize");
                 await webView.EnsureCoreWebView2Async(env);
+                HostLog.Ok("START phase=WebViewInitialize");
 
+                // 阶段六：WebView2 配置
+                currentPhase = StartupPhase.WebViewConfigure;
+                HostLog.Enter("START phase=WebViewConfigure");
                 await ConfigureWebViewAsync();
-                await GrantDshNotificationPermissionAsync();
+                HostLog.Ok("START phase=WebViewConfigure");
 
+                // 阶段七：通知权限
+                currentPhase = StartupPhase.Permission;
+                HostLog.Enter("START phase=Permission");
+                await GrantDshNotificationPermissionAsync();
+                HostLog.Ok("START phase=Permission");
+
+                // 阶段八：导航
+                currentPhase = StartupPhase.Navigate;
+                HostLog.Enter("START phase=Navigate");
                 webViewReady = true;
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
+                HostLog.Ok("START complete");
 
                 if (compatPendingAtStartup > 0)
                 {
@@ -2466,33 +2650,160 @@ namespace DeepSeekHarnessDesktop
             }
             catch (Exception ex)
             {
+                HostLog.Fail("START failed phase=" + currentPhase.ToString(), ex);
                 webViewReady = false;
-                // 缺少 WebView2 Runtime 是普通用户最常见的启动失败原因：
-                // 单独给明确提示与官方下载入口，而不是笼统的“启动失败”。
-                bool missingWebView2 = ex.Message.IndexOf("WebView2", StringComparison.OrdinalIgnoreCase) >= 0;
-                string message = missingWebView2
-                    ? "缺少 WebView2 Runtime，无法启动界面。\r\n\r\n" + ex.Message +
-                      "\r\n\r\n下载地址：https://go.microsoft.com/fwlink/p/?LinkId=2124703"
-                    : "启动失败\r\n\r\n" + ex.Message;
-                string primaryText;
-                EventHandler primaryHandler;
-                if (missingWebView2)
+                HandleStartupError(ex);
+            }
+            finally
+            {
+                startBusy = false;
+            }
+        }
+
+        /// <summary>
+        /// 启动失败的错误型覆盖层：标题 + 消息 + 可滚动异常详情 + 复制错误按钮，并按失败
+        /// 阶段给出对应重试路径。缺少 WebView2 Runtime 时单独给出官方下载入口。
+        /// </summary>
+        private void HandleStartupError(Exception ex)
+        {
+            webViewReady = false;
+
+            // 缺少 WebView2 Runtime 是普通用户最常见的启动失败原因：
+            // 单独给明确提示与官方下载入口，而不是笼统的“启动失败”。
+            bool missingWebView2 = ex.Message.IndexOf("WebView2", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            string message;
+            string primaryText;
+            EventHandler primaryHandler;
+            if (missingWebView2)
+            {
+                message = "缺少 WebView2 Runtime，无法启动界面。\r\n\r\n" + ex.Message +
+                          "\r\n\r\n下载地址：https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+                primaryText = "下载 WebView2 Runtime";
+                primaryHandler = OnOverlayOpenWebView2Download;
+            }
+            else
+            {
+                // 阶段感知的重试：
+                //   后端类失败（CommandVerify/BackendProbe/Backend）→ 重启后端；
+                //   WebView2 类失败（Environment/Initialize）→ 只重建 WebView2，不碰后端；
+                //   配置/权限/导航类失败 → 整体重试（有 BackendRunning 保护，不误杀健康后端）。
+                EventHandler retryHandler;
+                string phaseName;
+                switch (currentPhase)
                 {
-                    primaryText = "下载 WebView2 Runtime";
-                    primaryHandler = OnOverlayOpenWebView2Download;
+                    case StartupPhase.CommandVerify:
+                    case StartupPhase.BackendProbe:
+                    case StartupPhase.Backend:
+                        phaseName = "DSH 后端";
+                        retryHandler = OnOverlayRestartBackend;
+                        break;
+                    case StartupPhase.WebViewEnvironment:
+                    case StartupPhase.WebViewInitialize:
+                        phaseName = "WebView2 初始化";
+                        retryHandler = OnOverlayRetryWebView;
+                        break;
+                    case StartupPhase.WebViewConfigure:
+                        phaseName = "WebView2 配置";
+                        retryHandler = OnOverlayRetryConfigure;
+                        break;
+                    case StartupPhase.Permission:
+                        phaseName = "通知权限";
+                        retryHandler = OnOverlayRetryStart;
+                        break;
+                    default:
+                        phaseName = "页面加载";
+                        retryHandler = OnOverlayRetryStart;
+                        break;
                 }
-                else
-                {
-                    primaryText = "重试";
-                    primaryHandler = OnOverlayRestartBackend;
-                }
-                ShowOverlay(
-                    "startup-error",
-                    message,
-                    primaryText,
-                    primaryHandler,
-                    "打开日志目录",
-                    OnOverlayOpenLogs);
+                message = "启动失败（" + phaseName + "阶段）。\r\n\r\n" + ex.Message;
+                primaryText = "重试";
+                primaryHandler = retryHandler;
+            }
+
+            ShowErrorOverlay(
+                "startup-error",
+                "启动失败",
+                message,
+                ex.ToString(),
+                primaryText,
+                primaryHandler,
+                "打开日志目录",
+                OnOverlayOpenLogs);
+        }
+
+        /// <summary>
+        /// WebView2 环境/初始化阶段失败后的重试：只重建 WebView2 环境与初始化，
+        /// 绝不停止或重启后端（后端健康时重试启动也不该误伤它）。
+        /// </summary>
+        private async Task RetryWebViewAsync()
+        {
+            try
+            {
+                currentPhase = StartupPhase.WebViewEnvironment;
+                HostLog.Enter("RETRY-WEBVIEW phase=" + currentPhase.ToString());
+                ShowOverlay("startup", "正在重新初始化 WebView2...", null, null, null, null);
+
+                Directory.CreateDirectory(webViewDataDirectory);
+                CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, webViewDataDirectory);
+                HostLog.Ok("RETRY-WEBVIEW phase=WebViewEnvironment");
+
+                currentPhase = StartupPhase.WebViewInitialize;
+                HostLog.Enter("RETRY-WEBVIEW phase=WebViewInitialize");
+                await webView.EnsureCoreWebView2Async(env);
+                HostLog.Ok("RETRY-WEBVIEW phase=WebViewInitialize");
+
+                currentPhase = StartupPhase.WebViewConfigure;
+                await ConfigureWebViewAsync();
+
+                currentPhase = StartupPhase.Permission;
+                await GrantDshNotificationPermissionAsync();
+
+                currentPhase = StartupPhase.Navigate;
+                webViewReady = true;
+                healthFailures = 0;
+                webView.CoreWebView2.Navigate(DshHomeUrl());
+                HideOverlay();
+                HostLog.Ok("RETRY-WEBVIEW complete");
+            }
+            catch (Exception ex)
+            {
+                HostLog.Fail("RETRY-WEBVIEW failed phase=" + currentPhase.ToString(), ex);
+                webViewReady = false;
+                HandleStartupError(ex);
+            }
+        }
+
+        /// <summary>
+        /// WebView2 配置阶段失败后的重试：只重跑配置（处理器先摘除再挂接，不会叠加），
+        /// 后端与已初始化的 WebView2 都不动。
+        /// </summary>
+        private async Task RetryConfigureAsync()
+        {
+            try
+            {
+                currentPhase = StartupPhase.WebViewConfigure;
+                HostLog.Enter("RETRY-CONFIGURE");
+                ShowOverlay("startup", "正在重新配置 WebView2...", null, null, null, null);
+
+                await ConfigureWebViewAsync();
+                HostLog.Ok("RETRY-CONFIGURE phase=WebViewConfigure");
+
+                currentPhase = StartupPhase.Permission;
+                await GrantDshNotificationPermissionAsync();
+
+                currentPhase = StartupPhase.Navigate;
+                webViewReady = true;
+                healthFailures = 0;
+                webView.CoreWebView2.Navigate(DshHomeUrl());
+                HideOverlay();
+                HostLog.Ok("RETRY-CONFIGURE complete");
+            }
+            catch (Exception ex)
+            {
+                HostLog.Fail("RETRY-CONFIGURE failed phase=" + currentPhase.ToString(), ex);
+                webViewReady = false;
+                HandleStartupError(ex);
             }
         }
 
@@ -2502,53 +2813,18 @@ namespace DeepSeekHarnessDesktop
 
             CoreWebView2 core = webView.CoreWebView2;
 
-            core.NewWindowRequested += delegate(object sender, CoreWebView2NewWindowRequestedEventArgs e)
-            {
-                e.Handled = true;
-                OpenExternalUri(e.Uri);
-            };
+            // 先摘除再挂接：配置阶段失败后重试（RetryConfigureAsync）时不会叠加重复处理器。
+            core.NewWindowRequested -= OnWebViewNewWindowRequested;
+            core.NavigationStarting -= OnWebViewNavigationStarting;
+            core.NavigationCompleted -= OnWebViewNavigationCompleted;
+            core.PermissionRequested -= OnWebViewPermissionRequested;
+            core.ContextMenuRequested -= OnWebContextMenuRequested;
+            core.ProcessFailed -= OnWebViewProcessFailed;
 
-            core.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs e)
-            {
-                if (!IsAllowedMainNavigation(e.Uri))
-                {
-                    e.Cancel = true;
-                    OpenExternalUri(e.Uri);
-                }
-            };
-
-            core.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e)
-            {
-                if (!e.IsSuccess)
-                {
-                    ShowOverlay(
-                        "navigation",
-                        "DSH 页面加载失败。\r\n\r\n" + e.WebErrorStatus.ToString(),
-                        "重新加载",
-                        OnOverlayReloadPage,
-                        "重启 DSH 后端",
-                        OnOverlayRestartBackend);
-                }
-                else if (overlayReason == "navigation" || overlayReason == "backend")
-                {
-                    HideOverlay();
-                }
-            };
-
-            core.PermissionRequested += delegate(object sender, CoreWebView2PermissionRequestedEventArgs e)
-            {
-                try
-                {
-                    if (e.PermissionKind == CoreWebView2PermissionKind.Notifications && IsDshLoopbackOrigin(e.Uri))
-                    {
-                        e.State = CoreWebView2PermissionState.Allow;
-                        e.SavesInProfile = true;
-                        e.Handled = true;
-                    }
-                }
-                catch { }
-            };
-
+            core.NewWindowRequested += OnWebViewNewWindowRequested;
+            core.NavigationStarting += OnWebViewNavigationStarting;
+            core.NavigationCompleted += OnWebViewNavigationCompleted;
+            core.PermissionRequested += OnWebViewPermissionRequested;
             core.ContextMenuRequested += OnWebContextMenuRequested;
             core.ProcessFailed += OnWebViewProcessFailed;
 
@@ -2597,6 +2873,53 @@ namespace DeepSeekHarnessDesktop
   }, true);
 })();";
             await core.AddScriptToExecuteOnDocumentCreatedAsync(shortcutGuard);
+        }
+
+        private void OnWebViewNewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs e)
+        {
+            e.Handled = true;
+            OpenExternalUri(e.Uri);
+        }
+
+        private void OnWebViewNavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (!IsAllowedMainNavigation(e.Uri))
+            {
+                e.Cancel = true;
+                OpenExternalUri(e.Uri);
+            }
+        }
+
+        private void OnWebViewNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            if (!e.IsSuccess)
+            {
+                ShowOverlay(
+                    "navigation",
+                    "DSH 页面加载失败。\r\n\r\n" + e.WebErrorStatus.ToString(),
+                    "重新加载",
+                    OnOverlayReloadPage,
+                    "重启 DSH 后端",
+                    OnOverlayRestartBackend);
+            }
+            else if (overlayReason == "navigation" || overlayReason == "backend")
+            {
+                HideOverlay();
+            }
+        }
+
+        private void OnWebViewPermissionRequested(object sender, CoreWebView2PermissionRequestedEventArgs e)
+        {
+            try
+            {
+                if (e.PermissionKind == CoreWebView2PermissionKind.Notifications && IsDshLoopbackOrigin(e.Uri))
+                {
+                    e.State = CoreWebView2PermissionState.Allow;
+                    e.SavesInProfile = true;
+                    e.Handled = true;
+                }
+            }
+            catch { }
         }
 
         private void OnWebContextMenuRequested(object sender, CoreWebView2ContextMenuRequestedEventArgs e)
@@ -2835,6 +3158,17 @@ namespace DeepSeekHarnessDesktop
         /// 读取时询问用户：确认后更新 acceptedDshCommandPath/Version 并继续；拒绝则抛错
         /// 取消本次启动。npx 模式或没有 dsh 时不做校验。
         /// </summary>
+        /// <summary>
+        /// 每次真正启动现有 dsh 前重新验证。统一规则（与 PowerShell 端完全一致）：
+        /// 只要本次最终 runner 解析结果是「使用现有 dsh」：
+        ///   acceptedPath 为空 / acceptedVersion 为空 / actualPath != acceptedPath /
+        ///   actualVersion 为空 / actualVersion != acceptedVersion
+        ///   → 必须重新验证
+        /// 分情况：
+        ///   actualVersion == COMPATIBILITY.verifiedDshVersion → 自动接受并写入 accepted
+        ///   actualVersion != verified → 交互询问（确认后更新 accepted；拒绝则取消启动）
+        ///   无法读取版本 → 交互询问
+        /// </summary>
         private void ConfirmCommandVersionBeforeStart()
         {
             if (settings.dshRunnerMode == "npx") return;
@@ -2845,15 +3179,35 @@ namespace DeepSeekHarnessDesktop
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
                 return;   // 没有 dsh：交给 EnsureStarted 走 npx 或报错
 
+            string acceptedPath = settings.acceptedDshCommandPath ?? "";
             string accepted = settings.acceptedDshCommandVersion ?? "";
             string actual = DshProcessManager.GetCommandVersion(command);
-            bool changed = !String.IsNullOrEmpty(accepted) &&
-                           (String.IsNullOrEmpty(actual) || actual != accepted);
-            if (!changed) return;
+
+            bool pathChanged =
+                !String.IsNullOrEmpty(acceptedPath) &&
+                !String.Equals(acceptedPath, command, StringComparison.OrdinalIgnoreCase);
+            bool needsVerify =
+                String.IsNullOrEmpty(acceptedPath) ||
+                String.IsNullOrEmpty(accepted) ||
+                pathChanged ||
+                String.IsNullOrEmpty(actual) ||
+                actual != accepted;
+            if (!needsVerify) return;
+
+            // 与验证基线一致 → 自动接受并写入 accepted（无需打扰用户）
+            if (!String.IsNullOrEmpty(actual) && DshProcessManager.IsVerifiedDshVersion(actual))
+            {
+                settings.acceptedDshCommandPath = command;
+                settings.acceptedDshCommandVersion = actual;
+                settings.Save(settingsPath);
+                return;
+            }
 
             string detail = String.IsNullOrEmpty(actual)
-                ? "无法读取其版本（上次确认记录：" + accepted + "）。"
-                : "其版本已从 " + accepted + " 变为 " + actual + "。";
+                ? "无法读取其版本（上次记录：" + (String.IsNullOrEmpty(accepted) ? "无" : accepted) + "）。"
+                : "其版本为 " + actual + "（上次记录：" + (String.IsNullOrEmpty(accepted) ? "无" : accepted) + "）。";
+            if (pathChanged)
+                detail += "\r\n（命令路径也已变化，当前为：" + command + "）";
             DialogResult confirm = ThemedMessageBox.Show(
                 this,
                 "现有 dsh 命令：" + command + "\r\n\r\n" + detail +
@@ -2890,7 +3244,7 @@ namespace DeepSeekHarnessDesktop
                         throw new InvalidOperationException("端口正在监听，但无法读取监听进程 PID。");
 
                     string commandLine;
-                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine))
+                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine, settings.port))
                         throw new InvalidOperationException(
                             "端口 " + settings.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
                             (String.IsNullOrWhiteSpace(commandLine) ? "无法读取命令行。" : commandLine));
@@ -2907,6 +3261,7 @@ namespace DeepSeekHarnessDesktop
 
                 ShowOverlay("restart", "正在重启 DSH 后端...", null, null, null, null);
 
+                HostLog.Enter("RESTART");
                 await Task.Run(delegate
                 {
                     // 兼容修复在「停止旧后端之后、启动新后端之前」执行：
@@ -2923,6 +3278,7 @@ namespace DeepSeekHarnessDesktop
                         settings.dshRunnerMode,
                         false);
                 });
+                HostLog.Ok("RESTART");
 
                 healthFailures = 0;
                 compatPendingAtStartup = 0;
@@ -2932,9 +3288,12 @@ namespace DeepSeekHarnessDesktop
             }
             catch (Exception ex)
             {
-                ShowOverlay(
+                HostLog.Fail("RESTART failed", ex);
+                ShowErrorOverlay(
                     "restart-error",
+                    "DSH 后端重启失败",
                     "DSH 后端重启失败\r\n\r\n" + ex.Message,
+                    ex.ToString(),
                     "重试",
                     OnOverlayRestartBackend,
                     "打开日志目录",
@@ -3032,6 +3391,21 @@ namespace DeepSeekHarnessDesktop
         {
             healthFailures = 1;
             await CheckBackendHealthAsync();
+        }
+
+        private async void OnOverlayRetryWebView(object sender, EventArgs e)
+        {
+            await RetryWebViewAsync();
+        }
+
+        private async void OnOverlayRetryConfigure(object sender, EventArgs e)
+        {
+            await RetryConfigureAsync();
+        }
+
+        private async void OnOverlayRetryStart(object sender, EventArgs e)
+        {
+            await StartAsync();
         }
 
         private void OnOverlayDismiss(object sender, EventArgs e)
@@ -3142,11 +3516,25 @@ namespace DeepSeekHarnessDesktop
 
         private void RestoreFromTray()
         {
+            hiddenToTray = false;
+            HostLog.Line("TRAY restore");
             Show();
             ShowInTaskbar = true;
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Activate();
             BringToFront();
+        }
+
+        /// <summary>
+        /// 关闭到托盘：延迟到 FormClosing 流程结束后再隐藏（由调用方 BeginInvoke），
+        /// 避免在关闭事件处理中途 Hide() 造成窗口状态异常（残留不可见窗口或托盘恢复失败）。
+        /// </summary>
+        private void HideToTray()
+        {
+            hiddenToTray = true;
+            HostLog.Line("TRAY hide");
+            Hide();
+            ShowInTaskbar = false;
         }
 
         protected override void WndProc(ref Message m)
@@ -3180,8 +3568,15 @@ namespace DeepSeekHarnessDesktop
             if (settings.closeAction == "tray")
             {
                 e.Cancel = true;
-                Hide();
-                ShowInTaskbar = false;
+                if (!trayTransition)
+                {
+                    trayTransition = true;
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        trayTransition = false;
+                        HideToTray();
+                    });
+                }
                 return;
             }
 
@@ -3211,8 +3606,15 @@ namespace DeepSeekHarnessDesktop
                 if (dialog.ActionChoice == "tray")
                 {
                     e.Cancel = true;
-                    Hide();
-                    ShowInTaskbar = false;
+                    if (!trayTransition)
+                    {
+                        trayTransition = true;
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            trayTransition = false;
+                            HideToTray();
+                        });
+                    }
                 }
                 else
                 {
@@ -3278,6 +3680,10 @@ namespace DeepSeekHarnessDesktop
 
             loadingPanel.BackColor = dark ? Color.FromArgb(24, 24, 24) : Color.White;
             loadingLabel.ForeColor = dark ? Color.WhiteSmoke : Color.FromArgb(30, 30, 30);
+            errorTitle.ForeColor = dark ? Color.WhiteSmoke : Color.FromArgb(30, 30, 30);
+            ThemeHelper.ApplyButtonTheme(overlayPrimaryButton, dark);
+            ThemeHelper.ApplyButtonTheme(overlaySecondaryButton, dark);
+            ThemeHelper.ApplyButtonTheme(copyErrorButton, dark);
             ApplyMenuTheme(trayMenu, dark);
             ApplyMenuTheme(activeWebContextMenu, dark);
 
@@ -3302,6 +3708,8 @@ namespace DeepSeekHarnessDesktop
 
         protected override void Dispose(bool disposing)
         {
+            HostLog.Line("FORM dispose instance=" + mainFormInstanceId.ToString("N") +
+                " hiddenToTray=" + hiddenToTray.ToString());
             if (disposing)
             {
                 try { themeTimer.Stop(); themeTimer.Dispose(); } catch { }
