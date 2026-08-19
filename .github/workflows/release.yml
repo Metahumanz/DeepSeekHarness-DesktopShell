@@ -145,11 +145,13 @@ jobs:
         shell: pwsh
         run: |
           $tag = "v${{ steps.version.outputs.version }}"
-          if (gh release view "$tag" --repo Metahumanz/DeepSeekHarness-DesktopShell 2>$null) {
+          gh release view "$tag" --repo Metahumanz/DeepSeekHarness-DesktopShell 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
             Write-Error "Release v${{ steps.version.outputs.version }} 已存在，禁止覆盖，请增加版本号。"
             exit 1
           }
           Write-Host "Release $tag 不存在，可以创建。"
+          $LASTEXITCODE = 0
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda   # v2.2.1
