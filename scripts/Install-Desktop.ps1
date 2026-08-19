@@ -216,6 +216,35 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path $exe)) { Fail "C# 编译失败，退
 Ok "已生成: $exe"
 
 # 编译成功后才跑初始化向导（失败则中止，不再继续写状态）
+
+# DSH_HOME 迁移检测（向导前完成，避免装完才发现历史元数据串线）
+$nowIso = (Get-Date).ToString('o')
+$priorState = $null
+if (Test-Path -LiteralPath $installStatePath -PathType Leaf) {
+    try { $priorState = Get-Content -LiteralPath $installStatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $priorState = $null }
+}
+$dshHomeMigration = $false
+if ($priorState -and $priorState.dshHome) {
+    try {
+        $oldHome = [IO.Path]::GetFullPath([string]$priorState.dshHome).TrimEnd('\')
+        $newHome = [IO.Path]::GetFullPath($dshHome).TrimEnd('\')
+        if ($oldHome -ne $newHome) { $dshHomeMigration = $true }
+    } catch {}
+}
+if ($dshHomeMigration) {
+    $migMsg = "检测到 DSH_HOME 发生变化（旧：$($priorState.dshHome) → 新：$dshHome）。" +
+              'DesktopShell 将按新 DSH_HOME 重新记录首次安装事实（历史信息无法跨目录考证）。'
+    if ($NoWizard) {
+        Warn $migMsg
+    } else {
+        Warn $migMsg
+        $migValue = (Read-Host '是否继续？选 n 则中止安装 [Y/n]').Trim().ToLowerInvariant()
+        if ($migValue -in @('n', 'no', '否', '0')) {
+            Fail '已按用户要求中止：请先确认 DSH_HOME 变更。'
+        }
+    }
+}
+
 $manager = Join-Path $desktopDir 'Manage-Dsh.ps1'
 if ($NoWizard) {
     Say 'NoWizard：发现现有 dsh 就使用；否则使用 npx；不改现有插件。'
@@ -229,24 +258,26 @@ if ($LASTEXITCODE -ne 0) {
 
 # 升级时继承第一次安装的历史事实（dshHomeExistedBeforeInstall 等），
 # 并记录 firstInstalledAt / lastUpdatedAt（见 Install-Release.ps1 同段注释）。
-$nowIso = (Get-Date).ToString('o')
-$priorState = $null
-if (Test-Path -LiteralPath $installStatePath -PathType Leaf) {
-    try { $priorState = Get-Content -LiteralPath $installStatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $priorState = $null }
-}
-$dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
-    [bool]$priorState.dshHomeExistedBeforeInstall
+# DSH_HOME 发生迁移时历史信息无法跨目录考证，按新环境重新计算。
+if ($dshHomeMigration) {
+    $dshHomeExistedBefore = [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+    $webProfileExistedBefore = [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+    $firstInstalledAt = $nowIso
 } else {
-    [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+    $dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
+        [bool]$priorState.dshHomeExistedBeforeInstall
+    } else {
+        [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+    }
+    $webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
+        [bool]$priorState.webProfileExistedBeforeInstall
+    } else {
+        [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+    }
+    $firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
+        elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
+        else { $nowIso }
 }
-$webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
-    [bool]$priorState.webProfileExistedBeforeInstall
-} else {
-    [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
-}
-$firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
-    elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
-    else { $nowIso }
 
 $state = [ordered]@{
     schemaVersion = 1

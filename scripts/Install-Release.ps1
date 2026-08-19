@@ -52,6 +52,16 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Read-YesNo([string]$prompt, [bool]$defaultYes = $true) {
+    $suffix = if ($defaultYes) { '[Y/n]' } else { '[y/N]' }
+    while ($true) {
+        $value = (Read-Host "$prompt $suffix").Trim().ToLowerInvariant()
+        if (-not $value) { return $defaultYes }
+        if ($value -in @('y', 'yes', '是', '1')) { return $true }
+        if ($value -in @('n', 'no', '否', '0')) { return $false }
+    }
+}
+
 # 只关闭“指定 exe 路径”的桌面程序；路径无法读取/不匹配的进程一律不碰。
 # 绝不允许按进程名全杀：DSH 宿主本身也可能叫 DeepSeekHarness。
 function Stop-DesktopShellProcess([string]$exePath) {
@@ -251,7 +261,8 @@ try {
         $copied = @($appFiles | Where-Object { Test-Path -LiteralPath (Join-Path $stage $_) -PathType Leaf }).Count
         if ($copied -ne $appFiles.Count) { Fail "文件暂存不完整（$copied/$($appFiles.Count)）。" }
 
-        # 携带旧安装的用户数据（设置/日志/WebView2 数据）
+        # settings.json 小而安全，先携带；动态数据（logs/webview2-data）在停止旧壳之后
+        # 再复制，避免撞上 WebView2 正在使用的数据库/缓存锁文件或拿到不一致快照。
         $existingSettings = Join-Path $InstallDir 'settings.json'
         $oldSettings = Join-Path $legacyDesktopDir 'settings.json'
         if (Test-Path -LiteralPath $existingSettings -PathType Leaf) {
@@ -260,17 +271,20 @@ try {
             Copy-Item -LiteralPath $oldSettings -Destination (Join-Path $stage 'settings.json') -Force
             Ok '已迁移旧 DesktopShell settings.json；~/.dsh 的 DSH 数据保持原位。'
         }
+        $workTarget = $stage
+    }
+
+    # 只关闭将被覆盖的旧版桌面壳（路径精确匹配），不影响其它同名进程
+    Stop-DesktopShellProcess (Join-Path $InstallDir 'DeepSeekHarness.exe')
+
+    if (-not $inPlace) {
         foreach ($carry in @('logs', 'webview2-data')) {
             $src = Join-Path $InstallDir $carry
             if (Test-Path -LiteralPath $src) {
                 Copy-Item -LiteralPath $src -Destination (Join-Path $stage $carry) -Recurse -Force
             }
         }
-        $workTarget = $stage
     }
-
-    # 只关闭将被覆盖的旧版桌面壳（路径精确匹配），不影响其它同名进程
-    Stop-DesktopShellProcess (Join-Path $InstallDir 'DeepSeekHarness.exe')
 
     $stateVersion = '1.0.0'
     $versionFile = Join-Path $workTarget 'version.txt'
@@ -288,19 +302,49 @@ try {
     if (Test-Path -LiteralPath $priorStatePath -PathType Leaf) {
         try { $priorState = Get-Content -LiteralPath $priorStatePath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $priorState = $null }
     }
-    $dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
-        [bool]$priorState.dshHomeExistedBeforeInstall
-    } else {
-        [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+
+    # DSH_HOME 迁移检测：历史元数据无法跨目录考证，不能静默继承到新路径。
+    # 迁移时按新环境重新计算这组元数据，并要求确认（非交互模式下告警后继续重算）。
+    $dshHomeMigration = $false
+    if ($priorState -and $priorState.dshHome) {
+        try {
+            $oldHome = [IO.Path]::GetFullPath([string]$priorState.dshHome).TrimEnd('\')
+            $newHome = [IO.Path]::GetFullPath($dshHome).TrimEnd('\')
+            if ($oldHome -ne $newHome) { $dshHomeMigration = $true }
+        } catch {}
     }
-    $webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
-        [bool]$priorState.webProfileExistedBeforeInstall
-    } else {
-        [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+    if ($dshHomeMigration) {
+        $migMsg = "检测到 DSH_HOME 发生变化（旧：$($priorState.dshHome) → 新：$dshHome）。" +
+                  'DesktopShell 将按新 DSH_HOME 重新记录首次安装事实（历史信息无法跨目录考证）。'
+        if ($NoWizard) {
+            Warn $migMsg
+        } else {
+            Warn $migMsg
+            if (-not (Read-YesNo '是否继续？选否则中止安装' $true)) {
+                Fail '已按用户要求中止：请先确认 DSH_HOME 变更。'
+            }
+        }
     }
-    $firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
-        elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
-        else { $nowIso }
+
+    if ($dshHomeMigration) {
+        $dshHomeExistedBefore = [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+        $webProfileExistedBefore = [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+        $firstInstalledAt = $nowIso
+    } else {
+        $dshHomeExistedBefore = if ($priorState -and ($null -ne $priorState.dshHomeExistedBeforeInstall)) {
+            [bool]$priorState.dshHomeExistedBeforeInstall
+        } else {
+            [bool](Test-Path -LiteralPath $dshHome -PathType Container)
+        }
+        $webProfileExistedBefore = if ($priorState -and ($null -ne $priorState.webProfileExistedBeforeInstall)) {
+            [bool]$priorState.webProfileExistedBeforeInstall
+        } else {
+            [bool](Test-Path -LiteralPath (Join-Path $dshHome 'profiles\web\package.json') -PathType Leaf)
+        }
+        $firstInstalledAt = if ($priorState -and $priorState.firstInstalledAt) { [string]$priorState.firstInstalledAt }
+            elseif ($priorState -and $priorState.installedAt) { [string]$priorState.installedAt }
+            else { $nowIso }
+    }
 
     $state = [ordered]@{
         schemaVersion = 1
