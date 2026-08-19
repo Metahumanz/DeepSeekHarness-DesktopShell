@@ -80,11 +80,12 @@
 - **推荐插件保持保守 pin**：当前未完成逐项真实安装/升级验证，因此不批量取消 pin、不批量跟随
   GitHub `main`；Dream Skin 继续 pin 到已验证 commit（含 sticky restore 与 `/dream-skin/api`
   marker）。后续逐项确认普通升级不破坏 DesktopShell 后，再取消对应 pin
-- **修复菜单 Dispose 生命周期**：托盘退出与 WebView 右键菜单释放都延迟到 WinForms 菜单消息
-  处理完成后执行，避免 `ContextMenuStrip ObjectDisposedException`（分别有源码级回归测试）
+- **修复菜单 Dispose 生命周期**：托盘退出延迟到 Click 消息后执行；WebView 右键菜单改为
+  MainForm 生命周期内复用同一个 `ContextMenuStrip`，只在 `MainForm.Dispose` 中释放，
+  不在 Closed/替换路径 Dispose，避免 `ContextMenuStrip ObjectDisposedException`（均有回归测试）
 - **测试同步升级**：`test-version-source` / `test-dsh-version` / `test-accepted-dsh` /
   `test-launch-args` / `test-runner-mode` / `test-dream-skin-pin` 覆盖 rc.6/rc.7/rc.8/rc.9、
-  `--no-open` 能力检测、未来版本不强制回退、插件不固定版本等行为
+  `--no-open` 能力检测、未来版本不强制回退、插件保守 pin 策略等行为
 
 ## v1.0.1（第八轮修复：启动运行期稳健性，2026-08-19）
 
