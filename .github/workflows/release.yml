@@ -7,8 +7,12 @@ name: Release
 # 产物：release/DeepSeekHarness-DesktopShell.zip + SHA256SUMS.txt（x64）
 # （一键安装 Install-FromGitHub.ps1 会下载这两个资产并强制校验 SHA256）
 #
+# 冻结策略（2026-08-19 起）：已发布的 tag 不再覆盖发布——本工作流不再删除已有 Release；
+# 若对某个已发布 tag 重新构建会因 Release 已存在而失败，这是有意行为。
+# 后续修复请发新版本（如 v1.0.1）。
+#
 # 结构：build job 只读验证+构建（无写权限）；publish job 持有 contents:write，
-# 负责打 tag、删除旧 Release（仅重发布场景）与创建 Release。所有 Actions 钉 commit SHA。
+# 负责打 tag 与创建 Release。所有 Actions 钉 commit SHA。
 
 on:
   workflow_dispatch:
@@ -119,21 +123,6 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag $tag
             git push origin $tag
-          }
-
-      - name: Delete existing release for tag (re-publish support)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $tag = "v${{ steps.version.outputs.version }}"
-          gh release view $tag 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            gh release delete $tag --yes
-            if ($LASTEXITCODE -ne 0) { Write-Error "无法删除已存在的 Release $tag"; exit 1 }
-            Write-Host "已删除旧 Release $tag，将重建。"
-          } else {
-            Write-Host "Release $tag 不存在，跳过删除。"
           }
 
       - name: Create GitHub Release
