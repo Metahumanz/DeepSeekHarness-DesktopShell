@@ -40,6 +40,8 @@ namespace DeepSeekHarnessDesktop
         public string dshVersion { get; set; }
         public string dshPath { get; set; }
         public string dshRunnerMode { get; set; }
+        public string acceptedDshCommandPath { get; set; }
+        public string acceptedDshCommandVersion { get; set; }
         public string profileName { get; set; }
 
         public AppSettings()
@@ -58,6 +60,8 @@ namespace DeepSeekHarnessDesktop
             dshVersion = "0.1.0-rc.7";
             dshPath = "";
             dshRunnerMode = "auto";
+            acceptedDshCommandPath = "";
+            acceptedDshCommandVersion = "";
             profileName = "web";
         }
 
@@ -82,6 +86,8 @@ namespace DeepSeekHarnessDesktop
                     value.dshVersion = "0.1.0-rc.7";
                 value.dshVersion = NormalizeDshVersion(value.dshVersion);
                 if (value.dshPath == null) value.dshPath = "";
+                if (value.acceptedDshCommandPath == null) value.acceptedDshCommandPath = "";
+                if (value.acceptedDshCommandVersion == null) value.acceptedDshCommandVersion = "";
                 if (value.dshRunnerMode != "command" && value.dshRunnerMode != "npx" && value.dshRunnerMode != "auto")
                     value.dshRunnerMode = "auto";
                 value.profileName = NormalizeProfileName(value.profileName);
@@ -130,6 +136,8 @@ namespace DeepSeekHarnessDesktop
             dshVersion = NormalizeDshVersion(other.dshVersion);
             dshPath = other.dshPath ?? "";
             dshRunnerMode = (other.dshRunnerMode == "command" || other.dshRunnerMode == "npx") ? other.dshRunnerMode : "auto";
+            acceptedDshCommandPath = other.acceptedDshCommandPath ?? "";
+            acceptedDshCommandVersion = other.acceptedDshCommandVersion ?? "";
             profileName = NormalizeProfileName(other.profileName);
         }
 
@@ -726,7 +734,7 @@ namespace DeepSeekHarnessDesktop
                 if (!apply)
                 {
                     log.AppendLine("Cost meter ledger: pending removal of " + removedBuckets + " synthetic bucket(s) (" +
-                        removedCalls + " calls, " + removedCost.ToString("0.######") + " CNY) (skipped: external DSH attached).");
+                        removedCalls + " calls, " + removedCost.ToString("0.######") + " USD) (skipped: external DSH attached).");
                     return true;
                 }
 
@@ -740,7 +748,7 @@ namespace DeepSeekHarnessDesktop
                 File.Copy(path, bak, true);
                 WriteAtomic(path, serializer.Serialize(ledger));
                 log.AppendLine("Cost meter ledger: removed " + removedBuckets + " synthetic bucket(s) (" +
-                    removedCalls + " calls, " + removedCost.ToString("0.######") + " CNY) and recomputed totals; backup " + bak);
+                    removedCalls + " calls, " + removedCost.ToString("0.######") + " USD) and recomputed totals; backup " + bak);
                 return true;
             }
             catch (Exception ex)
@@ -979,8 +987,38 @@ namespace DeepSeekHarnessDesktop
             return IsLikelyDshProcess(pid, out commandLine);
         }
 
-        // DesktopShell 验证基线：只有 rc.7 被审核过。外部已运行的 DSH 同样必须过这道门槛。
-        public const string VerifiedDshVersion = "0.1.0-rc.7";
+        // DesktopShell 验证基线：只有该版本被审核过。外部已运行的 DSH 同样必须过这道门槛。
+        // 唯一来源：安装目录 COMPATIBILITY.json（构建/安装流程随包分发），缺失时回退硬编码。
+        private static string verifiedDshVersionCache = null;
+        public static string VerifiedDshVersion
+        {
+            get
+            {
+                if (verifiedDshVersionCache != null) return verifiedDshVersionCache;
+                verifiedDshVersionCache = "0.1.0-rc.7";
+                try
+                {
+                    string compatPath = Path.Combine(
+                        AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar),
+                        "COMPATIBILITY.json");
+                    if (File.Exists(compatPath))
+                    {
+                        JavaScriptSerializer serializer = new JavaScriptSerializer();
+                        Dictionary<string, object> compat =
+                            serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(compatPath, Encoding.UTF8));
+                        object raw;
+                        if (compat != null && compat.TryGetValue("verifiedDshVersion", out raw))
+                        {
+                            string v = Convert.ToString(raw);
+                            if (Regex.IsMatch(v, @"^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$"))
+                                verifiedDshVersionCache = v;
+                        }
+                    }
+                }
+                catch { }
+                return verifiedDshVersionCache;
+            }
+        }
 
         /// <summary>从命令行里提取 npx 形式的版本（@deepseek-ai/dsh@x.y.z-rc.n）；提取不到返回 null。</summary>
         public static string ExtractDshVersionFromCommandLine(string commandLine)
@@ -995,6 +1033,44 @@ namespace DeepSeekHarnessDesktop
         {
             if (String.IsNullOrWhiteSpace(version)) return false;
             return String.Equals(version.Trim(), VerifiedDshVersion, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>读取 dsh 命令自身的版本（运行 &lt;command&gt; --version）。读不到返回 null。</summary>
+        public static string GetCommandVersion(string command)
+        {
+            if (String.IsNullOrWhiteSpace(command) || !File.Exists(command)) return null;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                string ext = Path.GetExtension(command).ToLowerInvariant();
+                if (ext == ".cmd" || ext == ".bat")
+                {
+                    psi.FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+                    psi.Arguments = "/d /s /c \"\"" + command + "\" --version\"";
+                }
+                else
+                {
+                    psi.FileName = command;
+                    psi.Arguments = "--version";
+                }
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.StandardOutputEncoding = Encoding.UTF8;
+
+                using (Process p = Process.Start(psi))
+                {
+                    if (p == null) return null;
+                    string output = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(5000);
+                    if (String.IsNullOrWhiteSpace(output)) return null;
+                    Match m = Regex.Match(output, @"\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?");
+                    if (m.Success) return m.Value;
+                    return output.Trim();
+                }
+            }
+            catch { return null; }
         }
 
         /// <summary>端口探测结果：PortOpen 为假时其余字段无意义。</summary>
@@ -1025,13 +1101,13 @@ namespace DeepSeekHarnessDesktop
         }
 
         private int lastExternalPid = -1;
-        private DateTime lastExternalVerifyUtc = DateTime.MinValue;
 
         /// <summary>
-        /// 后台健康检查专用（每 5 秒一次，避免频繁拉起 netstat/CIM 子进程）：
+        /// 后台健康检查专用（每 5 秒一次）：
         /// - 自家后端：进程存活 + TCP 即可（无需身份复验）
-        /// - 外部后端：TCP + PID 缓存，30 秒内仅当「原 PID 仍存活」才直接复用；
-        ///   原 PID 消失（端口可能被换手）立即全量复验，不重新打开身份 TOCTOU 窗口。
+        /// - 外部后端：每次用廉价的原生 TCP 表拿「当前端口 owner PID」（GetExtendedTcpTable，
+        ///   不拉 netstat 子进程）；owner PID 与上次已验证的 PID 相同 → 身份未变，直接健康；
+        ///   PID 变化（端口被换手）才做昂贵的 CIM 命令行验证。不再使用 30 秒时间窗缓存。
         /// </summary>
         public bool IsDshHealthy(int port, int timeoutMs)
         {
@@ -1047,27 +1123,14 @@ namespace DeepSeekHarnessDesktop
                 return false;
             }
 
-            DateTime now = DateTime.UtcNow;
-            if (lastExternalPid > 0 && (now - lastExternalVerifyUtc).TotalSeconds < 30)
-            {
-                try
-                {
-                    using (Process p = Process.GetProcessById(lastExternalPid))
-                    {
-                        if (!p.HasExited) return true;   // 原 PID 仍存活 → 缓存可信
-                    }
-                }
-                catch { }
-                // 原 PID 已不存在：端口可能已被其它进程抢占，缓存作废并全量复验
-                lastExternalPid = -1;
-            }
-
-            int pid = FindListeningPid(port);
+            int pid = FindListeningPid(port);   // 优先原生 TCP 表，原生不可用时退回 netstat
             if (pid <= 0)
             {
                 lastExternalPid = -1;
                 return false;
             }
+            if (pid == lastExternalPid) return true;   // 端口 owner 未变 → 身份可信
+
             string commandLine;
             if (!IsLikelyDshProcess(pid, out commandLine))
             {
@@ -1075,7 +1138,6 @@ namespace DeepSeekHarnessDesktop
                 return false;
             }
             lastExternalPid = pid;
-            lastExternalVerifyUtc = now;
             return true;
         }
 
@@ -1109,7 +1171,6 @@ namespace DeepSeekHarnessDesktop
 
                 OwnsBackend = false;
                 lastExternalPid = existingPid;
-                lastExternalVerifyUtc = DateTime.UtcNow;
                 return;
             }
 
@@ -1164,12 +1225,17 @@ namespace DeepSeekHarnessDesktop
             string arguments;
             if (usingNpx)
             {
+                // 官方 CLI：`dsh web` 本身就是 `dsh --profile web` 的别名，两者不能叠加
+                // （rejectParentOptions('web')）。自定义 Profile 统一用 --profile 形式，
+                // 不再额外附加 `web` 子命令；--port 作为应用参数继续传给 Profile。
                 arguments = "-y @deepseek-ai/dsh@" + QuoteArg(version) +
-                    " --profile " + QuoteArg(profile) + " web --port " + port.ToString();
+                    " --profile " + QuoteArg(profile) +
+                    " --port " + port.ToString();
             }
             else
             {
-                arguments = "--profile " + QuoteArg(profile) + " web --port " + port.ToString();
+                arguments = "--profile " + QuoteArg(profile) +
+                    " --port " + port.ToString();
             }
 
             ProcessStartInfo psi = BuildStartInfo(command, arguments, workingDirectory);
@@ -1177,15 +1243,10 @@ namespace DeepSeekHarnessDesktop
             string commandDir = Path.GetDirectoryName(command) ?? "";
             if (!String.IsNullOrWhiteSpace(commandDir)) psi.EnvironmentVariables["PATH"] = commandDir + ";" + oldPath;
             psi.EnvironmentVariables["DSH_DESKTOP_DSH_VERSION"] = version;
-            // Process-local GitHub transport fallback: old plugin specs may still use git+ssh,
-            // but a desktop installation should not require the user to configure an SSH key.
-            psi.EnvironmentVariables["GIT_CONFIG_COUNT"] = "3";
-            psi.EnvironmentVariables["GIT_CONFIG_KEY_0"] = "url.https://github.com/.insteadOf";
-            psi.EnvironmentVariables["GIT_CONFIG_VALUE_0"] = "git+ssh://git@github.com/";
-            psi.EnvironmentVariables["GIT_CONFIG_KEY_1"] = "url.https://github.com/.insteadOf";
-            psi.EnvironmentVariables["GIT_CONFIG_VALUE_1"] = "ssh://git@github.com/";
-            psi.EnvironmentVariables["GIT_CONFIG_KEY_2"] = "url.https://github.com/.insteadOf";
-            psi.EnvironmentVariables["GIT_CONFIG_VALUE_2"] = "git@github.com:";
+            // 注意：不为常驻 DSH 进程设置 GIT_CONFIG_* rewrite——
+            // 那会污染整个 DSH 进程树（Agent/终端/子进程执行 git@github.com:... 时被
+            // 强制改成 https，破坏本应正常的 SSH 私有仓库认证）。
+            // git+ssh→https 降级只保留在 PowerShell 管理器“插件安装事务”的进程内作用域。
             process = new Process();
             process.StartInfo = psi;
             process.EnableRaisingEvents = true;
@@ -1218,8 +1279,64 @@ namespace DeepSeekHarnessDesktop
             throw new TimeoutException("等待 DSH Web 启动超时（120 秒）。请查看日志：" + logPath);
         }
 
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        private static extern uint GetExtendedTcpTable(IntPtr pTcpTable, ref int dwOutBufLen, bool sort, int ipVersion, int tblClass, uint reserved);
+
+        private const int AF_INET = 2;
+        private const int TCP_TABLE_OWNER_PID_ALL = 5;
+        private const uint MIB_TCP_STATE_LISTEN = 2;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MIB_TCPROW_OWNER_PID
+        {
+            public uint state;
+            public uint localAddr;
+            public uint localPort;
+            public uint remoteAddr;
+            public uint remotePort;
+            public uint owningPid;
+        }
+
+        // 原生 TCP 表（GetExtendedTcpTable）：不拉 netstat 子进程即可拿到端口 owner PID。
+        // 端口在 DWORD 的高 16 位（网络字节序）。失败返回 -1，由调用方退回 netstat。
+        private static int FindListeningPidNative(int port)
+        {
+            try
+            {
+                int size = 0;
+                uint rc = GetExtendedTcpTable(IntPtr.Zero, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+                if (rc != 0 && rc != 122 /* ERROR_INSUFFICIENT_BUFFER */) return -1;
+                if (size <= 0) return -1;
+
+                IntPtr buffer = Marshal.AllocHGlobal(size);
+                try
+                {
+                    rc = GetExtendedTcpTable(buffer, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+                    if (rc != 0) return -1;
+
+                    int rowSize = Marshal.SizeOf(typeof(MIB_TCPROW_OWNER_PID));
+                    int count = size / rowSize;
+                    for (int i = 0; i < count; i++)
+                    {
+                        IntPtr rowPtr = new IntPtr(buffer.ToInt64() + (long)i * rowSize);
+                        MIB_TCPROW_OWNER_PID row =
+                            (MIB_TCPROW_OWNER_PID)Marshal.PtrToStructure(rowPtr, typeof(MIB_TCPROW_OWNER_PID));
+                        if (row.state != MIB_TCP_STATE_LISTEN) continue;
+                        int rowPort = (int)(row.localPort >> 16);
+                        if (rowPort == port) return (int)row.owningPid;
+                    }
+                }
+                finally { Marshal.FreeHGlobal(buffer); }
+            }
+            catch { }
+            return -1;
+        }
+
         public int FindListeningPid(int port)
         {
+            int pid = FindListeningPidNative(port);
+            if (pid > 0) return pid;
+
             try
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
@@ -1246,8 +1363,8 @@ namespace DeepSeekHarnessDesktop
                         if (!parts[1].EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
                         if (!parts[3].Equals("LISTENING", StringComparison.OrdinalIgnoreCase)) continue;
 
-                        int pid;
-                        if (Int32.TryParse(parts[4], out pid)) return pid;
+                        int foundPid;
+                        if (Int32.TryParse(parts[4], out foundPid)) return foundPid;
                     }
                 }
             }
@@ -1448,7 +1565,7 @@ namespace DeepSeekHarnessDesktop
             return psi;
         }
 
-        private static string FindCommand(string name)
+        public static string FindCommand(string name)
         {
             string[] candidates = new string[] { name + ".exe", name + ".cmd", name + ".bat", name };
             string path = Environment.GetEnvironmentVariable("PATH") ?? "";
@@ -2261,6 +2378,10 @@ namespace DeepSeekHarnessDesktop
 
             try
             {
+                // 每次启动前重新验证现有 dsh 命令的版本（command/auto 模式）：
+                // 与上次 accepted 的版本比对，变化/无法读取时询问用户并更新记录。
+                ConfirmCommandVersionBeforeStart();
+
                 DshProcessManager.ExternalBackendInfo probe = null;
                 bool restartExternal = false;
                 bool attachUnverified = false;
@@ -2708,6 +2829,48 @@ namespace DeepSeekHarnessDesktop
             }
         }
 
+        /// <summary>
+        /// 每次真正启动 command/auto 模式的现有 dsh 前，重新读取 dsh --version 并与上次
+        /// accepted 的版本比对（保存的 dshPath 可能在安装后被升级成新版本）。变化或无法
+        /// 读取时询问用户：确认后更新 acceptedDshCommandPath/Version 并继续；拒绝则抛错
+        /// 取消本次启动。npx 模式或没有 dsh 时不做校验。
+        /// </summary>
+        private void ConfirmCommandVersionBeforeStart()
+        {
+            if (settings.dshRunnerMode == "npx") return;
+
+            string command = settings.dshPath;
+            if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
+                command = DshProcessManager.FindCommand("dsh");
+            if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
+                return;   // 没有 dsh：交给 EnsureStarted 走 npx 或报错
+
+            string accepted = settings.acceptedDshCommandVersion ?? "";
+            string actual = DshProcessManager.GetCommandVersion(command);
+            bool changed = !String.IsNullOrEmpty(accepted) &&
+                           (String.IsNullOrEmpty(actual) || actual != accepted);
+            if (!changed) return;
+
+            string detail = String.IsNullOrEmpty(actual)
+                ? "无法读取其版本（上次确认记录：" + accepted + "）。"
+                : "其版本已从 " + accepted + " 变为 " + actual + "。";
+            DialogResult confirm = ThemedMessageBox.Show(
+                this,
+                "现有 dsh 命令：" + command + "\r\n\r\n" + detail +
+                "\r\nDesktopShell 每次启动前都会重新验证现有 dsh。\r\n\r\n" +
+                "选择“是”继续使用并记住新版本；选择“否”取消本次启动（可在设置中改用 npx）。",
+                "DeepSeek Harness",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes)
+                throw new InvalidOperationException(
+                    "已取消启动：现有 dsh 版本未确认。请确认后重试，或在设置中把运行方式改为 npx。");
+
+            settings.acceptedDshCommandPath = command;
+            settings.acceptedDshCommandVersion = actual ?? "";
+            settings.Save(settingsPath);
+        }
+
         private async Task RestartBackendAsync()
         {
             if (restartBusy) return;
@@ -2716,6 +2879,9 @@ namespace DeepSeekHarnessDesktop
             try
             {
                 bool allowExternal = false;
+
+                // 重启同样先重新验证现有 dsh 命令版本（command/auto 模式）
+                ConfirmCommandVersionBeforeStart();
 
                 if (!dsh.OwnsBackend && dsh.IsReady(settings.port, 300))
                 {
