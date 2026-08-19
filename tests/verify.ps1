@@ -3,7 +3,7 @@
 )
 
 # 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
-# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、十八项回归测试。
+# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、十九项回归测试。
 # 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
 # 注意：托盘、WebView2、连续重启、Dream Skin 真实恢复属于人工 Windows 验收
 #（见 docs/DREAM_SKIN_ACCEPTANCE.md），源码级测试不能替代。
@@ -13,6 +13,7 @@ $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
 $tests = @(
     'test-launch-args.ps1',
+    'test-npx-version-parser.ps1',
     'test-dsh-version.ps1',
     'test-runner-mode.ps1',
     'test-repair-regex.ps1',

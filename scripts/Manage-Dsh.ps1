@@ -268,23 +268,38 @@ function Get-DshVersionFromNpx([string]$version) {
     $npx = Get-Npx
     $version = Normalize-Version $version
     # 不吞 stderr：npm 的 ETARGET / 缺失依赖 / 日志路径必须透出，便于判断上游发布是否完整。
-    $raw = (& $npx -y "@deepseek-ai/dsh@$version" --version 2>&1)
+    # Windows PowerShell 5.1 在 EAP=Stop 下会把原生 stderr 直接变终止错误，因此这里临时切 Continue。
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = (& $npx -y "@deepseek-ai/dsh@$version" --version 2>&1)
+    } finally {
+        $ErrorActionPreference = $oldEap
+    }
     $text = ($raw | Out-String).Trim()
     if ([string]::IsNullOrWhiteSpace($text)) {
         throw "无法通过 npx 启动 @deepseek-ai/dsh@$version：没有收到任何输出。"
     }
-    if ($text -match '(?<v>\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?)') {
-        return $Matches['v']
+
+    # 先识别明确失败，再判断版本成功；失败文本里即使出现 SemVer 也绝不能当成功。
+    if ($text -match '(?i)ETARGET|notarget|npm error|npm ERR|No matching version found for') {
+        $missing = ''
+        if ($text -match 'No matching version found for (\S+)') { $missing = $Matches[1] }
+        $logPath = ''
+        if ($text -match '(?im)^.*log of this run can be found in:\s*(.+)$') { $logPath = $Matches[1].Trim() }
+        $detail = "无法通过 npx 安装 @deepseek-ai/dsh@$version。"
+        if ($missing) { $detail += " 缺失依赖/版本：$missing" }
+        if ($logPath) { $detail += " npm 日志：$logPath" }
+        $detail += " 原始输出：`r`n$text"
+        throw $detail
     }
-    $missing = ''
-    if ($text -match 'No matching version found for (\S+)') { $missing = $Matches[1] }
-    $logPath = ''
-    if ($text -match '(?im)^.*log of this run can be found in:\s*(.+)$') { $logPath = $Matches[1].Trim() }
-    $detail = "无法通过 npx 安装 @deepseek-ai/dsh@$version。"
-    if ($missing) { $detail += " 缺失依赖/版本：$missing" }
-    if ($logPath) { $detail += " npm 日志：$logPath" }
-    $detail += " 原始输出：`r`n$text"
-    throw $detail
+
+    # 成功只接受整行独立版本号，不从任意文本中抽取 SemVer。
+    if ($text -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+        return $text
+    }
+
+    throw "无法通过 npx 启动 @deepseek-ai/dsh@$version：输出不是独立版本号。原始输出：`r`n$text"
 }
 
 function Prepare-NpxDsh([string]$version) {
