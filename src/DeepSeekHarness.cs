@@ -7,6 +7,7 @@ using System.IO;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
@@ -953,13 +954,59 @@ namespace DeepSeekHarnessDesktop
             return IsLikelyDshProcess(pid, out commandLine);
         }
 
+        // DesktopShell 验证基线：只有 rc.7 被审核过。外部已运行的 DSH 同样必须过这道门槛。
+        public const string VerifiedDshVersion = "0.1.0-rc.7";
+
+        /// <summary>从命令行里提取 npx 形式的版本（@deepseek-ai/dsh@x.y.z-rc.n）；提取不到返回 null。</summary>
+        public static string ExtractDshVersionFromCommandLine(string commandLine)
+        {
+            if (String.IsNullOrWhiteSpace(commandLine)) return null;
+            Match m = Regex.Match(commandLine, @"@deepseek-ai/dsh@([0-9A-Za-z._+-]+)", RegexOptions.IgnoreCase);
+            if (m.Success) return m.Groups[1].Value;
+            return null;
+        }
+
+        public static bool IsVerifiedDshVersion(string version)
+        {
+            if (String.IsNullOrWhiteSpace(version)) return false;
+            return String.Equals(version.Trim(), VerifiedDshVersion, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>端口探测结果：PortOpen 为假时其余字段无意义。</summary>
+        public class ExternalBackendInfo
+        {
+            public bool PortOpen;
+            public int Pid = -1;
+            public string CommandLine = "";
+            public bool IsDsh;
+            public string Version;      // null = 命令行里读不到版本
+            public bool IsVerified;
+        }
+
+        /// <summary>一次性探测端口：TCP + PID + 命令行 + 版本提取（不修改任何状态）。</summary>
+        public ExternalBackendInfo ProbeExternalDsh(int port)
+        {
+            ExternalBackendInfo info = new ExternalBackendInfo();
+            info.PortOpen = IsReady(port, 350);
+            if (!info.PortOpen) return info;
+
+            info.Pid = FindListeningPid(port);
+            string cmd;
+            info.IsDsh = IsLikelyDshProcess(info.Pid, out cmd);
+            info.CommandLine = cmd ?? "";
+            info.Version = ExtractDshVersionFromCommandLine(info.CommandLine);
+            info.IsVerified = IsVerifiedDshVersion(info.Version);
+            return info;
+        }
+
         private int lastExternalPid = -1;
         private DateTime lastExternalVerifyUtc = DateTime.MinValue;
 
         /// <summary>
         /// 后台健康检查专用（每 5 秒一次，避免频繁拉起 netstat/CIM 子进程）：
         /// - 自家后端：进程存活 + TCP 即可（无需身份复验）
-        /// - 外部后端：TCP + PID 缓存，30 秒内直接复用；缓存过期/端口变化才重新验证身份
+        /// - 外部后端：TCP + PID 缓存，30 秒内仅当「原 PID 仍存活」才直接复用；
+        ///   原 PID 消失（端口可能被换手）立即全量复验，不重新打开身份 TOCTOU 窗口。
         /// </summary>
         public bool IsDshHealthy(int port, int timeoutMs)
         {
@@ -977,7 +1024,18 @@ namespace DeepSeekHarnessDesktop
 
             DateTime now = DateTime.UtcNow;
             if (lastExternalPid > 0 && (now - lastExternalVerifyUtc).TotalSeconds < 30)
-                return true;
+            {
+                try
+                {
+                    using (Process p = Process.GetProcessById(lastExternalPid))
+                    {
+                        if (!p.HasExited) return true;   // 原 PID 仍存活 → 缓存可信
+                    }
+                }
+                catch { }
+                // 原 PID 已不存在：端口可能已被其它进程抢占，缓存作废并全量复验
+                lastExternalPid = -1;
+            }
 
             int pid = FindListeningPid(port);
             if (pid <= 0)
@@ -996,7 +1054,7 @@ namespace DeepSeekHarnessDesktop
             return true;
         }
 
-        public void EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode)
+        public void EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowUnverifiedAttach)
         {
             if (runnerMode != "npx" && runnerMode != "command") runnerMode = "auto";
 
@@ -1013,6 +1071,16 @@ namespace DeepSeekHarnessDesktop
                         "端口 " + port.ToString() + " 已被非 DSH 进程占用（PID " + existingPid.ToString() + "）。\r\n\r\n" +
                         "命令行：\r\n" + (String.IsNullOrWhiteSpace(commandLine) ? "（无法读取）" : commandLine) +
                         "\r\n\r\n桌面壳拒绝把它当作 DSH。请更换端口或结束占用进程。");
+
+                // 外部 backend 也必须单独通过版本验证：runnerMode 只约束“端口为空时怎么启动”，
+                // 不约束“允许附着什么”。读不到版本与读到的不是 rc.7 一律按未验证处理。
+                string externalVersion = ExtractDshVersionFromCommandLine(commandLine);
+                if (!IsVerifiedDshVersion(externalVersion) && !allowUnverifiedAttach)
+                    throw new InvalidOperationException(
+                        "端口 " + port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过版本验证：" +
+                        (String.IsNullOrEmpty(externalVersion) ? "无法从命令行读取其版本。" : "其版本为 " + externalVersion + "。") +
+                        "\r\n\r\nDesktopShell 验证基线：" + VerifiedDshVersion +
+                        "。已拒绝附着。请结束该进程后重试，或重新启动桌面壳并在提示时确认附着。");
 
                 OwnsBackend = false;
                 lastExternalPid = existingPid;
@@ -1276,7 +1344,7 @@ namespace DeepSeekHarnessDesktop
             string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowExternalStop)
         {
             StopBackend(port, allowExternalStop);
-            EnsureStarted(port, workingDirectory, logsDirectory, requestedVersion, profileName, configuredDshPath, runnerMode);
+            EnsureStarted(port, workingDirectory, logsDirectory, requestedVersion, profileName, configuredDshPath, runnerMode, false);
         }
 
         private static void CleanupOldLogs(string directory)
@@ -2168,22 +2236,51 @@ namespace DeepSeekHarnessDesktop
 
             try
             {
+                DshProcessManager.ExternalBackendInfo probe = null;
+                bool restartExternal = false;
+                bool attachUnverified = false;
+
                 await Task.Run(delegate
                 {
-                    // 先探测后端：端口上已有外部 DSH 时，不在其运行期间修改插件/账本
-                    // （运行中的 DSH 在内存持有账本，关停时会写回，覆盖清理结果）。
-                    // 附着模式只做只读检测；若有待修复项，启动完成后提示重启。
-                    bool externalDsh = false;
-                    if (dsh.IsReady(settings.port, 350))
-                    {
-                        int pid = dsh.FindListeningPid(settings.port);
-                        string commandLine;
-                        if (pid > 0 && dsh.IsLikelyDshProcess(pid, out commandLine)) externalDsh = true;
-                    }
-
+                    // 规则：只要端口已经打开，启动前绝不写兼容补丁（不依赖第一次 PID/命令行
+                    // 识别一定成功）；只有端口原本为空时才“补丁 → 启动自己的 DSH”。
+                    probe = dsh.ProbeExternalDsh(settings.port);
                     compatPendingAtStartup = PluginCompat.ApplyAll(
-                        baseDirectory, logsDirectory, settings.profileName, !externalDsh);
+                        baseDirectory, logsDirectory, settings.profileName, !probe.PortOpen);
+                });
 
+                // 外部 backend 必须单独通过版本验证（runnerMode 只管启动方式）。
+                if (probe != null && probe.PortOpen && probe.IsDsh && !probe.IsVerified)
+                {
+                    string shown = String.IsNullOrWhiteSpace(probe.CommandLine)
+                        ? "（无法读取命令行）" : probe.CommandLine;
+                    DialogResult confirm = ThemedMessageBox.Show(
+                        this,
+                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过版本验证：\r\n" +
+                        (String.IsNullOrEmpty(probe.Version)
+                            ? "无法从命令行读取其版本。"
+                            : "其版本为 " + probe.Version + "。") +
+                        "\r\nDesktopShell 验证基线：" + DshProcessManager.VerifiedDshVersion +
+                        "。\r\n\r\n命令行：\r\n" + shown +
+                        "\r\n\r\n选择“是”继续附着该后端；选择“否”结束它并由桌面壳按当前设置重新启动。",
+                        "DeepSeek Harness",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                    if (confirm == DialogResult.No)
+                        restartExternal = true;
+                    else
+                        attachUnverified = true;   // 是 / 取消都按非破坏性处理：附着
+                }
+
+                await Task.Run(delegate
+                {
+                    if (restartExternal)
+                    {
+                        // 用户已确认结束外部后端：停止 → 补丁 → 启动自己的 DSH
+                        dsh.StopBackend(settings.port, true);
+                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
+                        compatPendingAtStartup = 0;
+                    }
                     dsh.EnsureStarted(
                         settings.port,
                         settings.workingDirectory,
@@ -2191,7 +2288,8 @@ namespace DeepSeekHarnessDesktop
                         settings.dshVersion,
                         settings.profileName,
                         settings.dshPath,
-                        settings.dshRunnerMode);
+                        settings.dshRunnerMode,
+                        attachUnverified);
                 });
 
                 loadingLabel.Text = "正在初始化 WebView2...";
@@ -2631,7 +2729,8 @@ namespace DeepSeekHarnessDesktop
                         settings.dshVersion,
                         settings.profileName,
                         settings.dshPath,
-                        settings.dshRunnerMode);
+                        settings.dshRunnerMode,
+                        false);
                 });
 
                 healthFailures = 0;
