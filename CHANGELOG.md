@@ -66,6 +66,26 @@
   自己的 DSH 晚就绪（~500ms 后开始监听）必须成功且不抛 NonDsh；真 Foreign（本进程占端口、
   命令行无 DSH 特征）稳定确认后才拒绝；日志断言 BACKEND ready / identity 转换 / stableCount=4
 
+## v1.0.2 追加：DSH rc.8 兼容策略与插件未来维护（2026-08-20）
+
+- **兼容策略从“唯一验证版本”改为“默认 + 最低 + 测试”**：`COMPATIBILITY.json` 升到
+  schemaVersion 2，`defaultDshVersion=0.1.0-rc.8`、`minimumCompatibleDshVersion=0.1.0-rc.7`、
+  `testedDshVersions=[rc.7, rc.8]`；新设置/缺失/无效值使用默认 rc.8，已有 rc.7 配置继续保留
+- **未来 DSH 版本不再因不在 tested 列表被强制回退**：rc.6 及以下按过旧安全处理；rc.7/rc.8
+  直接使用；rc.9/后续正式版只要不低于最低版本就允许尝试，按实际 CLI 能力适配
+- **统一 CLI 能力检测层**：启动流程改为 Resolve runner → 实际版本 → 探测 CLI capabilities →
+  构造 Web 启动参数 → 进入现有启动/Restart 生命周期；`--no-open` 通过 `--profile <profile> --help`
+  实际探测，支持才加入，探测失败保守不加；npx 与 command 共用同一套参数构造
+- **Web 启动参数保持**：`--profile <profile> --port <明确端口>`，不恢复 `dsh web`，也不引入 `--port 0`
+- **推荐插件默认不固定版本**：npm 推荐项改为纯 package 名，GitHub 插件跟随 `main`；
+  Dream Skin 当前 main 已验证仍含 sticky restore 与 `/dream-skin/api` marker，取消旧 commit pin；
+  只有确认破坏性不兼容的插件才允许继续 pin 并写明原因
+- **修复菜单 Dispose 生命周期**：托盘退出与 WebView 右键菜单释放都延迟到 WinForms 菜单消息
+  处理完成后执行，避免 `ContextMenuStrip ObjectDisposedException`（分别有源码级回归测试）
+- **测试同步升级**：`test-version-source` / `test-dsh-version` / `test-accepted-dsh` /
+  `test-launch-args` / `test-runner-mode` / `test-dream-skin-pin` 覆盖 rc.6/rc.7/rc.8/rc.9、
+  `--no-open` 能力检测、未来版本不强制回退、插件不固定版本等行为
+
 ## v1.0.1（第八轮修复：启动运行期稳健性，2026-08-19）
 
 v1.0.0 冻结后的第一个修复版本。

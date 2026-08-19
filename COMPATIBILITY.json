@@ -1,4 +1,9 @@
 {
-  "schemaVersion": 1,
-  "verifiedDshVersion": "0.1.0-rc.7"
+  "schemaVersion": 2,
+  "defaultDshVersion": "0.1.0-rc.8",
+  "minimumCompatibleDshVersion": "0.1.0-rc.7",
+  "testedDshVersions": [
+    "0.1.0-rc.7",
+    "0.1.0-rc.8"
+  ]
 }

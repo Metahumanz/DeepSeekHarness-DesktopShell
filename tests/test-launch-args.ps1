@@ -1,7 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $source = Join-Path $repo 'src\DeepSeekHarness.cs'
-$hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
 
 $fail = 0
 function Assert-True([string]$label, [bool]$condition) {
@@ -18,52 +17,21 @@ Assert-True "no web appended after profile arg" ($cs -notmatch 'QuoteArg\(profil
 Assert-True "uses --profile form" ($cs -match '" --profile " \+ QuoteArg\(profile\)')
 Assert-True "passes --port" ($cs -match '" --port " \+ port\.ToString\(\)')
 
-# ---- 2. 真实 CLI 探测（临时 DSH_HOME，--help 不启动服务、不写状态） ----
-# 旧形态必须仍被 CLI 拒绝（证明该守卫有实际意义）；新形态必须能通过 launcher 参数解析。
-# 注意：5.1 下原生 stderr（reject 错误）会变成错误记录，EAP=Stop 会中止脚本，
-# 因此探测期间临时切到 Continue 并把 stderr 并入输出字符串。
-# 探测用的 DSH 版本单一来源：仓库根 COMPATIBILITY.json（与壳的验证基线同一文件），
-# 不在此处硬编码，避免“测试里又写死一份版本号”。
-$compatPath = Join-Path $repo 'COMPATIBILITY.json'
-if (-not (Test-Path -LiteralPath $compatPath -PathType Leaf)) {
-    Write-Host "FAIL: COMPATIBILITY.json missing at $compatPath"
-    exit 1
-}
-$compat = Get-Content -LiteralPath $compatPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$probeVersion = [string]$compat.verifiedDshVersion
-if ($probeVersion -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
-    Write-Host "FAIL: invalid verifiedDshVersion in COMPATIBILITY.json: $probeVersion"
-    exit 1
-}
-Write-Host "probe DSH version (from COMPATIBILITY.json): $probeVersion"
+# ---- 2. 统一 CLI 能力检测与参数构造 ----
+# 自动化测试只做源码级守卫；真实 npx --help 探测在独立人工环境执行，
+# 避免在当前生产 DSH/3080 环境下触发下载或任何端口行为。
+Assert-True "SupportsNoOpen probes --help" ($cs -match '--profile " \+ QuoteArg\(profile\) \+ " --help"')
+Assert-True "SupportsNoOpen checks --no-open in output" ($cs -match 'IndexOf\("--no-open"')
+Assert-True "SupportsNoOpen caches capability" ($cs -match 'supportsNoOpenCache')
+Assert-True "BuildWebLaunchArguments shared by npx/command" ($cs -match 'BuildWebLaunchArguments\(usingNpx, version, profile, port, noOpen\)')
+Assert-True "no-open appended only when supported" ($cs -match 'if \(noOpen\)\s*args \+= " --no-open";')
+Assert-True "no hardcoded version gate for no-open" ($cs -notmatch 'CompareDshVersion\(version, "0\.1\.0-rc\.8"\)')
+Assert-True "SupportsNoOpen failure is conservative (false)" ($cs -match 'supported = false;')
 
-function Invoke-NpxProbe([string[]]$argsList) {
-    $oldEap = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        return (& npx @argsList 2>&1 | Out-String)
-    } finally {
-        $ErrorActionPreference = $oldEap
-    }
-}
-
-$probeHome = Join-Path $env:TEMP ('dsh-launch-probe-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $probeHome | Out-Null
-$oldHome = $env:DSH_HOME
-$env:DSH_HOME = $probeHome
-try {
-    $oldOut = Invoke-NpxProbe @('-y', "@deepseek-ai/dsh@$probeVersion", '--profile', 'probe', 'web', '--help')
-    $newOut = Invoke-NpxProbe @('-y', "@deepseek-ai/dsh@$probeVersion", '--profile', 'probe', '--help')
-} finally {
-    $env:DSH_HOME = $oldHome
-    Remove-Item -LiteralPath $probeHome -Recurse -Force -ErrorAction SilentlyContinue
-}
-Assert-True "old form rejected by real CLI (takes none of parent)" ($oldOut -match 'takes none of parent')
-Assert-True "new form passes launcher validation (no reject)" ($newOut -notmatch 'takes none of parent')
-Write-Host '--- old form sample ---'
-Write-Host ($oldOut.Substring(0, [Math]::Min(200, $oldOut.Length)))
-Write-Host '--- new form sample ---'
-Write-Host ($newOut.Substring(0, [Math]::Min(200, $newOut.Length)))
+# ---- 3. COMPATIBILITY.json 默认版本自洽 ----
+$compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True "defaultDshVersion valid (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
+Assert-True "rc.8 is tested baseline" (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.0-rc.8' }).Count -gt 0)
 
 if ($fail -eq 0) { Write-Host 'LAUNCH ARGS TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

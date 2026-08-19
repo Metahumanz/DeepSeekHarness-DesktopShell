@@ -57,7 +57,7 @@ namespace DeepSeekHarnessDesktop
             windowHeight = 900;
             windowMaximized = false;
             developerMode = false;
-            dshVersion = DshProcessManager.VerifiedDshVersion;
+            dshVersion = DshProcessManager.DefaultDshVersion;
             dshPath = "";
             dshRunnerMode = "auto";
             acceptedDshCommandPath = "";
@@ -83,7 +83,7 @@ namespace DeepSeekHarnessDesktop
                 if (value.windowWidth < 800 || value.windowWidth > 10000) value.windowWidth = 1440;
                 if (value.windowHeight < 600 || value.windowHeight > 10000) value.windowHeight = 900;
                 if (String.IsNullOrWhiteSpace(value.dshVersion))
-                    value.dshVersion = DshProcessManager.VerifiedDshVersion;
+                    value.dshVersion = DshProcessManager.DefaultDshVersion;
                 value.dshVersion = NormalizeDshVersion(value.dshVersion);
                 if (value.dshPath == null) value.dshPath = "";
                 if (value.acceptedDshCommandPath == null) value.acceptedDshCommandPath = "";
@@ -143,7 +143,7 @@ namespace DeepSeekHarnessDesktop
 
         public static string NormalizeDshVersion(string value)
         {
-            string fallback = DshProcessManager.VerifiedDshVersion;   // 单一来源：COMPATIBILITY.json
+            string fallback = DshProcessManager.DefaultDshVersion;   // 单一来源：COMPATIBILITY.json
             string version = String.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
             foreach (char c in version)
             {
@@ -929,6 +929,10 @@ namespace DeepSeekHarnessDesktop
         // 端口身份转换日志去重：只记录状态变化
         private string lastPortLog = "";
 
+        // CLI 能力探测缓存：同一次 DesktopShell 生命周期内避免反复执行 --help 探测。
+        private string cliCapabilityKey = "";
+        private bool? supportsNoOpenCache = null;
+
         /// <summary>启动时保存的 wrapper（cmd/npx 包装进程）PID；无则 -1。</summary>
         public int WrapperPid
         {
@@ -1043,37 +1047,185 @@ namespace DeepSeekHarnessDesktop
             return IsLikelyDshProcess(pid, out commandLine, port);
         }
 
-        // DesktopShell 验证基线：只有该版本被审核过。外部已运行的 DSH 同样必须过这道门槛。
-        // 唯一来源：安装目录 COMPATIBILITY.json（构建/安装流程随包分发），缺失时回退硬编码。
-        private static string verifiedDshVersionCache = null;
-        public static string VerifiedDshVersion
+        // DSH 兼容策略：默认版本 + 最低兼容版本 + 测试版本，唯一来源 COMPATIBILITY.json。
+        // - DefaultDshVersion：新设置/缺失/无效时 npx 默认版本，也是 DesktopShell 自己启动的兜底版本。
+        // - MinimumCompatibleDshVersion：低于它视为过旧，不再继续尝试。
+        // - TestedDshVersions：实际验证过的版本，只用于日志/提示，不作为未来版本硬白名单。
+        // 兼容旧 schema v1：只有 verifiedDshVersion 时，默认/最低/测试都回落到该版本。
+        private static string defaultDshVersionCache = null;
+        private static string minimumCompatibleDshVersionCache = null;
+        private static List<string> testedDshVersionsCache = null;
+
+        private static bool IsValidDshVersionString(string v)
         {
-            get
+            return !String.IsNullOrWhiteSpace(v) &&
+                Regex.IsMatch(v, @"^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$");
+        }
+
+        private static void EnsureCompatibilityLoaded()
+        {
+            if (defaultDshVersionCache != null) return;
+            defaultDshVersionCache = "0.1.0-rc.8";
+            minimumCompatibleDshVersionCache = "0.1.0-rc.7";
+            testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8" };
+            try
             {
-                if (verifiedDshVersionCache != null) return verifiedDshVersionCache;
-                verifiedDshVersionCache = "0.1.0-rc.7";
-                try
+                string compatPath = Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar),
+                    "COMPATIBILITY.json");
+                if (!File.Exists(compatPath)) return;
+
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                Dictionary<string, object> compat =
+                    serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(compatPath, Encoding.UTF8));
+                if (compat == null) return;
+
+                object raw;
+                if (compat.TryGetValue("defaultDshVersion", out raw))
                 {
-                    string compatPath = Path.Combine(
-                        AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar),
-                        "COMPATIBILITY.json");
-                    if (File.Exists(compatPath))
+                    string v = Convert.ToString(raw);
+                    if (IsValidDshVersionString(v)) defaultDshVersionCache = v;
+                }
+                else if (compat.TryGetValue("verifiedDshVersion", out raw))
+                {
+                    string v = Convert.ToString(raw);
+                    if (IsValidDshVersionString(v)) defaultDshVersionCache = v;
+                }
+
+                if (compat.TryGetValue("minimumCompatibleDshVersion", out raw))
+                {
+                    string v = Convert.ToString(raw);
+                    if (IsValidDshVersionString(v)) minimumCompatibleDshVersionCache = v;
+                }
+                else if (compat.TryGetValue("verifiedDshVersion", out raw))
+                {
+                    string v = Convert.ToString(raw);
+                    if (IsValidDshVersionString(v)) minimumCompatibleDshVersionCache = v;
+                }
+
+                if (compat.TryGetValue("testedDshVersions", out raw))
+                {
+                    object[] arr = raw as object[];
+                    if (arr != null && arr.Length > 0)
                     {
-                        JavaScriptSerializer serializer = new JavaScriptSerializer();
-                        Dictionary<string, object> compat =
-                            serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(compatPath, Encoding.UTF8));
-                        object raw;
-                        if (compat != null && compat.TryGetValue("verifiedDshVersion", out raw))
+                        List<string> parsed = new List<string>();
+                        foreach (object item in arr)
                         {
-                            string v = Convert.ToString(raw);
-                            if (Regex.IsMatch(v, @"^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$"))
-                                verifiedDshVersionCache = v;
+                            string v = Convert.ToString(item);
+                            if (IsValidDshVersionString(v)) parsed.Add(v);
                         }
+                        if (parsed.Count > 0) testedDshVersionsCache = parsed;
                     }
                 }
-                catch { }
-                return verifiedDshVersionCache;
+                else if (compat.TryGetValue("verifiedDshVersion", out raw))
+                {
+                    string v = Convert.ToString(raw);
+                    if (IsValidDshVersionString(v))
+                        testedDshVersionsCache = new List<string> { v };
+                }
             }
+            catch { }
+        }
+
+        public static string DefaultDshVersion
+        {
+            get { EnsureCompatibilityLoaded(); return defaultDshVersionCache; }
+        }
+
+        public static string MinimumCompatibleDshVersion
+        {
+            get { EnsureCompatibilityLoaded(); return minimumCompatibleDshVersionCache; }
+        }
+
+        public static IReadOnlyList<string> TestedDshVersions
+        {
+            get { EnsureCompatibilityLoaded(); return testedDshVersionsCache; }
+        }
+
+        /// <summary>兼容旧调用方；仅等价于 DefaultDshVersion，不再作为运行门槛使用。</summary>
+        public static string VerifiedDshVersion
+        {
+            get { return DefaultDshVersion; }
+        }
+
+        /// <summary>版本是否满足最低兼容版本（可解析且 >= minimum）。未知/无法解析返回 false。</summary>
+        public static bool IsCompatibleDshVersion(string version)
+        {
+            if (String.IsNullOrWhiteSpace(version)) return false;
+            int? cmp = CompareDshVersion(version, MinimumCompatibleDshVersion);
+            return cmp.HasValue && cmp.Value >= 0;
+        }
+
+        /// <summary>版本是否在 testedDshVersions 中（仅用于日志/提示，不作为硬白名单）。</summary>
+        public static bool IsTestedDshVersion(string version)
+        {
+            if (String.IsNullOrWhiteSpace(version)) return false;
+            foreach (string tested in TestedDshVersions)
+            {
+                if (String.Equals(version.Trim(), tested, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        private static int? CompareDshVersion(string a, string b)
+        {
+            if (String.IsNullOrWhiteSpace(a) || String.IsNullOrWhiteSpace(b)) return null;
+            Regex rx = new Regex(@"^\s*(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?(?:\+[0-9A-Za-z.-]+)?\s*$");
+            Match ma = rx.Match(a);
+            Match mb = rx.Match(b);
+            if (!ma.Success || !mb.Success) return null;
+
+            for (int i = 1; i <= 3; i++)
+            {
+                int x = Int32.Parse(ma.Groups[i].Value);
+                int y = Int32.Parse(mb.Groups[i].Value);
+                if (x != y) return x < y ? -1 : 1;
+            }
+
+            string pa = ma.Groups[4].Success ? ma.Groups[4].Value : null;
+            string pb = mb.Groups[4].Success ? mb.Groups[4].Value : null;
+            if (pa == null && pb == null) return 0;
+            if (pa == null) return 1;
+            if (pb == null) return -1;
+
+            string[] asParts = pa.Split('.');
+            string[] bsParts = pb.Split('.');
+            int n = Math.Min(asParts.Length, bsParts.Length);
+            for (int i = 0; i < n; i++)
+            {
+                string x = asParts[i];
+                string y = bsParts[i];
+                bool xn = IsNumericString(x);
+                bool yn = IsNumericString(y);
+                if (xn && yn)
+                {
+                    int xi = Int32.Parse(x);
+                    int yi = Int32.Parse(y);
+                    if (xi != yi) return xi < yi ? -1 : 1;
+                }
+                else if (xn != yn)
+                {
+                    return xn ? -1 : 1;
+                }
+                else
+                {
+                    int cmp = String.Compare(x, y, StringComparison.OrdinalIgnoreCase);
+                    if (cmp != 0) return cmp < 0 ? -1 : 1;
+                }
+            }
+            if (asParts.Length == bsParts.Length) return 0;
+            return asParts.Length < bsParts.Length ? -1 : 1;
+        }
+
+        private static bool IsNumericString(string s)
+        {
+            if (String.IsNullOrEmpty(s)) return false;
+            foreach (char c in s)
+            {
+                if (!Char.IsDigit(c)) return false;
+            }
+            return true;
         }
 
         /// <summary>从命令行里提取 npx 形式的版本（@deepseek-ai/dsh@x.y.z-rc.n）；提取不到返回 null。</summary>
@@ -1083,12 +1235,6 @@ namespace DeepSeekHarnessDesktop
             Match m = Regex.Match(commandLine, @"@deepseek-ai/dsh@([0-9A-Za-z._+-]+)", RegexOptions.IgnoreCase);
             if (m.Success) return m.Groups[1].Value;
             return null;
-        }
-
-        public static bool IsVerifiedDshVersion(string version)
-        {
-            if (String.IsNullOrWhiteSpace(version)) return false;
-            return String.Equals(version.Trim(), VerifiedDshVersion, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>读取 dsh 命令自身的版本（运行 &lt;command&gt; --version）。读不到返回 null。</summary>
@@ -1118,13 +1264,20 @@ namespace DeepSeekHarnessDesktop
                 using (Process p = Process.Start(psi))
                 {
                     if (p == null) return null;
+                    if (!p.WaitForExit(5000))
+                    {
+                        try { p.Kill(); } catch { }
+                        return null;
+                    }
+
                     string output = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit(5000);
                     if (String.IsNullOrWhiteSpace(output)) return null;
                     Match m = Regex.Match(output, @"\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?");
                     if (m.Success) return m.Value;
                     return output.Trim();
                 }
+
+
             }
             catch { return null; }
         }
@@ -1137,7 +1290,8 @@ namespace DeepSeekHarnessDesktop
             public string CommandLine = "";
             public bool IsDsh;
             public string Version;      // null = 命令行里读不到版本
-            public bool IsVerified;
+            public bool IsCompatible;   // 可解析且 >= minimumCompatibleDshVersion
+            public bool IsVerified;     // 在 testedDshVersions 中（仅提示用，不是运行门槛）
         }
 
         /// <summary>一次性探测端口：TCP + PID + 命令行 + 版本提取（不修改任何状态）。</summary>
@@ -1152,7 +1306,8 @@ namespace DeepSeekHarnessDesktop
             info.IsDsh = IsLikelyDshProcess(info.Pid, out cmd, port);
             info.CommandLine = cmd ?? "";
             info.Version = ExtractDshVersionFromCommandLine(info.CommandLine);
-            info.IsVerified = IsVerifiedDshVersion(info.Version);
+            info.IsCompatible = IsCompatibleDshVersion(info.Version);
+            info.IsVerified = IsTestedDshVersion(info.Version);
             return info;
         }
 
@@ -1222,15 +1377,29 @@ namespace DeepSeekHarnessDesktop
                         "命令行：\r\n" + (String.IsNullOrWhiteSpace(commandLine) ? "（无法读取）" : commandLine) +
                         "\r\n\r\n桌面壳拒绝把它当作 DSH。请更换端口或结束占用进程。");
 
-                // 外部 backend 也必须单独通过版本验证：runnerMode 只约束“端口为空时怎么启动”，
-                // 不约束“允许附着什么”。读不到版本与读到的不是 rc.7 一律按未验证处理。
+                // 外部 backend 也必须符合兼容策略：runnerMode 只约束“端口为空时怎么启动”，
+                // 不约束“允许附着什么”。
+                // - 已知版本低于 minimumCompatibleDshVersion → 直接拒绝（即使 allowUnverifiedAttach）
+                // - 已知版本 >= minimum（含未来版本）→ 已测试直接附着；未测试需 allowUnverifiedAttach 确认
+                // - 读不到版本/无法解析 → 无法证明达到最低版本，按不兼容拒绝
                 string externalVersion = ExtractDshVersionFromCommandLine(commandLine);
-                if (!IsVerifiedDshVersion(externalVersion) && !allowUnverifiedAttach)
+                if (!IsCompatibleDshVersion(externalVersion))
+                {
                     throw new InvalidOperationException(
-                        "端口 " + port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过版本验证：" +
+                        "端口 " + port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过最低兼容版本检查：" +
                         (String.IsNullOrEmpty(externalVersion) ? "无法从命令行读取其版本。" : "其版本为 " + externalVersion + "。") +
-                        "\r\n\r\nDesktopShell 验证基线：" + VerifiedDshVersion +
-                        "。已拒绝附着。请结束该进程后重试，或重新启动桌面壳并在提示时确认附着。");
+                        "\r\n\r\nDesktopShell 最低兼容版本：" + MinimumCompatibleDshVersion +
+                        "。已拒绝附着。请结束该进程后重试，或重新启动桌面壳并按提示处理。");
+                }
+
+                if (!IsTestedDshVersion(externalVersion) && !allowUnverifiedAttach)
+                {
+                    throw new InvalidOperationException(
+                        "端口 " + port.ToString() + " 上已有一个 DSH 后端在运行，版本 " + externalVersion +
+                        " 未在 testedDshVersions 中，但满足最低兼容版本。\r\n\r\n" +
+                        "DesktopShell 默认 npx 版本：" + DefaultDshVersion +
+                        "。已拒绝直接附着。请结束该进程后重试，或重新启动桌面壳并在提示时确认附着。");
+                }
 
                 OwnsBackend = false;
                 ownedWrapperPid = -1;
@@ -1289,27 +1458,27 @@ namespace DeepSeekHarnessDesktop
                     "请先安装可用的 Node.js/npm，然后重新启动 DesktopShell。");
             }
 
-            string arguments;
-            if (usingNpx)
+            // 统一启动流程：Resolve runner → Resolve actual DSH version → Probe CLI capabilities
+            // → Build Web launch arguments → 进入现有启动/Restart 生命周期。
+            // npx 使用 requestedVersion；command/auto 最终使用现有 dsh 时以 GetCommandVersion 为准，
+            // 避免用可能过时的 settings.dshVersion 代替实际 command 版本。
+            string effectiveVersion = version;
+            if (!usingNpx)
             {
-                // 官方 CLI：`dsh web` 本身就是 `dsh --profile web` 的别名，两者不能叠加
-                // （rejectParentOptions('web')）。自定义 Profile 统一用 --profile 形式，
-                // 不再额外附加 `web` 子命令；--port 作为应用参数继续传给 Profile。
-                arguments = "-y @deepseek-ai/dsh@" + QuoteArg(version) +
-                    " --profile " + QuoteArg(profile) +
-                    " --port " + port.ToString();
+                string actualCommandVersion = GetCommandVersion(command);
+                if (!String.IsNullOrWhiteSpace(actualCommandVersion))
+                    effectiveVersion = actualCommandVersion;
             }
-            else
-            {
-                arguments = "--profile " + QuoteArg(profile) +
-                    " --port " + port.ToString();
-            }
+
+            bool noOpen = SupportsNoOpen(command, usingNpx, version, profile);
+            string arguments = BuildWebLaunchArguments(usingNpx, version, profile, port, noOpen);
+            AppendLog("CLI capabilities noOpen=" + noOpen.ToString() + " effectiveVersion=" + effectiveVersion);
 
             ProcessStartInfo psi = BuildStartInfo(command, arguments, workingDirectory);
             string oldPath = psi.EnvironmentVariables["PATH"] ?? Environment.GetEnvironmentVariable("PATH") ?? "";
             string commandDir = Path.GetDirectoryName(command) ?? "";
             if (!String.IsNullOrWhiteSpace(commandDir)) psi.EnvironmentVariables["PATH"] = commandDir + ";" + oldPath;
-            psi.EnvironmentVariables["DSH_DESKTOP_DSH_VERSION"] = version;
+            psi.EnvironmentVariables["DSH_DESKTOP_DSH_VERSION"] = effectiveVersion;
             // 注意：不为常驻 DSH 进程设置 GIT_CONFIG_* rewrite——
             // 那会污染整个 DSH 进程树（Agent/终端/子进程执行 git@github.com:... 时被
             // 强制改成 https，破坏本应正常的 SSH 私有仓库认证）。
@@ -1868,6 +2037,82 @@ namespace DeepSeekHarnessDesktop
             if (value.IndexOfAny(new char[] { ' ', '\t', '\"' }) < 0) return value;
             return "\"" + value.Replace("\"", "\\\"") + "\"";
         }
+
+        /// <summary>
+        /// 探测当前 runner 的 DSH CLI 是否支持 --no-open。
+        /// 优先实际 --help 输出；探测失败保守返回 false（不加参数）。
+        /// 同一 key 在本次 DesktopShell 生命周期内只探测一次。
+        /// </summary>
+        private bool SupportsNoOpen(string command, bool usingNpx, string version, string profile)
+        {
+            string key = (usingNpx ? "npx:" : "cmd:") + version + ":" + profile;
+            if (supportsNoOpenCache.HasValue && cliCapabilityKey == key)
+                return supportsNoOpenCache.Value;
+
+            bool supported = false;
+            try
+            {
+                string probeArgs = usingNpx
+                    ? "-y @deepseek-ai/dsh@" + QuoteArg(version) + " --profile " + QuoteArg(profile) + " --help"
+                    : "--profile " + QuoteArg(profile) + " --help";
+                ProcessStartInfo psi = BuildStartInfo(command, probeArgs,
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                psi.StandardOutputEncoding = Encoding.UTF8;
+                psi.StandardErrorEncoding = Encoding.UTF8;
+
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null)
+                    {
+                        if (!p.WaitForExit(15000))
+                        {
+                            try { p.Kill(); } catch { }
+                            supported = false;
+                        }
+                        else
+                        {
+                            string output = p.StandardOutput.ReadToEnd();
+                            string error = p.StandardError.ReadToEnd();
+                            supported = (output + "\n" + error).IndexOf("--no-open", StringComparison.OrdinalIgnoreCase) >= 0;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                supported = false;
+            }
+
+            cliCapabilityKey = key;
+            supportsNoOpenCache = supported;
+            return supported;
+        }
+
+        /// <summary>统一构造 Web 启动参数：npx 与 command 共用同一套 CLI 兼容规则。</summary>
+        private static string BuildWebLaunchArguments(bool usingNpx, string version, string profile, int port, bool noOpen)
+        {
+            string args;
+            if (usingNpx)
+            {
+                args = "-y @deepseek-ai/dsh@" + QuoteArg(version) +
+                    " --profile " + QuoteArg(profile) +
+                    " --port " + port.ToString();
+            }
+            else
+            {
+                args = "--profile " + QuoteArg(profile) +
+                    " --port " + port.ToString();
+            }
+
+            if (noOpen)
+                args += " --no-open";
+            return args;
+        }
+
 
         private static ProcessStartInfo BuildStartInfo(string command, string arguments, string cwd)
         {
@@ -2513,7 +2758,7 @@ namespace DeepSeekHarnessDesktop
                 " port=" + settings.port.ToString() +
                 " workingDirectory=" + settings.workingDirectory +
                 " dshPathExists=" + (!String.IsNullOrWhiteSpace(settings.dshPath) && File.Exists(settings.dshPath)).ToString() +
-                " verifiedDsh=" + DshProcessManager.VerifiedDshVersion);
+                " defaultDsh=" + DshProcessManager.DefaultDshVersion + " minimumDsh=" + DshProcessManager.MinimumCompatibleDshVersion + " testedDsh=" + string.Join(",", DshProcessManager.TestedDshVersions));
 
             Text = "DeepSeek Harness";
             MinimumSize = new Size(960, 640);
@@ -2886,18 +3131,29 @@ namespace DeepSeekHarnessDesktop
                 });
                 HostLog.Ok("START phase=BackendProbe portOpen=" + (probe != null && probe.PortOpen).ToString());
 
-                // 外部 backend 必须单独通过版本验证（runnerMode 只管启动方式）。
+                // 外部 backend 必须符合兼容策略（runnerMode 只管启动方式）。
+                // 低于最低兼容版本/无法读取版本 → 直接中止，不提供附着。
+                if (probe != null && probe.PortOpen && probe.IsDsh && !probe.IsCompatible)
+                {
+                    throw new InvalidOperationException(
+                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过最低兼容版本检查：\r\n" +
+                        (String.IsNullOrEmpty(probe.Version)
+                            ? "无法从命令行读取其版本。"
+                            : "其版本为 " + probe.Version + "。") +
+                        "\r\nDesktopShell 最低兼容版本：" + DshProcessManager.MinimumCompatibleDshVersion +
+                        "。请结束该进程后重试，或更换端口。");
+                }
+
+                // 满足最低版本但不在 testedDshVersions（例如未来 rc.9）→ 询问是否附着。
                 if (probe != null && probe.PortOpen && probe.IsDsh && !probe.IsVerified)
                 {
                     string shown = String.IsNullOrWhiteSpace(probe.CommandLine)
                         ? "（无法读取命令行）" : probe.CommandLine;
                     DialogResult confirm = ThemedMessageBox.Show(
                         this,
-                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过版本验证：\r\n" +
-                        (String.IsNullOrEmpty(probe.Version)
-                            ? "无法从命令行读取其版本。"
-                            : "其版本为 " + probe.Version + "。") +
-                        "\r\nDesktopShell 验证基线：" + DshProcessManager.VerifiedDshVersion +
+                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，版本 " + probe.Version +
+                        " 未在 testedDshVersions 中，但满足最低兼容版本。\r\n\r\n" +
+                        "DesktopShell 默认 npx 版本：" + DshProcessManager.DefaultDshVersion +
                         "。\r\n\r\n命令行：\r\n" + shown +
                         "\r\n\r\n选择“是”继续附着该后端；选择“否”结束它并由桌面壳按当前设置重新启动。",
                         "DeepSeek Harness",
@@ -3586,8 +3842,9 @@ namespace DeepSeekHarnessDesktop
         ///   actualVersion 为空 / actualVersion != acceptedVersion
         ///   → 必须重新验证
         /// 分情况：
-        ///   actualVersion == COMPATIBILITY.verifiedDshVersion → 自动接受并写入 accepted
-        ///   actualVersion != verified → 交互询问（确认后更新 accepted；拒绝则取消启动）
+        ///   actualVersion >= COMPATIBILITY.minimumCompatibleDshVersion → 自动接受并写入 accepted
+        ///     （无论是否在 testedDshVersions 中，未来版本也允许尝试）
+        ///   actualVersion < minimumCompatibleDshVersion → 直接取消启动
         ///   无法读取版本 → 交互询问
         /// </summary>
         private void ConfirmCommandVersionBeforeStart()
@@ -3615,13 +3872,22 @@ namespace DeepSeekHarnessDesktop
                 actual != accepted;
             if (!needsVerify) return;
 
-            // 与验证基线一致 → 自动接受并写入 accepted（无需打扰用户）
-            if (!String.IsNullOrEmpty(actual) && DshProcessManager.IsVerifiedDshVersion(actual))
+            // 满足最低兼容版本（含已测试与未来版本）→ 自动接受并写入 accepted（无需打扰用户）。
+            // 已知版本低于最低兼容版本 → 直接取消启动，不允许继续使用过旧 DSH。
+            if (!String.IsNullOrEmpty(actual) && DshProcessManager.IsCompatibleDshVersion(actual))
             {
                 settings.acceptedDshCommandPath = command;
                 settings.acceptedDshCommandVersion = actual;
                 settings.Save(settingsPath);
                 return;
+            }
+            if (!String.IsNullOrEmpty(actual))
+            {
+                throw new InvalidOperationException(
+                    "现有 dsh 命令：" + command + "\r\n\r\n" +
+                    "其版本为 " + actual + "，低于 DesktopShell 最低兼容版本 " +
+                    DshProcessManager.MinimumCompatibleDshVersion +
+                    "。已取消启动。请在设置中改用 npx 默认版本，或升级 DSH。");
             }
 
             string detail = String.IsNullOrEmpty(actual)

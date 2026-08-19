@@ -38,56 +38,70 @@ $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $homeDir '.dsh'
 $desktopDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settingsPath = Join-Path $desktopDir 'settings.json'
 $legacyRuntimeDir = Join-Path $dshHome 'runtime'
-# 验证基线唯一来源：安装目录内的 COMPATIBILITY.json（由构建/安装流程随包分发），
-# 缺失或非法时回退硬编码。官方 DSH 仍是 developer preview，会发 breaking changes：
-# - 比基线旧 → 不支持，询问
-# - 等于基线 → 已验证，直接使用
-# - 比基线新 → 未验证，明确询问（不能因为“版本更高”就静默信任）
-# - 无法解析 → 未验证，明确询问
-$VerifiedDshVersion = '0.1.0-rc.7'
+# DSH 兼容策略：默认版本 + 最低兼容版本 + 测试版本，单一来源 COMPATIBILITY.json。
+# - defaultDshVersion：新设置/缺失/无效时 npx 默认版本，也是 DesktopShell 自己启动的兜底版本。
+# - minimumCompatibleDshVersion：明确过旧的版本下限，低于它不应继续尝试。
+# - testedDshVersions：实际验证过的版本，只用于日志/提示，不作为未来版本硬白名单。
+# 兼容旧 schema v1：只有 verifiedDshVersion 时，默认/最低/测试都回落到该版本。
+$DefaultDshVersion = '0.1.0-rc.8'
+$MinimumCompatibleDshVersion = '0.1.0-rc.7'
+$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8')
 $compatPath = Join-Path $desktopDir 'COMPATIBILITY.json'
 if (Test-Path -LiteralPath $compatPath -PathType Leaf) {
     try {
         $compat = Get-Content -LiteralPath $compatPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
-            $VerifiedDshVersion = [string]$compat.verifiedDshVersion
+        if ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            $DefaultDshVersion = [string]$compat.defaultDshVersion
+        } elseif ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            $DefaultDshVersion = [string]$compat.verifiedDshVersion
+        }
+        if ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            $MinimumCompatibleDshVersion = [string]$compat.minimumCompatibleDshVersion
+        } elseif ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            $MinimumCompatibleDshVersion = [string]$compat.verifiedDshVersion
+        }
+        if ($compat.testedDshVersions -is [System.Array] -and @($compat.testedDshVersions).Count -gt 0) {
+            $parsed = @($compat.testedDshVersions | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$' })
+            if ($parsed.Count -gt 0) { $TestedDshVersions = $parsed }
+        } elseif ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            $TestedDshVersions = @([string]$compat.verifiedDshVersion)
         }
     } catch {}
 }
-# npx 回退版本与验证基线同一来源，不允许各自硬编码（单一事实来源）。
-$defaultDshVersion = $VerifiedDshVersion
+# npx 回退版本与默认版本同一来源，不允许各自硬编码（单一事实来源）。
+$defaultDshVersion = $DefaultDshVersion
 $defaultProfilePnpmVersion = '10.33.2'
 
-# 插件目录。分层与可复现性规则（2026-08-19 第二轮审计后）：
+# 插件目录。分层与未来维护策略（v1.0.2 起）：
 #   - Tier='core'      核心推荐（新 Profile 默认勾选）：插件发现/工作台/Skills/@file/历史重跑
 #   - Tier='enhanced'  体验增强（默认展示但可取消）：UI 与操作效率，不装不影响 DSH 核心
 #   - Tier='advanced'  高级/实验（默认不装）：会改变 Agent 行为或涉及估算/兼容修复
-#   - 所有内置目录一律锁定精确 npm 版本或 GitHub commit（可复现），不追 latest/main；
-#     需要追新的用户可在“额外插件”步骤粘贴自定义 spec。
-# 锁定版本升级须经过人工审核：先验证新版本与 PluginCompat 兼容修复、再更新此处。
+#   - 推荐项默认不固定版本：npm 包只写 package 名，GitHub 插件跟随 main，
+#     让插件自身可以正常升级；除非某个新版已确认破坏性不兼容，才保留 pin 并写明原因。
+# 普通兼容升级不再要求 DesktopShell 发版；只有插件更名/安装协议变化/DSH 兼容破坏才需要更新目录。
 $PluginCatalog = @(
     # ---- 核心推荐 ----
-    [pscustomobject]@{ No=1;  Id='market';        Name='插件市场';                  Spec='dshmarket@1.14.0'; Tier='core'; Allow=@() },
-    [pscustomobject]@{ No=2;  Id='sidebar';       Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@0.13.1'; Tier='core'; Allow=@('node-pty') },
-    [pscustomobject]@{ No=3;  Id='skills';        Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.23'; Tier='core'; Allow=@() },
-    [pscustomobject]@{ No=4;  Id='at-file';       Name='@file 文件引用';            Spec='https://github.com/omdsh-dev/dsh-at-file/archive/898369ece56ae6ec41afd8e014f187bb5b723409.tar.gz'; Tier='core'; Allow=@() },
-    [pscustomobject]@{ No=5;  Id='rewind';        Name='历史消息回退/重跑';         Spec='https://github.com/XSJUSTC/dsh-rewind/archive/6dcfcc9c4bf388519eb51a6ca312a140b8552154.tar.gz'; Tier='core'; Allow=@() },
+    [pscustomobject]@{ No=1;  Id='market';        Name='插件市场';                  Spec='dshmarket'; Tier='core'; Allow=@() },
+    [pscustomobject]@{ No=2;  Id='sidebar';       Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar'; Tier='core'; Allow=@('node-pty') },
+    [pscustomobject]@{ No=3;  Id='skills';        Name='Skills Manager';            Spec='@michengai/dsh-skills-manager'; Tier='core'; Allow=@() },
+    [pscustomobject]@{ No=4;  Id='at-file';       Name='@file 文件引用';            Spec='https://github.com/omdsh-dev/dsh-at-file/archive/refs/heads/main.tar.gz'; Tier='core'; Allow=@() },
+    [pscustomobject]@{ No=5;  Id='rewind';        Name='历史消息回退/重跑';         Spec='https://github.com/XSJUSTC/dsh-rewind/archive/refs/heads/main.tar.gz'; Tier='core'; Allow=@() },
     # ---- 体验增强 ----
-    [pscustomobject]@{ No=6;  Id='file-mentions'; Name='文件路径点击/提及';         Spec='https://github.com/a903067276-rgb/dsh-file-mentions/archive/a303b81a32a890be02bc57fabd1e28583040ac12.tar.gz'; Tier='enhanced'; Allow=@() },
-    [pscustomobject]@{ No=7;  Id='collapse';      Name='Tool/Think 自动折叠';       Spec='https://github.com/a179-sanae/dsh-auto-collapse/archive/9d02fb02e8dd2fb56c5e82fcc5d68b5a5b62efcd.tar.gz'; Tier='enhanced'; Allow=@() },
-    [pscustomobject]@{ No=8;  Id='tidy';          Name='Codex 风格对话排版';        Spec='dsh-chat-tidy@0.2.0'; Tier='enhanced'; Allow=@() },
-    [pscustomobject]@{ No=9;  Id='outline';       Name='对话侧边大纲';              Spec='https://github.com/EnkiduGilgamesh/dsh-codex-side-outline/archive/2e923efab570557d056ba8cbbb915f55ff878ff7.tar.gz'; Tier='enhanced'; Allow=@() },
-    [pscustomobject]@{ No=10; Id='archive';       Name='Better Archive';            Spec='https://github.com/huahai0202/dsh-better-archive/archive/fa31fc486d35b1e270828fd068a240f1775fb992.tar.gz'; Tier='enhanced'; Allow=@() },
-    [pscustomobject]@{ No=11; Id='model-picker';  Name='模型选择器增强';            Spec='dsh-model-picker@1.0.2'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=6;  Id='file-mentions'; Name='文件路径点击/提及';         Spec='https://github.com/a903067276-rgb/dsh-file-mentions/archive/refs/heads/main.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=7;  Id='collapse';      Name='Tool/Think 自动折叠';       Spec='https://github.com/a179-sanae/dsh-auto-collapse/archive/refs/heads/main.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=8;  Id='tidy';          Name='Codex 风格对话排版';        Spec='dsh-chat-tidy'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=9;  Id='outline';       Name='对话侧边大纲';              Spec='https://github.com/EnkiduGilgamesh/dsh-codex-side-outline/archive/refs/heads/main.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=10; Id='archive';       Name='Better Archive';            Spec='https://github.com/huahai0202/dsh-better-archive/archive/refs/heads/main.tar.gz'; Tier='enhanced'; Allow=@() },
+    [pscustomobject]@{ No=11; Id='model-picker';  Name='模型选择器增强';            Spec='dsh-model-picker'; Tier='enhanced'; Allow=@() },
     # ---- 高级/实验（默认不装） ----
-    [pscustomobject]@{ No=12; Id='auto-mode';     Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@0.1.4'; Tier='advanced'; Allow=@() },
-    [pscustomobject]@{ No=13; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter@1.5.10'; Tier='advanced'; Allow=@(); Note='统计参考，不等于官方账单' },
-    [pscustomobject]@{ No=14; Id='dream-skin';    Name='Dream Skin 主题';           Spec='https://github.com/RevolutionLA/dsh-dream-skin/archive/28497f5294ba20f44acf8eecc62891297d38fc24.tar.gz'; Tier='advanced'; Allow=@(); Note='固定 commit（含 sticky restore 加固与 host-backed 持久化，修复重启回退问题）' },
-    [pscustomobject]@{ No=15; Id='status';        Name='Status Rotator 状态文案';   Spec='dsh-status-rotator@0.3.0'; Tier='advanced'; Allow=@() },
-    [pscustomobject]@{ No=16; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@() },
-    [pscustomobject]@{ No=17; Id='modlens';       Name='ModLens 视觉包装';          Spec='@liustack/modlens@3.21.1'; Tier='advanced'; Allow=@() },
-    [pscustomobject]@{ No=18; Id='remote';        Name='Remote SSH 工作区';         Spec='dsh-remote@0.5.7'; Tier='advanced'; Allow=@() },
-    [pscustomobject]@{ No=19; Id='video';         Name='视频预览';                  Spec='dsh-video-preview@0.1.1'; Tier='advanced'; Allow=@() }
+    [pscustomobject]@{ No=12; Id='auto-mode';     Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=13; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter'; Tier='advanced'; Allow=@(); Note='统计参考，不等于官方账单' },
+    [pscustomobject]@{ No=14; Id='dream-skin';    Name='Dream Skin 主题';           Spec='https://github.com/RevolutionLA/dsh-dream-skin/archive/refs/heads/main.tar.gz'; Tier='advanced'; Allow=@(); Note='跟随 main；已验证当前 main 含 sticky restore 加固与 host-backed 持久化 marker' },
+    [pscustomobject]@{ No=15; Id='status';        Name='Status Rotator 状态文案';   Spec='dsh-status-rotator'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=16; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=17; Id='modlens';       Name='ModLens 视觉包装';          Spec='@liustack/modlens'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=18; Id='remote';        Name='Remote SSH 工作区';         Spec='dsh-remote'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=19; Id='video';         Name='视频预览';                  Spec='dsh-video-preview'; Tier='advanced'; Allow=@() }
 )
 
 function Read-Default([string]$prompt, [string]$default) {
@@ -284,7 +298,7 @@ function Resolve-DshRunner([string]$version) {
     return Prepare-NpxDsh $version
 }
 
-# DSH 版本门槛：DesktopShell 验证基线为 $MinSupportedDshVersion。
+# DSH 版本门槛：DesktopShell 使用 minimumCompatibleDshVersion 作为最低兼容版本。
 # 版本串是 SemVer（如 0.1.0-rc.7），不能用 [version] 强转——System.Version 不解析
 # 预发布后缀（0.1.0-rc.6 会抛异常被当“无法判断”而静默放行）。按 SemVer 规则比较：
 #   核心三段数字比较；正式版 > 预发布；预发布标识逐段比较
@@ -333,55 +347,72 @@ function Compare-DshVersion([string]$a, [string]$b) {
     return $(if ($pa.Pre.Count -lt $pb.Pre.Count) { -1 } else { 1 })
 }
 
-# $null = 版本串为空（无法读取，按可用处理）；$false = 非验证基线（更旧/更新/无法解析）；
-# $true = 等于验证基线 $VerifiedDshVersion。返回 false 的一律走门槛询问，不静默放行。
+# $null = 版本串为空（无法读取，按未知处理）；$false = 版本可解析但低于最低兼容版本，
+# 或版本串无法解析（无法证明达到最低版本）；$true = 版本可解析且 >= minimumCompatibleDshVersion。
+# 不再要求“等于某个唯一验证版本”：rc.7/rc.8 已测试，未来版本只要不低于最低版本就允许尝试。
 function Test-DshVersionSupported([string]$version) {
     if ([string]::IsNullOrWhiteSpace($version)) { return $null }
-    $cmp = Compare-DshVersion $version $VerifiedDshVersion
+    $cmp = Compare-DshVersion $version $MinimumCompatibleDshVersion
     if ($null -eq $cmp) { return $false }
-    return ($cmp -eq 0)
+    return ($cmp -ge 0)
 }
 
-# 带验证基线的现有 dsh 解析：未验证/不支持时询问或自动改用 npx，而不是静默接管。
-# 注意：“读不到版本”（--version 失败/无输出）与“版本串无法解析”同等对待——
-# 一律按未验证走门槛，绝不按默认 rc.7 静默放行。
+function Test-DshVersionTested([string]$version) {
+    if ([string]::IsNullOrWhiteSpace($version)) { return $false }
+    return @($TestedDshVersions | Where-Object { $_ -eq $version }).Count -gt 0
+}
+
+# 带兼容策略的现有 dsh 解析：
+# - 已知版本 >= minimumCompatibleDshVersion → 直接使用（已测试或未测试都允许尝试，不强制回退 npx）
+# - 已知版本 <  minimumCompatibleDshVersion → 过旧，安全处理（非交互改用 npx，交互询问是否仍要使用）
+# - 读不到版本 / 无法解析 → 无法证明达到最低版本，按未知处理（非交互改用 npx，交互询问）
 function Resolve-DshCommandWithGate([string]$existing) {
     $actual = Get-DshVersionFromCommand $existing
     if ([string]::IsNullOrWhiteSpace($actual)) {
-        Warn "检测到现有 DSH，但无法读取其版本号（$existing）；DesktopShell 未验证此版本。"
-        Warn "DesktopShell 当前验证基线：$VerifiedDshVersion"
+        Warn "检测到现有 DSH，但无法读取其版本号（$existing）；DesktopShell 无法确认其不低于最低兼容版本。"
+        Warn "DesktopShell 默认 npx 版本：$DefaultDshVersion；最低兼容版本：$MinimumCompatibleDshVersion"
         if ($NonInteractive) {
-            Warn "非交互模式：改用 npx @deepseek-ai/dsh@$VerifiedDshVersion。"
+            Warn "非交互模式：改用 npx @deepseek-ai/dsh@$DefaultDshVersion。"
             return $null
         }
-        if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行验证基线版本' $false) {
+        if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行默认版本' $false) {
             return [pscustomobject]@{ Path=$existing; Version=(Normalize-Version $defaultDshVersion); Mode='command'; AcceptedPath=$existing; AcceptedVersion='' }
         }
         return $null
     }
 
-    $cmp = Compare-DshVersion $actual $VerifiedDshVersion
+    $cmp = Compare-DshVersion $actual $MinimumCompatibleDshVersion
     if ($null -eq $cmp) {
-        Warn "检测到现有 DSH，版本串无法解析（$actual），DesktopShell 未验证此版本。"
-        Warn "DesktopShell 当前验证基线：$VerifiedDshVersion"
-    } elseif ($cmp -lt 0) {
-        Warn "检测到现有 DSH $actual，低于 DesktopShell 验证基线 $VerifiedDshVersion（插件/settings 接口可能不兼容）。"
-    } elseif ($cmp -gt 0) {
-        Warn "检测到现有 DSH $actual，高于 DesktopShell 验证基线 $VerifiedDshVersion；DesktopShell 尚未审核此版本。"
-    } else {
-        Ok "检测到现有 DSH，直接使用：$existing  ($actual)"
-        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command'; AcceptedPath=$existing; AcceptedVersion=$actual }
-    }
-
-    if ($NonInteractive) {
-        Warn "非交互模式：改用 npx @deepseek-ai/dsh@$VerifiedDshVersion。"
+        Warn "检测到现有 DSH，版本串无法解析（$actual），DesktopShell 无法确认其不低于最低兼容版本。"
+        Warn "DesktopShell 默认 npx 版本：$DefaultDshVersion；最低兼容版本：$MinimumCompatibleDshVersion"
+        if ($NonInteractive) {
+            Warn "非交互模式：改用 npx @deepseek-ai/dsh@$DefaultDshVersion。"
+            return $null
+        }
+        if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行默认版本' $false) {
+            return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command'; AcceptedPath=$existing; AcceptedVersion=$actual }
+        }
         return $null
     }
-    if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行验证基线版本' $false) {
-        # 用户明确接受未验证版本：记录为 accepted，后续启动/插件操作以此为准重新验证
-        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command'; AcceptedPath=$existing; AcceptedVersion=$actual }
+
+    if ($cmp -lt 0) {
+        Warn "检测到现有 DSH $actual，低于最低兼容版本 $MinimumCompatibleDshVersion（插件/settings 接口可能不兼容）。"
+        if ($NonInteractive) {
+            Warn "非交互模式：改用 npx @deepseek-ai/dsh@$DefaultDshVersion。"
+            return $null
+        }
+        if (Read-YesNo "现有 DSH $actual 过旧，是否仍要使用？选否则改用 npx 运行默认版本" $false) {
+            return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command'; AcceptedPath=$existing; AcceptedVersion=$actual }
+        }
+        return $null
     }
-    return $null
+
+    if (-not (Test-DshVersionTested $actual)) {
+        Warn "检测到现有 DSH $actual：未在 testedDshVersions 中，但满足最低兼容版本；DesktopShell 将按实际 CLI 能力尝试运行。"
+    } else {
+        Ok "检测到现有 DSH，直接使用：$existing  ($actual)"
+    }
+    return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command'; AcceptedPath=$existing; AcceptedVersion=$actual }
 }
 
 function Remove-LegacyPrivateRuntime {
@@ -558,7 +589,7 @@ function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
 
     # 运行时版本重新验证（与 C# 启动前完全一致，command/auto 都执行——只要最终解析
     # 结果是「使用现有 dsh」）：每次插件操作前重新读取 dsh --version，与上次 accepted
-    # 记录比对（路径或版本任一变化/无法读取 → 需要重新确认）。与验证基线一致的新版本
+    # 记录比对（路径或版本任一变化/无法读取 → 需要重新确认）。满足最低兼容版本的新版本
     # 自动接受并写入 accepted，不打扰用户；其它变化交互询问，非交互模式直接中止。
     if ($dshCommand) {
         $actualVer = Get-DshVersionFromCommand $dshCommand
@@ -633,8 +664,8 @@ function Show-PluginCatalog {
         if ($p.Note) { Write-Host ('      备注：{0}' -f $p.Note) -ForegroundColor DarkGray }
     }
     Write-Host ''
-    Write-Host '内置目录全部为锁定版本（npm 精确版本 / GitHub commit），可复现。' -ForegroundColor DarkGray
-    Write-Host '需要追新版本的插件可在“额外插件”步骤粘贴自定义 spec。' -ForegroundColor DarkGray
+    Write-Host '内置推荐默认不固定版本：npm 取当前可用版本，GitHub 插件跟随 main。' -ForegroundColor DarkGray
+    Write-Host '需要固定版本可在“额外插件”步骤粘贴自定义 spec。' -ForegroundColor DarkGray
 }
 
 function Select-Plugins([bool]$existingProfile) {
@@ -650,7 +681,7 @@ function Select-Plugins([bool]$existingProfile) {
     }
     Write-Host '  1. 核心推荐（5 个：插件市场 / 工作台 / Skills / @file / Rewind）'
     Write-Host '  2. 核心推荐 + 体验增强（11 个）'
-    Write-Host '  3. 全部已审核插件（19 个，均为锁定版本）'
+    Write-Host '  3. 全部已审核插件（19 个，默认不固定版本）'
     Write-Host '  4. 自定义选择'
     $choice = Read-Default '插件安装方案' '0'
     if ($choice -eq '0') { return @() }
@@ -710,21 +741,21 @@ function Install-Plugins([string]$profile, [object[]]$selected) {
     if (-not $selected -or $selected.Count -eq 0) { return }
 
     # Dream Skin 非破坏升级：Profile 里已是旧实现（无持久化修复 marker）时，
-    # 先说明再确认；确认后按目录里的固定 commit 安装（同名包会替换旧实现）。
+    # 先说明再确认；确认后按目录里的当前 main 安装（同名包会替换旧实现）。
     # 绝不删 webview2-data / ~/.dsh / Profile，也不手工改 DSH 官方 ThemeRuntime。
     $dreamSkin = @($selected | Where-Object { $_.Id -eq 'dream-skin' } | Select-Object -First 1)
     if ($dreamSkin -and -not (Test-DreamSkinPersistenceFix $profile)) {
         $dreamSpec = [string]$dreamSkin.Spec
         if ($NonInteractive) {
-            Warn 'Dream Skin：Profile 中检测到旧 0.3.0 实现（无持久化修复 marker），将替换为 DesktopShell 审核的固定 commit。'
-        } elseif (Read-YesNo '检测到 Dream Skin 0.3.0 旧实现，存在重启后第三方皮肤回退问题。是否升级到 DesktopShell 审核的固定 commit？' $true) {
-            Ok '确认升级 Dream Skin 到固定 commit。'
+            Warn 'Dream Skin：Profile 中检测到旧 0.3.0 实现（无持久化修复 marker），将替换为当前 main（含持久化修复）。'
+        } elseif (Read-YesNo '检测到 Dream Skin 0.3.0 旧实现，存在重启后第三方皮肤回退问题。是否升级到当前 main（含持久化修复）？' $true) {
+            Ok '确认升级 Dream Skin 到当前 main。'
         } else {
             $selected = @($selected | Where-Object { $_.Id -ne 'dream-skin' })
             Warn '已跳过 Dream Skin 升级。'
         }
         if ($selected.Id -contains 'dream-skin') {
-            Say "Dream Skin 固定 commit：$dreamSpec"
+            Say "Dream Skin 安装源：$dreamSpec"
         }
     }
 
@@ -785,7 +816,7 @@ function Show-Diagnostics([string]$profile) {
         if (Test-DreamSkinPersistenceFix $profile) {
             Ok 'Dream Skin：持久化修复已安装'
         } else {
-            Warn 'Dream Skin：检测到旧 0.3.0 实现，建议升级（管理器重装 14 号插件即可替换为固定 commit）'
+            Warn 'Dream Skin：检测到旧 0.3.0 实现，建议升级（管理器重装 14 号插件即可替换为当前 main）'
         }
     }
 }
@@ -801,7 +832,7 @@ function Guided-Setup {
     Title "DeepSeek Harness DesktopShell v$shellVersion 初始化"
     Write-Host 'DSH 启动策略：'
     Write-Host '  • 系统已有 dsh 命令 -> 直接使用，不重装、不移动'
-    Write-Host '  • 现有 dsh 不等于验证基线 rc.7（更旧/更新/无法解析）-> 询问是否改用 npx，不静默接管'
+    Write-Host '  • 现有 dsh 低于最低兼容版本或无法解析 -> 安全处理；满足最低版本即允许按 CLI 能力尝试'
     Write-Host '  • 没有 dsh 命令      -> 使用官方 npx @deepseek-ai/dsh web 方式'
     Write-Host '  • npx 只按需下载到 npm 缓存，不执行 npm install -g'
     Write-Host '  • ~/.dsh 只作为 DSH 用户数据/Profile/会话目录，DesktopShell 不安装在其中'

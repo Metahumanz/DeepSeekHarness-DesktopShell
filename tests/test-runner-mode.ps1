@@ -126,13 +126,23 @@ Assert-Equal "C mode=npx (rc.6 rejected)" $sC.dshRunnerMode 'npx'
 Assert-Equal "C path empty" ([string]$sC.dshPath) ''
 Assert-Equal "C acceptedVersion empty" ([string]$sC.acceptedDshCommandVersion) ''
 
-# 场景 D：PATH 里有 rc.8（高于验证基线，未验证）-> 非交互自动改 npx
+# 场景 D：PATH 里有 rc.8（已测试）-> 直接使用 command，不再回退 npx
 "@echo off`r`necho 0.1.0-rc.8`r`n" | Set-Content -LiteralPath $dshCmd -Encoding ascii
 $tD = Join-Path $base 'caseD'
 if ((Invoke-HermeticInstall $tD) -ne 0) { $fail++; 'D FAILED: install' }
 $sD = Get-InstalledSettings $tD
-Assert-Equal "D mode=npx (rc.8 unverified)" $sD.dshRunnerMode 'npx'
-Assert-Equal "D path empty" ([string]$sD.dshPath) ''
+Assert-Equal "D mode=command (rc.8 tested)" $sD.dshRunnerMode 'command'
+Assert-Equal "D path is dsh.cmd" ([IO.Path]::GetFileName([string]$sD.dshPath)) 'dsh.cmd'
+Assert-Equal "D acceptedVersion rc.8" ([string]$sD.acceptedDshCommandVersion) '0.1.0-rc.8'
+
+# 场景 F：PATH 里有未来 rc.9（未测试但满足最低版本）-> 直接使用 command，不强制回退
+"@echo off`r`necho 0.1.0-rc.9`r`n" | Set-Content -LiteralPath $dshCmd -Encoding ascii
+$tF = Join-Path $base 'caseF'
+if ((Invoke-HermeticInstall $tF) -ne 0) { $fail++; 'F FAILED: install' }
+$sF = Get-InstalledSettings $tF
+Assert-Equal "F mode=command (rc.9 future allowed)" $sF.dshRunnerMode 'command'
+Assert-Equal "F path is dsh.cmd" ([IO.Path]::GetFileName([string]$sF.dshPath)) 'dsh.cmd'
+Assert-Equal "F acceptedVersion rc.9" ([string]$sF.acceptedDshCommandVersion) '0.1.0-rc.9'
 
 # 场景 E：PATH 里有 dsh 但 --version 失败/无输出（读不到版本）-> 未验证，非交互自动改 npx
 "@echo off`r`nexit /b 1`r`n" | Set-Content -LiteralPath $dshCmd -Encoding ascii

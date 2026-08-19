@@ -46,8 +46,9 @@ Assert-True "verified version auto-accepted without dialog" ($text -match 'Test-
 Assert-True "re-verify no longer gated on command-only mode" ($text -notmatch 'RunnerMode -eq ''command''\) \{\s*\$actualVer = Get-DshVersionFromCommand')
 
 # ---- 3. 版本单一来源：npx 回退版本跟随验证基线 ----
-Assert-True "defaultDshVersion derives from VerifiedDshVersion" ($text -match '\$defaultDshVersion = \$VerifiedDshVersion')
-Assert-True "baseline read from COMPATIBILITY.json" ($text -match '\$VerifiedDshVersion = \[string\]\$compat\.verifiedDshVersion')
+Assert-True "defaultDshVersion derives from DefaultDshVersion" ($text -match '\$defaultDshVersion = \$DefaultDshVersion')
+Assert-True "default version read from COMPATIBILITY.json" ($text -match '\$DefaultDshVersion = \[string\]\$compat\.defaultDshVersion')
+Assert-True "minimum version read from COMPATIBILITY.json" ($text -match '\$MinimumCompatibleDshVersion = \[string\]\$compat\.minimumCompatibleDshVersion')
 
 if ($fail -eq 0) { Write-Host 'ACCEPTED DSH TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

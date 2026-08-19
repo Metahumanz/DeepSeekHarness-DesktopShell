@@ -19,7 +19,7 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> 当前基线：DesktopShell v1.0.1 · DSH 0.1.0-rc.7（v1.0.0 已冻结，不再同 tag 覆盖发布）
+> 当前基线：DesktopShell v1.0.2 · DSH 0.1.0-rc.8（默认）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
 
 ## 安装
 
@@ -111,8 +111,8 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Remote SSH | 远程 SSH 工作区 | |
 | Video Preview | 视频预览 | |
 
-内置目录全部锁定精确版本 / commit（可复现），"全部已审核插件"也只安装锁定版本；
-需要追新的用户可在向导的"额外插件"步骤粘贴自定义 spec。
+内置推荐默认不固定版本：npm 取当前可用版本，GitHub 插件跟随 main；
+普通插件升级不再要求 DesktopShell 发版。需要固定版本可在向导的"额外插件"步骤粘贴自定义 spec。
 **新 Profile 的默认选项是 0（纯 DSH，不安装社区插件）**——按一路 Enter 不会执行第三方代码；
 需要插件时输入 1（核心推荐）或更高选项。
 
@@ -164,7 +164,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 - **安装目录所有权**：`.dsh-desktop-shell-root` 标记；非空且非本产品目录拒绝安装；**程序目录** Preflight→Stage→Initialize→Commit 事务式提交（升级保留旧 exe 回滚，失败可恢复旧安装；首次向导对 DSH_HOME 的初始化不在回滚范围）；卸载前再次验证
 - **卸载守卫**：DSH_HOME 危险路径双向检查；完整卸载先确认并停止外部 DSH，停止失败降级为仅卸载壳；延迟自删除脚本执行前第三次验证标记
 - **端口/进程**：只信任回环 DSH 源；端口占用先查 PID+命令行，非 DSH 进程拒绝附着/强杀；Job Object 回收自家后端；运行方式（自动/现有 dsh/仅 npx）持久化双端一致
-- **发布链**：一键安装对 Release 资产做 SHA256 完整性校验（防下载损坏/资产错配）；插件推荐全部锁定版本
+- **发布链**：一键安装对 Release 资产做 SHA256 完整性校验（防下载损坏/资产错配）；插件推荐默认不固定版本
 - **页面边界**：主导航回环白名单；外链 http/https 白名单，其余协议弹确认；DevTools 默认关闭
 
 ## 从源码构建
@@ -179,14 +179,14 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
 **发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
-回归测试在 `tests\`（11 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
+回归测试在 `tests\`（18 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
 
 ## Release 流程
 
 GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.1`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
-1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（11 项，PowerShell 7 + 5.1）
+1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（18 项，PowerShell 7 + 5.1）
 2. `Build-Release -Version`（仅 x64）
 3. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
 4. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
@@ -200,7 +200,7 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.1`�
 ├── assets/                 # 图标（源自官方 favicon.svg）
 ├── scripts/                # 安装 / 管理 / 卸载 / 发布 / 修复脚本
 ├── src/                    # C# 桌面宿主源码（窗口/WebView2/进程托管/兼容修复）
-├── tests/                  # 回归测试（11 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
+├── tests/                  # 回归测试（18 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
 │                           #   启动参数 / 端口归属 / 宿主日志 / 壳运行期 / 重验证 / 构建接线
 ├── .github/workflows/      # CI 与 GitHub Release 工作流
 ├── docs/AUDIT.md           # 安全审计记录

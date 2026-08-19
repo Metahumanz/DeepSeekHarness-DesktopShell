@@ -77,7 +77,7 @@ namespace Harness
                 string dshDir = Path.Combine(baseDir, "dsh");
                 Directory.CreateDirectory(dshDir);
                 File.WriteAllText(Path.Combine(dshDir, "dsh.cmd"),
-                    "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0dsh-server.ps1\" %*\r\n");
+                    "@echo off\r\nsetlocal\r\necho %*|findstr /C:\"--help\" >nul\r\nif not errorlevel 1 ( echo --no-open & exit /b 0 )\r\necho %*|findstr /C:\"--version\" >nul\r\nif not errorlevel 1 ( echo 0.1.0-rc.7 & exit /b 0 )\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0dsh-server.ps1\" %*\r\n");
                 File.WriteAllText(Path.Combine(dshDir, "dsh-server.ps1"),
                     "param([string]$Profile='web',[int]$Port=3080)\r\n" +
                     "Start-Sleep -Milliseconds 500\r\n" +
@@ -134,7 +134,7 @@ namespace Harness
                 string plainDir = Path.Combine(baseDir, "plain");
                 Directory.CreateDirectory(plainDir);
                 File.WriteAllText(Path.Combine(plainDir, "dummy.cmd"),
-                    "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep -Seconds 30\"\r\n");
+                    "@echo off\r\nsetlocal\r\necho %*|findstr /C:\"--help\" >nul\r\nif not errorlevel 1 ( exit /b 0 )\r\necho %*|findstr /C:\"--version\" >nul\r\nif not errorlevel 1 ( echo 0.1.0-rc.7 & exit /b 0 )\r\npowershell -NoProfile -Command \"Start-Sleep -Seconds 30\"\r\n");
                 string logsB = Path.Combine(baseDir, "logs-b");
                 DeepSeekHarnessDesktop.HostLog.Initialize(logsB, "identity-harness-b");
                 DeepSeekHarnessDesktop.DshProcessManager mgrB = new DeepSeekHarnessDesktop.DshProcessManager();

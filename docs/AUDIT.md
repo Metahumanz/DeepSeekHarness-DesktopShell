@@ -26,10 +26,24 @@
 | 输入 | 校验 | 结论 |
 | --- | --- | --- |
 | Web 端口 | 1–65535（PS 两处、C# Load、NumericUpDown 四处一致） | ✅ 一致 |
-| DSH 版本串 | 字符白名单 `[A-Za-z0-9._+-]`，非法回退默认 `0.1.0-rc.7`（PS + C# 双端） | ✅ 防命令行注入 |
+| DSH 版本串 | 字符白名单 `[A-Za-z0-9._+-]`，非法/缺失回退默认 `0.1.0-rc.8`（PS + C# 双端） | ✅ 防命令行注入 |
 | Profile 名 | 白名单 `[A-Za-z0-9_-]`，非法回退 `web`（PS + C# 双端） | ✅ 防路径穿越 |
 | 窗口尺寸 | 800–10000 × 600–10000 钳制（本次审计补上限） | ✅ |
 | 工作目录 | 空回退用户主目录；不存在时安装向导询问创建 | ✅ |
+
+### 2.1.1 DSH 兼容策略（v1.0.2 起）
+
+- `COMPATIBILITY.json` 使用 schemaVersion 2：
+  `defaultDshVersion=0.1.0-rc.8`、`minimumCompatibleDshVersion=0.1.0-rc.7`、
+  `testedDshVersions=[0.1.0-rc.7, 0.1.0-rc.8]`
+- `defaultDshVersion` 只用于新设置/缺失/无效值；已有用户配置的 `dshVersion=rc.7` 不会被重写
+- `minimumCompatibleDshVersion` 是“过旧不应继续尝试”的下限：rc.6 及以下走安全处理
+- `testedDshVersions` 只用于日志/提示，不是未来版本硬白名单；rc.9/后续正式版只要不低于
+  最低版本就允许尝试，按实际 CLI 能力适配
+- CLI 能力检测：启动前对当前 runner 执行 `--profile <profile> --help`，探测是否支持 `--no-open`；
+  支持才加入，失败保守不加；npx 与 command 共用 `BuildWebLaunchArguments`
+- 推荐插件默认不固定版本：npm 包只写 package 名，GitHub 插件跟随 `main`；仅在确认新版破坏性
+  不兼容时才允许 pin 并写明原因
 
 ### 2.2 路径边界
 

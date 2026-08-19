@@ -9,10 +9,11 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
-# ---- 1. 目录不再锁 npm 0.3.0，必须钉精确 40 位 commit ----
+# ---- 1. 目录不再锁旧 npm 0.3.0，也不再钉旧 commit；跟随已验证的 main ----
 Assert-True "catalog no longer pins dsh-dream-skin@0.3.0" ($text -notmatch 'dsh-dream-skin@0\.3\.0')
-Assert-True "dream-skin pinned to exact 40-char commit" ($text -match 'dsh-dream-skin/archive/[0-9a-f]{40}\.tar\.gz')
-Assert-True "no main.tar.gz anywhere in catalog" ($text -notmatch 'main\.tar\.gz')
+Assert-True "dream-skin follows current main" ($text -match 'dsh-dream-skin/archive/refs/heads/main\.tar\.gz')
+Assert-True "old pinned dream-skin commit removed" ($text -notmatch '28497f5294ba20f44acf8eecc62891297d38fc24')
+Assert-True "catalog no longer pins any 40-char commit" ($text -notmatch 'dsh-dream-skin/archive/[0-9a-f]{40}\.tar\.gz')
 
 # ---- 2. 旧实现 marker 检测函数存在且检查两个能力 marker ----
 Assert-True "Test-DreamSkinPersistenceFix defined" ($text -match 'function Test-DreamSkinPersistenceFix')

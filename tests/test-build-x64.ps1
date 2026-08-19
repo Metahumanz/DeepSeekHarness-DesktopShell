@@ -38,7 +38,8 @@ Assert-True "release.yml still freezes old releases (no delete step)" ($releaseY
 $versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
 Assert-True "root VERSION is 1.0.2 (got: $versionText)" ($versionText -eq '1.0.2')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-True "COMPATIBILITY.json verifiedDshVersion is a valid semver (got: $($compat.verifiedDshVersion))" ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
+Assert-True "COMPATIBILITY.json defaultDshVersion is a valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
+Assert-True "COMPATIBILITY.json minimumCompatibleDshVersion is a valid semver (got: $($compat.minimumCompatibleDshVersion))" ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 
 if ($fail -eq 0) { Write-Host 'BUILD/RELEASE WIRING TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })
