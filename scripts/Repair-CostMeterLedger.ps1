@@ -60,15 +60,32 @@ function Test-SyntheticKey([string]$key) {
            $key.StartsWith('modlens-', [StringComparison]::Ordinal)
 }
 
-function Subtract-Bucket($total, $bucket) {
-    $total.input -= [double]$bucket.input
-    $total.output -= [double]$bucket.output
-    $total.cacheRead -= [double]$bucket.cacheRead
-    $total.cacheWrite -= [double]$bucket.cacheWrite
-    $total.reasoning -= [double]$bucket.reasoning
-    $total.calls -= [int]$bucket.calls
-    $total.cost -= [double]$bucket.cost
+# 修复算法：删除合成桶后，从剩余合法 byProviderModel 重新汇总 totals
+# （替代“总计减合成桶”的减法——旧账本本身已不一致时也能恢复一致）。
+function Set-NodeTotals($node) {
+    if (-not $node.byProviderModel) { return }
+    $input = 0.0; $output = 0.0; $cacheRead = 0.0; $cacheWrite = 0.0
+    $reasoning = 0.0; $calls = 0; $cost = 0.0
+    foreach ($k in @($node.byProviderModel.PSObject.Properties.Name)) {
+        $b = $node.byProviderModel.$k
+        $input += [double]$b.input
+        $output += [double]$b.output
+        $cacheRead += [double]$b.cacheRead
+        $cacheWrite += [double]$b.cacheWrite
+        $reasoning += [double]$b.reasoning
+        $calls += [int]$b.calls
+        $cost += [double]$b.cost
+    }
+    $node.input = $input
+    $node.output = $output
+    $node.cacheRead = $cacheRead
+    $node.cacheWrite = $cacheWrite
+    $node.reasoning = $reasoning
+    $node.calls = $calls
+    $node.cost = $cost
 }
+
+$touched = New-Object System.Collections.Generic.List[object]
 
 foreach ($dayName in @($j.days.PSObject.Properties.Name)) {
     $day = $j.days.$dayName
@@ -76,7 +93,6 @@ foreach ($dayName in @($j.days.PSObject.Properties.Name)) {
         $drop = @($day.byProviderModel.PSObject.Properties | Where-Object { Test-SyntheticKey $_.Name } | ForEach-Object { $_.Name })
         foreach ($k in $drop) {
             $b = $day.byProviderModel.$k
-            Subtract-Bucket $day $b
             $day.byProviderModel.PSObject.Properties.Remove($k)
             $removedBuckets++
             $removedCalls += [int]$b.calls
@@ -84,13 +100,13 @@ foreach ($dayName in @($j.days.PSObject.Properties.Name)) {
             $changed = $true
             Say "日级 $dayName 移除 $k（calls=$($b.calls) cost=$($b.cost)）"
         }
+        if ($drop.Count -gt 0) { $touched.Add($day) }
     }
     foreach ($s in @($day.sessions)) {
         if (-not $s.byProviderModel) { continue }
         $drop = @($s.byProviderModel.PSObject.Properties | Where-Object { Test-SyntheticKey $_.Name } | ForEach-Object { $_.Name })
         foreach ($k in $drop) {
             $b = $s.byProviderModel.$k
-            Subtract-Bucket $s $b
             $s.byProviderModel.PSObject.Properties.Remove($k)
             $removedBuckets++
             $removedCalls += [int]$b.calls
@@ -98,6 +114,7 @@ foreach ($dayName in @($j.days.PSObject.Properties.Name)) {
             $changed = $true
             Say "会话级 $($s.id) 移除 $k（calls=$($b.calls) cost=$($b.cost)）"
         }
+        if ($drop.Count -gt 0) { $touched.Add($s) }
     }
 }
 
@@ -111,6 +128,9 @@ if ($DryRun) {
     exit 0
 }
 
+# 写入前重新汇总所有被修改节点的 totals（顺带归一化旧账本）
+foreach ($node in $touched) { Set-NodeTotals $node }
+
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $bak = "$LedgerPath.before-modlens-clean-$stamp.bak"
 Copy-Item -LiteralPath $LedgerPath -Destination $bak -Force
@@ -121,5 +141,5 @@ $tmp = "$LedgerPath.tmp-$PID"
 [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
 Move-Item -LiteralPath $tmp -Destination $LedgerPath -Force
 
-Ok "已清理 $removedBuckets 个 ModLens 合成桶（$removedCalls 次调用，金额 $removedCost）。"
+Ok "已清理 $removedBuckets 个 ModLens 合成桶（$removedCalls 次调用，金额 $removedCost），并重新汇总 totals。"
 Say '提示：正在运行的 DSH 后端内存中仍有旧账本，重启桌面壳后生效并持续保持干净。'

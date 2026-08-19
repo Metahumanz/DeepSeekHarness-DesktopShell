@@ -683,6 +683,7 @@ namespace DeepSeekHarnessDesktop
                 int removedBuckets = 0;
                 int removedCalls = 0;
                 double removedCost = 0;
+                List<Dictionary<string, object>> touched = new List<Dictionary<string, object>>();
 
                 Dictionary<string, object> days = ledger["days"] as Dictionary<string, object>;
                 if (days != null)
@@ -693,7 +694,7 @@ namespace DeepSeekHarnessDesktop
                         if (day == null) continue;
                         removedBuckets += RemoveSyntheticLedgerBuckets(
                             day, dayPair.Key + " day", log,
-                            ref changed, ref removedCalls, ref removedCost);
+                            ref changed, ref removedCalls, ref removedCost, touched);
 
                         object sessionsObj;
                         if (day.TryGetValue("sessions", out sessionsObj))
@@ -709,7 +710,7 @@ namespace DeepSeekHarnessDesktop
                                         ? Convert.ToString(session["id"]) : "?";
                                     removedBuckets += RemoveSyntheticLedgerBuckets(
                                         session, sid, log,
-                                        ref changed, ref removedCalls, ref removedCost);
+                                        ref changed, ref removedCalls, ref removedCost, touched);
                                 }
                             }
                         }
@@ -729,12 +730,17 @@ namespace DeepSeekHarnessDesktop
                     return true;
                 }
 
+                // 修复算法：删除合成桶后，从剩余合法 byProviderModel 重新汇总
+                // day/session totals（顺带归一化旧账本本身已不一致的总计）。
+                foreach (Dictionary<string, object> parent in touched)
+                    RecomputeLedgerTotals(parent);
+
                 string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
                 string bak = path + ".before-modlens-clean-" + stamp + ".bak";
                 File.Copy(path, bak, true);
                 WriteAtomic(path, serializer.Serialize(ledger));
                 log.AppendLine("Cost meter ledger: removed " + removedBuckets + " synthetic bucket(s) (" +
-                    removedCalls + " calls, " + removedCost.ToString("0.######") + " CNY); backup " + bak);
+                    removedCalls + " calls, " + removedCost.ToString("0.######") + " CNY) and recomputed totals; backup " + bak);
                 return true;
             }
             catch (Exception ex)
@@ -745,7 +751,8 @@ namespace DeepSeekHarnessDesktop
         }
 
         private static int RemoveSyntheticLedgerBuckets(Dictionary<string, object> parent,
-            string label, StringBuilder log, ref bool changed, ref int removedCalls, ref double removedCost)
+            string label, StringBuilder log, ref bool changed, ref int removedCalls, ref double removedCost,
+            List<Dictionary<string, object>> touched)
         {
             int removed = 0;
             if (!parent.ContainsKey("byProviderModel")) return 0;
@@ -763,7 +770,6 @@ namespace DeepSeekHarnessDesktop
             foreach (string key in drop)
             {
                 Dictionary<string, object> b = pm[key] as Dictionary<string, object>;
-                if (b != null) SubtractLedgerBucket(parent, b);
                 pm.Remove(key);
                 removed++;
                 changed = true;
@@ -774,32 +780,51 @@ namespace DeepSeekHarnessDesktop
                 log.AppendLine("Cost meter ledger: drop " + label + " " + key +
                     " (calls=" + calls + " cost=" + cost.ToString("0.######") + ")");
             }
+
+            if (removed > 0) touched.Add(parent);
             return removed;
         }
 
-        private static void SubtractLedgerBucket(Dictionary<string, object> total, Dictionary<string, object> b)
+        // 从剩余合法 byProviderModel 桶重新汇总父节点 totals（替代“总计减合成桶”的减法算法，
+        // 旧账本本身已不一致时也能恢复一致）。
+        private static void RecomputeLedgerTotals(Dictionary<string, object> parent)
         {
-            SubtractLedgerField(total, b, "input");
-            SubtractLedgerField(total, b, "output");
-            SubtractLedgerField(total, b, "cacheRead");
-            SubtractLedgerField(total, b, "cacheWrite");
-            SubtractLedgerField(total, b, "reasoning");
-            SubtractLedgerField(total, b, "calls");
-            SubtractLedgerField(total, b, "cost");
+            if (!parent.ContainsKey("byProviderModel")) return;
+            Dictionary<string, object> pm = parent["byProviderModel"] as Dictionary<string, object>;
+            if (pm == null) return;
+
+            double input = 0, output = 0, cacheRead = 0, cacheWrite = 0, reasoning = 0, cost = 0;
+            int calls = 0;
+            foreach (Dictionary<string, object> b in pm.Values)
+            {
+                if (b == null) continue;
+                input += LedgerNumber(b, "input");
+                output += LedgerNumber(b, "output");
+                cacheRead += LedgerNumber(b, "cacheRead");
+                cacheWrite += LedgerNumber(b, "cacheWrite");
+                reasoning += LedgerNumber(b, "reasoning");
+                calls += LedgerCount(b, "calls");
+                cost += LedgerNumber(b, "cost");
+            }
+            parent["input"] = input;
+            parent["output"] = output;
+            parent["cacheRead"] = cacheRead;
+            parent["cacheWrite"] = cacheWrite;
+            parent["reasoning"] = reasoning;
+            parent["calls"] = calls;
+            parent["cost"] = cost;
         }
 
-        private static void SubtractLedgerField(Dictionary<string, object> total,
-            Dictionary<string, object> b, string name)
+        private static double LedgerNumber(Dictionary<string, object> b, string key)
         {
-            if (!total.ContainsKey(name) || !b.ContainsKey(name)) return;
-            try
-            {
-                if (name == "calls")
-                    total[name] = Convert.ToInt32(total[name]) - Convert.ToInt32(b[name]);
-                else
-                    total[name] = Convert.ToDouble(total[name]) - Convert.ToDouble(b[name]);
-            }
-            catch { }
+            if (!b.ContainsKey(key)) return 0;
+            try { return Convert.ToDouble(b[key]); } catch { return 0; }
+        }
+
+        private static int LedgerCount(Dictionary<string, object> b, string key)
+        {
+            if (!b.ContainsKey(key)) return 0;
+            try { return Convert.ToInt32(b[key]); } catch { return 0; }
         }
 
         private static void WriteAtomic(string path, string content)

@@ -43,6 +43,45 @@ if ($output -notmatch 'modlens-foo:model') { $fail++; 'FAILED: modlens-foo:model
 if ($output -notmatch 'modlens-openrouter:gpt') { $fail++; 'FAILED: modlens-openrouter:gpt not removed' }
 if ($output -match 'openrouter:gpt.*移除') { $fail++; 'FAILED: normal bucket must not be removed' }
 
+# ---- 真实写入 + 重新汇总：把 totals 故意写脏（999），修复后必须等于剩余合法桶之和 ----
+$dirty = Join-Path $testDir 'ledger-dirty.json'
+$j = Get-Content -LiteralPath $ledger -Raw -Encoding UTF8 | ConvertFrom-Json
+$j.days.'2026-08-19'.input = 999
+$j.days.'2026-08-19'.output = 999
+$j.days.'2026-08-19'.calls = 999
+$j.days.'2026-08-19'.cost = 999
+$j.days.'2026-08-19'.sessions[0].input = 888
+$j.days.'2026-08-19'.sessions[0].calls = 888
+$j.days.'2026-08-19'.sessions[0].cost = 888
+[System.IO.File]::WriteAllText($dirty, ($j | ConvertTo-Json -Depth 100), [System.Text.UTF8Encoding]::new($false))
+$out2 = & $hostExe -NoProfile -File $repair -LedgerPath $dirty 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { $fail++; 'FAILED: dirty repair exit != 0' }
+$fixed = Get-Content -LiteralPath $dirty -Raw -Encoding UTF8 | ConvertFrom-Json
+$day = $fixed.days.'2026-08-19'
+$daySumInput = 0.0
+foreach ($k in @($day.byProviderModel.PSObject.Properties.Name)) { $daySumInput += [double]$day.byProviderModel.$k.input }
+$daySumCalls = 0
+foreach ($k in @($day.byProviderModel.PSObject.Properties.Name)) { $daySumCalls += [int]$day.byProviderModel.$k.calls }
+$daySumCost = 0.0
+foreach ($k in @($day.byProviderModel.PSObject.Properties.Name)) { $daySumCost += [double]$day.byProviderModel.$k.cost }
+$sess = $day.sessions[0]
+$sessSumInput = 0.0
+foreach ($k in @($sess.byProviderModel.PSObject.Properties.Name)) { $sessSumInput += [double]$sess.byProviderModel.$k.input }
+$sessSumCost = 0.0
+foreach ($k in @($sess.byProviderModel.PSObject.Properties.Name)) { $sessSumCost += [double]$sess.byProviderModel.$k.cost }
+# 剩余合法桶：日级 openrouter:gpt (input=10, calls=1, cost=0.5)；会话级 openrouter:gpt (input=5, cost=0.25)
+if ([double]$day.input -ne 10.0) { $fail++; "FAILED: day.input not recomputed ($($day.input))" }
+if ([int]$day.calls -ne 1) { $fail++; "FAILED: day.calls not recomputed ($($day.calls))" }
+if ([double]$day.cost -ne 0.5) { $fail++; "FAILED: day.cost not recomputed ($($day.cost))" }
+if ([double]$day.input -ne $daySumInput) { $fail++; 'FAILED: day.input != sum of remaining buckets' }
+if ([int]$day.calls -ne $daySumCalls) { $fail++; 'FAILED: day.calls != sum of remaining buckets' }
+if ([double]$day.cost -ne $daySumCost) { $fail++; 'FAILED: day.cost != sum of remaining buckets' }
+if ([double]$sess.input -ne 5.0) { $fail++; "FAILED: session.input not recomputed ($($sess.input))" }
+if ([double]$sess.cost -ne 0.25) { $fail++; "FAILED: session.cost not recomputed ($($sess.cost))" }
+if ([double]$sess.input -ne $sessSumInput) { $fail++; 'FAILED: session.input != sum of remaining buckets' }
+if ([double]$sess.cost -ne $sessSumCost) { $fail++; 'FAILED: session.cost != sum of remaining buckets' }
+Write-Host "recompute assertions done (day.input=$($day.input) day.calls=$($day.calls) day.cost=$($day.cost) sess.input=$($sess.input) sess.cost=$($sess.cost))"
+
 Remove-Item -LiteralPath $testDir -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail -eq 0) { Write-Host 'REPAIR REGEX TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })
