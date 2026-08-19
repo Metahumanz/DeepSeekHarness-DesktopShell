@@ -72,7 +72,7 @@ New-Item -ItemType Directory -Force -Path $testDshHome | Out-Null
 $appFiles = @(
     'DeepSeekHarness.exe','Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.WinForms.dll',
     'WebView2Loader.dll','DeepSeekHarness.ico','DeepSeekHarness-Light.ico','DeepSeekHarness-Dark.ico',
-    'DeepSeekHarness.svg','Manage-Dsh.ps1','Uninstall-DesktopShell.ps1','version.txt'
+    'DeepSeekHarness.svg','Manage-Dsh.ps1','Uninstall-DesktopShell.ps1','version.txt','COMPATIBILITY.json'
 )
 $pkg = Join-Path $base 'pkg'
 New-Item -ItemType Directory -Force -Path $pkg | Out-Null
@@ -114,6 +114,8 @@ if ((Invoke-HermeticInstall $tB) -ne 0) { $fail++; 'B FAILED: install' }
 $sB = Get-InstalledSettings $tB
 Assert-Equal "B mode=command" $sB.dshRunnerMode 'command'
 Assert-Equal "B path is dsh.cmd" ([IO.Path]::GetFileName([string]$sB.dshPath)) 'dsh.cmd'
+Assert-Equal "B acceptedVersion rc.7" ([string]$sB.acceptedDshCommandVersion) '0.1.0-rc.7'
+Assert-Equal "B acceptedPath is dsh.cmd" ([IO.Path]::GetFileName([string]$sB.acceptedDshCommandPath)) 'dsh.cmd'
 
 # 场景 C（核心回归）：PATH 里有 rc.6（低于验证基线）-> 非交互自动改 npx，且 mode=npx 持久化
 "@echo off`r`necho 0.1.0-rc.6`r`n" | Set-Content -LiteralPath $dshCmd -Encoding ascii
@@ -122,6 +124,7 @@ if ((Invoke-HermeticInstall $tC) -ne 0) { $fail++; 'C FAILED: install' }
 $sC = Get-InstalledSettings $tC
 Assert-Equal "C mode=npx (rc.6 rejected)" $sC.dshRunnerMode 'npx'
 Assert-Equal "C path empty" ([string]$sC.dshPath) ''
+Assert-Equal "C acceptedVersion empty" ([string]$sC.acceptedDshCommandVersion) ''
 
 # 场景 D：PATH 里有 rc.8（高于验证基线，未验证）-> 非交互自动改 npx
 "@echo off`r`necho 0.1.0-rc.8`r`n" | Set-Content -LiteralPath $dshCmd -Encoding ascii

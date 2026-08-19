@@ -39,12 +39,22 @@ $desktopDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settingsPath = Join-Path $desktopDir 'settings.json'
 $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 $defaultDshVersion = '0.1.0-rc.7'
-# 验证基线：只有 rc.7 是已验证版本。官方 DSH 仍是 developer preview，会发 breaking changes：
-# - 比 rc.7 旧 → 不支持，询问
-# - 等于 rc.7 → 已验证，直接使用
-# - 比 rc.7 新 → 未验证，明确询问（不能因为“版本更高”就静默信任）
+# 验证基线唯一来源：安装目录内的 COMPATIBILITY.json（由构建/安装流程随包分发），
+# 缺失或非法时回退硬编码。官方 DSH 仍是 developer preview，会发 breaking changes：
+# - 比基线旧 → 不支持，询问
+# - 等于基线 → 已验证，直接使用
+# - 比基线新 → 未验证，明确询问（不能因为“版本更高”就静默信任）
 # - 无法解析 → 未验证，明确询问
 $VerifiedDshVersion = '0.1.0-rc.7'
+$compatPath = Join-Path $desktopDir 'COMPATIBILITY.json'
+if (Test-Path -LiteralPath $compatPath -PathType Leaf) {
+    try {
+        $compat = Get-Content -LiteralPath $compatPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            $VerifiedDshVersion = [string]$compat.verifiedDshVersion
+        }
+    } catch {}
+}
 $defaultProfilePnpmVersion = '10.33.2'
 
 # 插件目录。分层与可复现性规则（2026-08-19 第二轮审计后）：
@@ -344,7 +354,7 @@ function Resolve-DshCommandWithGate([string]$existing) {
             return $null
         }
         if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行验证基线版本' $false) {
-            return [pscustomobject]@{ Path=$existing; Version=(Normalize-Version $defaultDshVersion); Mode='command' }
+            return [pscustomobject]@{ Path=$existing; Version=(Normalize-Version $defaultDshVersion); Mode='command'; AcceptedPath=$existing; AcceptedVersion='' }
         }
         return $null
     }
@@ -359,7 +369,7 @@ function Resolve-DshCommandWithGate([string]$existing) {
         Warn "检测到现有 DSH $actual，高于 DesktopShell 验证基线 $VerifiedDshVersion；DesktopShell 尚未审核此版本。"
     } else {
         Ok "检测到现有 DSH，直接使用：$existing  ($actual)"
-        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command' }
+        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command'; AcceptedPath=$existing; AcceptedVersion=$actual }
     }
 
     if ($NonInteractive) {
@@ -367,7 +377,8 @@ function Resolve-DshCommandWithGate([string]$existing) {
         return $null
     }
     if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行验证基线版本' $false) {
-        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command' }
+        # 用户明确接受未验证版本：记录为 accepted，后续启动/插件操作以此为准重新验证
+        return [pscustomobject]@{ Path=$existing; Version=$actual; Mode='command'; AcceptedPath=$existing; AcceptedVersion=$actual }
     }
     return $null
 }
@@ -406,12 +417,15 @@ function Resolve-RunnerMode([string]$value) {
 }
 
 function Save-DesktopSettings([string]$dshPath, [string]$version, [string]$profile, [int]$webPort, [string]$workDir,
-    [string]$closeAction, [bool]$developerMode, [string]$runnerMode) {
+    [string]$closeAction, [bool]$developerMode, [string]$runnerMode,
+    [string]$acceptedDshCommandPath = '', [string]$acceptedDshCommandVersion = '') {
     New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
     $obj = Get-SettingsObject
     Set-Property $obj 'dshPath' $(if ($dshPath) { $dshPath } else { '' })
     Set-Property $obj 'dshVersion' (Normalize-Version $version)
     Set-Property $obj 'dshRunnerMode' (Resolve-RunnerMode $runnerMode)
+    Set-Property $obj 'acceptedDshCommandPath' $(if ($acceptedDshCommandPath) { $acceptedDshCommandPath } else { '' })
+    Set-Property $obj 'acceptedDshCommandVersion' $(if ($acceptedDshCommandVersion) { $acceptedDshCommandVersion } else { '' })
     Set-Property $obj 'profileName' (Normalize-Profile $profile)
     Set-Property $obj 'port' $webPort
     Set-Property $obj 'workingDirectory' $workDir
@@ -459,6 +473,8 @@ function Get-CurrentSettings {
         DshPath=$savedPath
         Version=$version
         RunnerMode=$mode
+        AcceptedDshPath=([string]$obj.acceptedDshCommandPath)
+        AcceptedDshVersion=([string]$obj.acceptedDshCommandVersion)
         Profile=$profile
         Port=$webPort
         Work=$work
@@ -522,6 +538,29 @@ function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
     $npx = Get-Npx
 
     $dshCommand = Resolve-DshCommandForOps $current.RunnerMode $current.DshPath
+
+    # 运行时版本重新验证（与 C# 启动前一致）：command 模式下每次执行插件操作前
+    # 重新取 dsh --version，与上次 accepted 的版本比对；变化/无法读取时询问或中止，
+    # 用户确认后更新 accepted 记录。
+    if ($dshCommand -and $current.RunnerMode -eq 'command') {
+        $actualVer = Get-DshVersionFromCommand $dshCommand
+        $acceptedVer = [string]$current.AcceptedDshVersion
+        $needsConfirm = ($acceptedVer -ne '' -and $actualVer -ne $acceptedVer)
+        if ($needsConfirm) {
+            $verDesc = if ($actualVer) { "已从 $acceptedVer 变为 $actualVer" } else { "已无法读取（上次记录 $acceptedVer）" }
+            if ($NonInteractive) {
+                Fail "现有 DSH 版本 $verDesc，未获重新确认；请在管理器中重新确认后继续插件操作。"
+            }
+            if (-not (Read-YesNo "现有 DSH 版本 $verDesc，是否继续使用并记住新版本？" $false)) {
+                Fail '已取消插件操作：请先在管理器中重新确认 DSH。'
+            }
+            $obj = Get-SettingsObject
+            Set-Property $obj 'acceptedDshCommandPath' $dshCommand
+            Set-Property $obj 'acceptedDshCommandVersion' $(if ($actualVer) { $actualVer } else { '' })
+            Write-Utf8NoBom $settingsPath (($obj | ConvertTo-Json -Depth 20))
+            Ok "已记住现有 DSH 版本：$(if ($actualVer) { $actualVer } else { '（无法读取）' })"
+        }
+    }
 
     $shimDir = Join-Path $env:TEMP ('dsh-desktop-pnpm-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
@@ -685,7 +724,14 @@ function Show-Diagnostics([string]$profile) {
 }
 
 function Guided-Setup {
-    Title 'DeepSeek Harness DesktopShell v1.0.0 初始化'
+    # 版本单一来源：安装目录 version.txt（构建/安装流程写入，与根目录 VERSION 一致）
+    $shellVersion = '1.0.0'
+    $verFile = Join-Path $desktopDir 'version.txt'
+    if (Test-Path -LiteralPath $verFile -PathType Leaf) {
+        $raw = (Get-Content -LiteralPath $verFile -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($raw) { $shellVersion = $raw }
+    }
+    Title "DeepSeek Harness DesktopShell v$shellVersion 初始化"
     Write-Host 'DSH 启动策略：'
     Write-Host '  • 系统已有 dsh 命令 -> 直接使用，不重装、不移动'
     Write-Host '  • 现有 dsh 不等于验证基线 rc.7（更旧/更新/无法解析）-> 询问是否改用 npx，不静默接管'
@@ -733,7 +779,10 @@ function Guided-Setup {
     }
     $dev = if ($NonInteractive) { $current.Dev } else { Read-YesNo '启用 WebView2 开发者模式（DevTools）？' $current.Dev }
 
-    Save-DesktopSettings $resolved.Path $resolved.Version $profile $webPort $work $close $dev $resolved.Mode
+    # command 模式记录 accepted 版本（后续每次启动/插件操作重新验证以此为准）
+    $acceptedPath = if ($resolved.Mode -eq 'command') { [string]$resolved.AcceptedPath } else { '' }
+    $acceptedVer = if ($resolved.Mode -eq 'command') { [string]$resolved.AcceptedVersion } else { '' }
+    Save-DesktopSettings $resolved.Path $resolved.Version $profile $webPort $work $close $dev $resolved.Mode $acceptedPath $acceptedVer
 
     $profilePackage = Join-Path $dshHome "profiles\$profile\package.json"
     $profileExisted = Test-Path -LiteralPath $profilePackage -PathType Leaf
@@ -776,6 +825,7 @@ function Interactive-Menu {
         Write-Host '  2. 修改桌面与 DSH 启动配置'
         Write-Host '  3. 安装插件'
         Write-Host '  4. 查看插件列表 / 诊断'
+        Write-Host '  5. 安装自定义 package/spec'
         Write-Host '  0. 退出'
         $choice = Read-Default '选择' '0'
         switch ($choice) {
@@ -787,18 +837,18 @@ function Interactive-Menu {
                     if ($gated) {
                         Ok "使用现有 DSH：$($gated.Path)  ($($gated.Version))"
                         Write-Host 'DesktopShell 按规则直接使用它，不会自动更新、覆盖或卸载。'
-                        Save-DesktopSettings $gated.Path $gated.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev $gated.Mode
+                        Save-DesktopSettings $gated.Path $gated.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev $gated.Mode $gated.AcceptedPath $gated.AcceptedVersion
                     } else {
                         Write-Host '改用官方 npx 运行方式（已持久化为仅 npx，不会再回捡 PATH 里的 dsh）。'
                         $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
                         $resolved = Prepare-NpxDsh $v
-                        Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx'
+                        Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx' '' ''
                     }
                 } else {
                     Write-Host '系统 PATH 中没有 dsh；DesktopShell 使用官方 npx 运行方式。'
                     $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
                     $resolved = Prepare-NpxDsh $v
-                    Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx'
+                    Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx' '' ''
                 }
             }
             '2' {
@@ -817,7 +867,10 @@ function Interactive-Menu {
                 $close = if ($cc -eq '2') {'tray'} elseif ($cc -eq '3') {'exit'} else {'ask'}
                 $dev = Read-YesNo '启用 WebView2 开发者模式（DevTools）？' $current.Dev
                 $savePath = if ($runnerMode -eq 'npx') { $null } else { $current.DshPath }
-                Save-DesktopSettings $savePath $current.Version $profile $p $work $close $dev $runnerMode
+                # 切到 npx 时清空 accepted 记录；command/auto 保留已有 accepted
+                $acceptedPath = if ($runnerMode -eq 'npx') { '' } else { $current.AcceptedDshPath }
+                $acceptedVer = if ($runnerMode -eq 'npx') { '' } else { $current.AcceptedDshVersion }
+                Save-DesktopSettings $savePath $current.Version $profile $p $work $close $dev $runnerMode $acceptedPath $acceptedVer
             }
             '3' {
                 $profilePackage = Join-Path $dshHome "profiles\$($current.Profile)\package.json"
@@ -825,6 +878,18 @@ function Interactive-Menu {
                 Install-Plugins $current.Profile $selected
             }
             '4' { Show-Diagnostics $current.Profile }
+            '5' {
+                # 自定义 spec 独立入口：不要求先选内置插件（“额外插件”提示只在选中内置项后出现）
+                $raw = Read-Host '粘贴自定义 package/spec（多个用分号分隔；例如 pkg@1.2.3 或 GitHub tar 链接）'
+                $specs = @($raw -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                if ($specs.Count -eq 0) { Warn '未输入任何 spec。'; break }
+                foreach ($s in $specs) {
+                    Say "安装自定义插件：$s"
+                    $code = Invoke-ManagedDsh $current.Profile @('plugin','--profile',$current.Profile,'add',$s)
+                    if ($code -ne 0) { Warn "安装失败：$s（退出码 $code）" } else { Ok "已安装：$s" }
+                }
+                Say '插件安装/更新完成。新插件与更新默认在 DSH 后端重启后生效：托盘图标 → 重启 DSH 后端。'
+            }
             '0' { return }
             default { Warn '无效选择。' }
         }
