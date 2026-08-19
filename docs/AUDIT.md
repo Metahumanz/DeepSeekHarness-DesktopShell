@@ -197,3 +197,22 @@ EXE FileVersion 1.0.0.0）成功，zip 自校验 14 文件。
 U3 卸载守卫测试一度按默认 3080 端口把宿主机真实 DSH 当外部后端停止（测试杀掉了测试环境自身）。
 修复：测试在卸载前把临时安装的 settings.json 端口改为探测出的空闲端口（`Get-FreeTcpPort`），
 测试绝不触碰宿主机真实 DSH 端口。
+
+## 10. 2026-08-19 第六轮修复（第三方第三轮审计：优先前 5 项）
+
+| # | 级别 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 1 | P1 | `dsh --version` 失败/无输出（读不到版本）时 `Resolve-DshCommandWithGate` 仍直接按 command 放行并假定 rc.7 | 空版本与"无法解析"同等对待：警告未验证 → 非交互改 npx rc.7 / 交互询问；`tests/test-runner-mode.ps1` 新增场景 E（`exit /b 1` 的 dsh shim → 断言 mode=npx 且 dshPath 空） |
+| 2 | P1 | 端口上已运行的外部 DSH 绕过 rc.7 门槛与 runnerMode，直接附着 | `EnsureStarted` 附着分支先 `ExtractDshVersionFromCommandLine`（`@deepseek-ai/dsh@x.y.z` 正则），非 rc.7 或读不到版本且未经用户确认 → 拒绝附着；`ProbeExternalDsh` 一次性探测；启动时弹窗"附着（未验证）/ 结束并重启为验证版本"（是=附着，否=停止外部并走 停止→补丁→启动，取消=非破坏性附着） |
+| 3 | P1 | 端口开着但 PID/命令行瞬时读取失败时 `externalDsh=false`，兼容器会写文件，随后 EnsureStarted 又拒绝附着 | 规则改为：**只要端口打开，启动前绝不写兼容补丁**（`apply = !probe.PortOpen`），不再依赖第一次 PID 识别成功 |
+| 4 | P1 | 30 秒健康缓存不校验监听 PID 是否仍是 `lastExternalPid`，重新引入身份 TOCTOU | 缓存命中前先 `GetProcessById(lastExternalPid)` 检查存活；PID 消失立即作废缓存并全量复验（netstat+CIM）。彻底方案（TCP owner PID API）留待后续 |
+| 5 | P2 | PowerShell `Invoke-ManagedDsh` 只看 DshPath，不遵守 runnerMode（command 模式无 dsh 时悄悄用 npx） | 新增 `Resolve-DshCommandForOps`：与 C# `EnsureStarted` 完全同语义（npx 永不回捡 PATH；command 无 dsh 直接 Fail；auto 才回退）；插件管理改用它；测试新增 6 项 AST 单元断言（含 command 无 dsh 抛 `dshRunnerMode=command`） |
+
+### 遗留（下一轮）
+
+- #6 `DSH_HOME` 迁移时 install-state 历史串线（应检测迁移并重新计算元数据/要求确认）
+- #7 README "失败不留半安装"措辞收窄（DSH_HOME 副作用不参与回滚；源码安装器非真 stage）
+- #8 升级复制 `webview2-data` 应在停旧壳之后（当前顺序可能撞锁文件）
+- #9 Cost Meter 账本修复改为"从剩余合法 bucket 重新汇总"（当前减法在旧账本已不一致时可能出负值）
+- #10 新 Profile 默认选项改 0（纯 DSH），核心推荐标为推荐但需主动按 1
+- 小清理：Install-FromGitHub 注释/文案残留"供应链"字样；SHA256SUMS 校验要求文件名+hash 同时匹配（当前退化为任意条目匹配）；main 分支保护（GitHub 设置，非代码）
