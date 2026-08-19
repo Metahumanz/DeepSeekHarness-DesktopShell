@@ -1,5 +1,8 @@
 # DeepSeek Harness DesktopShell
 
+> ⚠️ **非 DeepSeek 官方项目**：DesktopShell 是面向官方 DeepSeek Harness
+> （<https://github.com/deepseek-ai/deepseek-harness>，MIT 许可）的社区 Windows 桌面宿主。
+
 把DeepSeek Harness变成真正的Windows桌面应用。
 
 DesktopShell不是DSH的替代实现：
@@ -42,7 +45,8 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
 > 无法从 git remote 推断仓库。`-Tag` 同时把下载锁定到对应 Release，
 > 并强制校验同源 `SHA256SUMS.txt`（不一致即中止）。
-> 如果 `v1.0.0` 尚未发布，可改用仓库根目录的 `install.bat`（main 分支脚本）或源码安装。
+> 如果 `v1.0.0` 尚未发布，可双击仓库根目录的 `install-from-source.bat`（从当前 checkout
+> 源码安装，与 Release 共用同一安装核心），或直接运行 `scripts/Install-Desktop.ps1`。
 
 #### 无人值守安装
 
@@ -193,7 +197,8 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.0`�
 ├── tests/                  # 回归测试：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛
 ├── .github/workflows/      # CI 与 GitHub Release 工作流
 ├── docs/AUDIT.md           # 安全审计记录
-├── install.bat             # 双击入口（git clone 后使用）
+├── install-latest.bat        # 双击入口：从 GitHub 下载 latest Release 安装
+├── install-from-source.bat   # 双击入口：从当前 checkout 源码安装
 ├── LICENSE                 # MIT
 └── THIRD_PARTY_NOTICES.md  # 第三方组件与许可声明
 ```

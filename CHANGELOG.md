@@ -4,6 +4,35 @@
 
 
 
+
+## v1.0.0 修订四（同 tag 覆盖发布，2026-08-19）
+
+第七轮审计修复（含启动阻断 bug）：
+
+- **修复启动命令非法拼接**：`--profile X` 后多余 `web` 子命令会被 DSH `rejectParentOptions('web')`
+  拒绝（"web takes none of parent --profile ..."），导致壳无法启动任何 DSH——已改为统一
+  `--profile <profile> --port N` 形式；新增 `tests/test-launch-args.ps1`（源码守卫 + 真实 CLI 探测）
+- **每次启动前重新验证现有 dsh 版本**：settings 记录 `acceptedDshCommandPath/Version`，
+  C# 启动与 PS 插件操作前重新读 `dsh --version`，变化/无法读取时询问并更新记录
+- **DSH_HOME 漂移确认**：卸载时若当前环境 DSH_HOME ≠ install-state 记录值，交互列出两个路径
+  让用户选择删除哪一个（无人值守拒绝猜测，降级为仅卸载壳）
+- **移除常驻 DSH 进程的 Git rewrite**：GIT_CONFIG_* 环境变量不再注入 DSH 进程树
+  （避免 Agent/终端执行 git@github.com:... 时被强制改 https）；git+ssh→https 降级仅保留在
+  插件安装事务的进程内作用域
+- **源码安装器复用发布安装核心**：编译到临时 stage → 组装与 Release 相同的 app 目录 →
+  调用 Install-Release.ps1；目录所有权/事务提交/升级回滚/DSH_HOME 迁移检测只有一份实现
+- **卸载多 DSH 实例 + partial 状态**：完整卸载前枚举其它 DSH Web 进程并停止；DSH_HOME
+  删除失败时结果状态改为 partial（不再宣称完整卸载成功）
+- **健康检查改用原生 TCP 表**：P/Invoke GetExtendedTcpTable 直接拿端口 owner PID
+  （不拉 netstat），owner PID 变化才做 CIM 验证，取消 30 秒时间窗
+- **版本单一来源**：根目录 VERSION + COMPATIBILITY.json（verifiedDshVersion）随包分发；
+  EXE VersionInfo、manifest assemblyIdentity、管理器标题/基线全部同步读取
+- **Release 工作流**：拆分为只读 build job + 仅 contents:write 的 publish job；补 PowerShell
+  5.1 门禁；RC 版本自动 prerelease + 非 latest；Actions 钉 commit SHA；PSScriptAnalyzer 钉 1.25.0
+- **自定义插件入口**：管理菜单新增"5. 安装自定义 package/spec"（不要求先选内置插件）
+- Cost Meter 日志单位 CNY → USD（dsh-cost-meter 1.5.10 字段为美元）
+- 根目录 install.bat 拆分为 install-latest.bat / install-from-source.bat；README 加"非官方项目"声明
+
 ## v1.0.0 修订三（同 tag 覆盖发布，2026-08-19）
 
 第六轮审计（6-10 项 + 小清理）修复：

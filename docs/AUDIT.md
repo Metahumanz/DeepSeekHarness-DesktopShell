@@ -232,3 +232,33 @@ U3 卸载守卫测试一度按默认 3080 端口把宿主机真实 DSH 当外部
 
 - 代码层面 6-10 + 小清理已全部收口；仅剩 GitHub 仓库设置（非代码）：main 分支保护 + required CI（当前 `protected:false`）、提交签名（Vigilant Mode）
 - v1.1 产品化（下载管理/权限中心/自动更新/Apps & Features/代码签名/主题事件驱动/artifact attestation）不在 v1.0.0 范围
+
+## 12. 2026-08-19 第八轮修复（第三方第四轮审计：启动阻断 bug + 审计项 1-12）
+
+### 启动阻断级（先修）
+
+| 问题 | 修复 |
+| --- | --- |
+| `--profile X web --port N` 非法拼接：`web` 子命令被 `rejectParentOptions('web')` 拒绝（"web takes none of parent --profile..."），壳启动任何 DSH 都立即失败 | 统一改为 `--profile <profile> --port N`（官方 CLI 中 `dsh web` 即 `dsh --profile web` 别名，不可叠加）；`tests/test-launch-args.ps1`：源码级守卫（禁止 `QuoteArg(profile) + " web"` 拼接）+ 真实 CLI 探测（旧形态必现 reject、新形态通过 launcher 解析），并接入 verify 门禁 |
+
+### 审计项
+
+| # | 级别 | 问题 | 修复 |
+| --- | --- | --- | --- |
+| 1 | P1 | 版本门槛只在首次安装生效；保存 dshPath 后每次启动/插件操作不再重新验证（dsh.cmd 升级成 rc.8 会被直接运行） | settings 新增 `acceptedDshCommandPath/acceptedDshCommandVersion`：C# 每次启动前（StartAsync + RestartBackendAsync）与 PS 每次插件操作前重新读 `dsh --version`，与 accepted 比对；变化/无法读取 → 询问（确认后更新记录）/ 非交互中止 |
+| 2 | P1 | DSH_HOME 两个事实来源：运行期用环境变量，卸载器用 install-state 记录值，运行期漂移会导致卸载删错"旧环境" | 卸载器检测 `state.dshHome ≠ 当前环境 DSH_HOME`：交互 YesNoCancel 列出两个路径让用户选择删除哪一个；`-Force` 拒绝猜测并降级为仅卸载壳 |
+| 3 | P1 | 常驻 DSH 的 GIT_CONFIG rewrite 污染整个进程树（SSH 私有仓库被强制改 https） | C# 启动 DSH 不再注入 GIT_CONFIG_*；git+ssh→https 仅保留在 `Invoke-ManagedDsh` 插件事务的进程内作用域 |
+| 4 | P2 | 源码安装器是第二套安装逻辑（无目录所有权/事务保护）；且 DSH_HOME 快照在向导后才计算 | `Install-Desktop.ps1` 重写：源码编译到临时 stage → 组装与 Release 完全相同的 app 目录（含 COMPATIBILITY.json）→ 调用 `Install-Release.ps1` 核心；目录保护/升级/回滚/迁移/向导一份实现。版本元数据（EXE/VersionInfo/manifest/version.txt）统一来自根目录 VERSION |
+| 5 | P2 | 30 秒健康缓存"原 PID 存活"≠"仍持有端口" | `GetExtendedTcpTable`（P/Invoke）每次廉价取端口 owner PID：owner 未变直接健康，变化才做 CIM 验证；取消时间窗；原生失败退回 netstat |
+| 6 | P2 | 卸载只处理设置端口的一个 DSH；DSH_HOME 删除失败仍宣称完整卸载 | 完整卸载前枚举其它 DSH Web 进程（CIM 命令行特征）并停止；删除失败结果状态改为 `partial`（明确"部分卸载完成"） |
+| 7 | P2 | 同 tag 覆盖发布使 v1.0.0 zip 可变；RC 版本被当成正式版 | 本轮之后 v1.0.0 冻结（下一次修复走 v1.0.1，另见提交 B 移除重发布删除步骤）；`softprops` 增加 `prerelease`（版本含 `-` 时 true）与 `make_latest` |
+| 8 | P2 | Release 门禁缺 PowerShell 5.1 | Release build job 增加 `powershell -NoProfile -File tests/verify.ps1 -SkipAnalyzer` |
+| 9 | P2 | 架构/版本元数据非单一来源（anycpu、manifest 1.0.0.0 硬编码、多处 v1.0.0 文本） | 根目录 `VERSION`（Build-Release 默认读取；Install-Desktop 源码编译读取）+ `COMPATIBILITY.json`（verifiedDshVersion，PS/C# 双端运行时读取，随包分发）；manifest assemblyIdentity 版本随构建注入 |
+| 10 | P2 | "只装自定义插件"走不通（额外 spec 提示在内置安装流程之后） | 管理菜单新增"5. 安装自定义 package/spec"独立入口 |
+| 11 | P2 | Cost Meter 日志单位错写 CNY | 改为 USD（dsh-cost-meter 1.5.10 字段为美元） |
+| 12 | P3 | 根目录 install.bat 语义误导（装的是 latest Release 而非当前 checkout） | 拆分为 `install-latest.bat`（GitHub latest）与 `install-from-source.bat`（当前 checkout 源码安装）；README 同步并加"非官方项目"徽标 |
+
+### 非阻断工程化（已一并收口）
+
+Actions 全部钉 commit SHA（checkout v4.2.2 / upload-artifact v4.6.2 / download-artifact v4.2.1 / gh-release v2.2.1）；
+PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:write 的 publish job。
