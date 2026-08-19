@@ -2846,7 +2846,9 @@ namespace DeepSeekHarnessDesktop
             menu.Items.Add(new ToolStripSeparator());
 
             ToolStripMenuItem quit = new ToolStripMenuItem("退出 DeepSeek Harness");
-            quit.Click += delegate { ShutdownAndClose(); };
+            // 退出动作延迟到当前 ToolStrip 点击消息完成后执行，避免 Click handler 返回后
+            // WinForms 自动收起菜单时访问已 Dispose 的 ContextMenuStrip。
+            quit.Click += delegate { BeginInvoke((MethodInvoker)ShutdownAndClose); };
             menu.Items.Add(quit);
 
             return menu;
