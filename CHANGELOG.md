@@ -77,9 +77,9 @@
   构造 Web 启动参数 → 进入现有启动/Restart 生命周期；`--no-open` 通过 `--profile <profile> --help`
   实际探测，支持才加入，探测失败保守不加；npx 与 command 共用同一套参数构造
 - **Web 启动参数保持**：`--profile <profile> --port <明确端口>`，不恢复 `dsh web`，也不引入 `--port 0`
-- **推荐插件默认不固定版本**：npm 推荐项改为纯 package 名，GitHub 插件跟随 `main`；
-  Dream Skin 当前 main 已验证仍含 sticky restore 与 `/dream-skin/api` marker，取消旧 commit pin；
-  只有确认破坏性不兼容的插件才允许继续 pin 并写明原因
+- **推荐插件保持保守 pin**：当前未完成逐项真实安装/升级验证，因此不批量取消 pin、不批量跟随
+  GitHub `main`；Dream Skin 继续 pin 到已验证 commit（含 sticky restore 与 `/dream-skin/api`
+  marker）。后续逐项确认普通升级不破坏 DesktopShell 后，再取消对应 pin
 - **修复菜单 Dispose 生命周期**：托盘退出与 WebView 右键菜单释放都延迟到 WinForms 菜单消息
   处理完成后执行，避免 `ContextMenuStrip ObjectDisposedException`（分别有源码级回归测试）
 - **测试同步升级**：`test-version-source` / `test-dsh-version` / `test-accepted-dsh` /

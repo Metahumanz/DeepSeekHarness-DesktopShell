@@ -42,8 +42,8 @@
   最低版本就允许尝试，按实际 CLI 能力适配
 - CLI 能力检测：启动前对当前 runner 执行 `--profile <profile> --help`，探测是否支持 `--no-open`；
   支持才加入，失败保守不加；npx 与 command 共用 `BuildWebLaunchArguments`
-- 推荐插件默认不固定版本：npm 包只写 package 名，GitHub 插件跟随 `main`；仅在确认新版破坏性
-  不兼容时才允许 pin 并写明原因
+- 推荐插件保持保守 pin：当前未完成逐项真实安装/升级验证，因此不批量取消 pin、不批量跟随
+  GitHub `main`；Dream Skin 等有兼容依赖的插件继续 pin 到已验证 commit，后续逐项确认后再取消 pin
 
 ### 2.2 路径边界
 
