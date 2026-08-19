@@ -226,14 +226,16 @@ function Get-DshCommand {
 function Get-DshVersionFromCommand([string]$dsh) {
     if (-not $dsh -or -not (Test-Path -LiteralPath $dsh -PathType Leaf)) { return $null }
     try {
-        $out = & $dsh --version 2>$null | Select-Object -First 1
-        if ($LASTEXITCODE -eq 0 -and $out) {
-            $text = ([string]$out).Trim()
-            if ($text -match '(?<v>\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?)') { return $Matches['v'] }
-            return $text
-        }
-    } catch {}
-    return $null
+        # 注意：不能依赖 $LASTEXITCODE——Windows PowerShell 5.1 下 .cmd 经管道调用时
+        # $LASTEXITCODE 可能保持 -1（输出正常却判失败）。只看输出内容；
+        # 读不到内容时返回 $null，由调用方按“未验证”走门槛。
+        $raw = (& $dsh --version 2>$null)
+        $out = @($raw | Select-Object -First 1)
+        if ($out.Count -eq 0) { return $null }
+        $text = ([string]($out -join '')).Trim()
+        if ($text -match '(?<v>\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?)') { return $Matches['v'] }
+        return $text
+    } catch { return $null }
 }
 
 function Get-DshVersionFromNpx([string]$version) {
@@ -241,14 +243,14 @@ function Get-DshVersionFromNpx([string]$version) {
     $npx = Get-Npx
     $version = Normalize-Version $version
     try {
-        $out = & $npx -y "@deepseek-ai/dsh@$version" --version 2>$null | Select-Object -First 1
-        if ($LASTEXITCODE -eq 0 -and $out) {
-            $text = ([string]$out).Trim()
-            if ($text -match '(?<v>\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?)') { return $Matches['v'] }
-            return $text
-        }
-    } catch {}
-    return $null
+        # 同 Get-DshVersionFromCommand：不依赖 $LASTEXITCODE（5.1 管道调用 .cmd 不更新它）
+        $raw = (& $npx -y "@deepseek-ai/dsh@$version" --version 2>$null)
+        $out = @($raw | Select-Object -First 1)
+        if ($out.Count -eq 0) { return $null }
+        $text = ([string]($out -join '')).Trim()
+        if ($text -match '(?<v>\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?)') { return $Matches['v'] }
+        return $text
+    } catch { return $null }
 }
 
 function Prepare-NpxDsh([string]$version) {
@@ -330,11 +332,21 @@ function Test-DshVersionSupported([string]$version) {
 }
 
 # 带验证基线的现有 dsh 解析：未验证/不支持时询问或自动改用 npx，而不是静默接管。
+# 注意：“读不到版本”（--version 失败/无输出）与“版本串无法解析”同等对待——
+# 一律按未验证走门槛，绝不按默认 rc.7 静默放行。
 function Resolve-DshCommandWithGate([string]$existing) {
     $actual = Get-DshVersionFromCommand $existing
     if ([string]::IsNullOrWhiteSpace($actual)) {
-        Ok "检测到现有 DSH（无法读取版本号），直接使用：$existing"
-        return [pscustomobject]@{ Path=$existing; Version=(Normalize-Version $defaultDshVersion); Mode='command' }
+        Warn "检测到现有 DSH，但无法读取其版本号（$existing）；DesktopShell 未验证此版本。"
+        Warn "DesktopShell 当前验证基线：$VerifiedDshVersion"
+        if ($NonInteractive) {
+            Warn "非交互模式：改用 npx @deepseek-ai/dsh@$VerifiedDshVersion。"
+            return $null
+        }
+        if (Read-YesNo '是否仍要使用现有 DSH？选否则改用 npx 运行验证基线版本' $false) {
+            return [pscustomobject]@{ Path=$existing; Version=(Normalize-Version $defaultDshVersion); Mode='command' }
+        }
+        return $null
     }
 
     $cmp = Compare-DshVersion $actual $VerifiedDshVersion
@@ -487,11 +499,29 @@ function Update-AllowBuilds([string]$profile, [string[]]$packages) {
     Ok "已更新 build allowlist：$yaml"
 }
 
+# 与 C# 端 EnsureStarted 完全一致的 runnerMode 决策：
+#   npx      -> 永远返回 $null（用 npx），即使 PATH 里有 dsh
+#   command  -> 只用现有 dsh，找不到直接 Fail（绝不悄悄转 npx）
+#   auto     -> 有 dsh 用 dsh，否则 $null（用 npx）
+function Resolve-DshCommandForOps([string]$runnerMode, [string]$savedPath) {
+    $mode = Resolve-RunnerMode $runnerMode
+    if ($mode -eq 'npx') { return $null }
+    $cmd = $savedPath
+    if ($cmd -and -not (Test-Path -LiteralPath $cmd -PathType Leaf)) { $cmd = $null }
+    if (-not $cmd) { $cmd = Get-DshCommand }
+    if (-not $cmd -and $mode -eq 'command') {
+        Fail '设置要求使用现有 dsh（dshRunnerMode=command），但 PATH 中没有 dsh 命令。请安装官方 DSH，或在管理器中改用“自动/仅 npx”。'
+    }
+    return $cmd
+}
+
 function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
     $current = Get-CurrentSettings
     Ensure-Node
     $pnpmVersion = Get-ProfilePnpmVersion $profile
     $npx = Get-Npx
+
+    $dshCommand = Resolve-DshCommandForOps $current.RunnerMode $current.DshPath
 
     $shimDir = Join-Path $env:TEMP ('dsh-desktop-pnpm-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
@@ -504,7 +534,7 @@ function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
     $oldGitKey1 = $env:GIT_CONFIG_KEY_1; $oldGitValue1 = $env:GIT_CONFIG_VALUE_1
     $oldGitKey2 = $env:GIT_CONFIG_KEY_2; $oldGitValue2 = $env:GIT_CONFIG_VALUE_2
     try {
-        $runnerDir = if ($current.DshPath) { Split-Path -Parent $current.DshPath } else { Split-Path -Parent $npx }
+        $runnerDir = if ($dshCommand) { Split-Path -Parent $dshCommand } else { Split-Path -Parent $npx }
         $env:Path = "$shimDir;$runnerDir;$oldPath"
         $env:GIT_CONFIG_COUNT = '3'
         $env:GIT_CONFIG_KEY_0 = 'url.https://github.com/.insteadOf'
@@ -514,9 +544,9 @@ function Invoke-ManagedDsh([string]$profile, [string[]]$arguments) {
         $env:GIT_CONFIG_KEY_2 = 'url.https://github.com/.insteadOf'
         $env:GIT_CONFIG_VALUE_2 = 'git@github.com:'
 
-        if ($current.DshPath) {
-            Say "插件操作：现有 DSH $($current.DshPath)；Profile pnpm@$pnpmVersion"
-            & $current.DshPath @arguments | Out-Host
+        if ($dshCommand) {
+            Say "插件操作：现有 DSH $dshCommand；Profile pnpm@$pnpmVersion"
+            & $dshCommand @arguments | Out-Host
         } else {
             Say "插件操作：npx @deepseek-ai/dsh@$($current.Version)；Profile pnpm@$pnpmVersion"
             & $npx -y "@deepseek-ai/dsh@$($current.Version)" @arguments | Out-Host
