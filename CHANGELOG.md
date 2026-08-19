@@ -69,8 +69,11 @@
 ## v1.0.2 追加：DSH rc.8 兼容策略与插件未来维护（2026-08-20）
 
 - **兼容策略从“唯一验证版本”改为“默认 + 最低 + 测试”**：`COMPATIBILITY.json` 升到
-  schemaVersion 2，`defaultDshVersion=0.1.0-rc.8`、`minimumCompatibleDshVersion=0.1.0-rc.7`、
-  `testedDshVersions=[rc.7, rc.8]`；新设置/缺失/无效值使用默认 rc.8，已有 rc.7 配置继续保留
+  schemaVersion 2，`defaultDshVersion=0.1.0-rc.7`、`minimumCompatibleDshVersion=0.1.0-rc.7`、
+  `testedDshVersions=[rc.7, rc.8]`；新设置/缺失/无效值使用默认 rc.7，已有 rc.7 配置继续保留。
+  当前默认暂回退 rc.7：上游 `@deepseek-ai/dsh@0.1.0-rc.8` 的 npm 依赖发布不完整
+  （`@deepseek-ai/dsh-agent-loop@^0.1.0-rc.8` ETARGET），rc.8 仍保留在 tested/已知兼容信息中，
+  待上游补发后仅需恢复默认版本即可
 - **未来 DSH 版本不再因不在 tested 列表被强制回退**：rc.6 及以下按过旧安全处理；rc.7/rc.8
   直接使用；rc.9/后续正式版只要不低于最低版本就允许尝试，按实际 CLI 能力适配
 - **统一 CLI 能力检测层**：启动流程改为 Resolve runner → 实际版本 → 探测 CLI capabilities →

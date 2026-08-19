@@ -43,7 +43,7 @@ $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 # - minimumCompatibleDshVersion：明确过旧的版本下限，低于它不应继续尝试。
 # - testedDshVersions：实际验证过的版本，只用于日志/提示，不作为未来版本硬白名单。
 # 兼容旧 schema v1：只有 verifiedDshVersion 时，默认/最低/测试都回落到该版本。
-$DefaultDshVersion = '0.1.0-rc.8'
+$DefaultDshVersion = '0.1.0-rc.7'
 $MinimumCompatibleDshVersion = '0.1.0-rc.7'
 $TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8')
 $compatPath = Join-Path $desktopDir 'COMPATIBILITY.json'
@@ -267,15 +267,24 @@ function Get-DshVersionFromNpx([string]$version) {
     Ensure-Node
     $npx = Get-Npx
     $version = Normalize-Version $version
-    try {
-        # 同 Get-DshVersionFromCommand：不依赖 $LASTEXITCODE（5.1 管道调用 .cmd 不更新它）
-        $raw = (& $npx -y "@deepseek-ai/dsh@$version" --version 2>$null)
-        $out = @($raw | Select-Object -First 1)
-        if ($out.Count -eq 0) { return $null }
-        $text = ([string]($out -join '')).Trim()
-        if ($text -match '(?<v>\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?)') { return $Matches['v'] }
-        return $text
-    } catch { return $null }
+    # 不吞 stderr：npm 的 ETARGET / 缺失依赖 / 日志路径必须透出，便于判断上游发布是否完整。
+    $raw = (& $npx -y "@deepseek-ai/dsh@$version" --version 2>&1)
+    $text = ($raw | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "无法通过 npx 启动 @deepseek-ai/dsh@$version：没有收到任何输出。"
+    }
+    if ($text -match '(?<v>\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?)') {
+        return $Matches['v']
+    }
+    $missing = ''
+    if ($text -match 'No matching version found for (\S+)') { $missing = $Matches[1] }
+    $logPath = ''
+    if ($text -match '(?im)^.*log of this run can be found in:\s*(.+)$') { $logPath = $Matches[1].Trim() }
+    $detail = "无法通过 npx 安装 @deepseek-ai/dsh@$version。"
+    if ($missing) { $detail += " 缺失依赖/版本：$missing" }
+    if ($logPath) { $detail += " npm 日志：$logPath" }
+    $detail += " 原始输出：`r`n$text"
+    throw $detail
 }
 
 function Prepare-NpxDsh([string]$version) {

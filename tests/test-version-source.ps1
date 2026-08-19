@@ -20,6 +20,9 @@ Assert-True "Manage-Dsh reads defaultDshVersion" ($manage -match '\$DefaultDshVe
 Assert-True "Manage-Dsh reads minimumCompatibleDshVersion" ($manage -match '\$MinimumCompatibleDshVersion = \[string\]\$compat\.minimumCompatibleDshVersion')
 Assert-True "Manage-Dsh reads testedDshVersions" ($manage -match '\$TestedDshVersions = \$parsed')
 Assert-True "npx fallback version derives from default" ($manage -match '\$defaultDshVersion = \$DefaultDshVersion')
+Assert-True "Get-DshVersionFromNpx does not swallow stderr" ($manage -notmatch 'Get-DshVersionFromNpx[\s\S]*?2>\$null')
+Assert-True "Get-DshVersionFromNpx surfaces ETARGET" ($manage -match 'No matching version found for')
+Assert-True "Get-DshVersionFromNpx surfaces npm log path" ($manage -match 'log of this run can be found in')
 
 # ---- 3. 根 VERSION 与 release.yml 默认一致 ----
 $versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()

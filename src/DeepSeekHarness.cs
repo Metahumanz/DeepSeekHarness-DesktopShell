@@ -1065,7 +1065,7 @@ namespace DeepSeekHarnessDesktop
         private static void EnsureCompatibilityLoaded()
         {
             if (defaultDshVersionCache != null) return;
-            defaultDshVersionCache = "0.1.0-rc.8";
+            defaultDshVersionCache = "0.1.0-rc.7";
             minimumCompatibleDshVersionCache = "0.1.0-rc.7";
             testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8" };
             try
