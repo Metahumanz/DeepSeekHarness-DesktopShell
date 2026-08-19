@@ -3,8 +3,10 @@
 )
 
 # 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
-# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、十一项回归测试。
+# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、十五项回归测试。
 # 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
+# 注意：托盘、WebView2、连续重启、Dream Skin 真实恢复属于人工 Windows 验收
+#（见 docs/DREAM_SKIN_ACCEPTANCE.md），源码级测试不能替代。
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -20,7 +22,11 @@ $tests = @(
     'test-host-log.ps1',
     'test-shell-runtime.ps1',
     'test-accepted-dsh.ps1',
-    'test-build-x64.ps1'
+    'test-build-x64.ps1',
+    'test-restart-state.ps1',
+    'test-dream-skin-pin.ps1',
+    'test-release-immutable.ps1',
+    'test-version-source.ps1'
 )
 
 Write-Host "== verify: parse ($($hostExe | Split-Path -Leaf)) =="

@@ -1,11 +1,13 @@
 name: Release
 
 # 发布 GitHub Release：
-# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.1）
-#   （tag 已存在时校验其必须指向当前 HEAD，否则拒绝发布）
+# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.2）
+#   （tag 已存在时校验其必须指向当前 HEAD，否则拒绝发布；Release 已存在直接失败）
 # - 或推送 v* tag 自动触发（版本号取 tag，去掉 v 前缀）
 # - 版本单一来源门禁：无论哪种触发方式，版本号必须等于仓库根目录 VERSION 文件，
 #   不一致直接失败（防止手滑发错版本）。
+# - 发布冻结：本工作流不再删除/覆盖已有 Release——发布前显式检查 `gh release view`，
+#   已存在即失败（"禁止覆盖，请增加版本号"）。
 # 产物：release/DeepSeekHarness-DesktopShell.zip + SHA256SUMS.txt（x64）
 # （一键安装 Install-FromGitHub.ps1 会下载这两个资产并强制校验 SHA256）
 #
@@ -20,9 +22,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 1.0.1)'
+        description: 'Version to release (e.g. 1.0.2)'
         required: true
-        default: '1.0.1'
+        default: '1.0.2'
   push:
     tags:
       - 'v*'
@@ -136,6 +138,16 @@ jobs:
             git tag $tag
             git push origin $tag
           }
+
+      - name: Refuse to overwrite existing release
+        shell: pwsh
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          if (gh release view "$tag" --repo Metahumanz/DeepSeekHarness-DesktopShell 2>$null) {
+            Write-Error "Release v${{ steps.version.outputs.version }} 已存在，禁止覆盖，请增加版本号。"
+            exit 1
+          }
+          Write-Host "Release $tag 不存在，可以创建。"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda   # v2.2.1

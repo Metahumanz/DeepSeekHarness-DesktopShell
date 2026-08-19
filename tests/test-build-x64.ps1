@@ -30,13 +30,13 @@ foreach ($pair in @(
 Assert-True "Build-Release defaults version from root VERSION" ($buildRelease -match "'VERSION'" -and $buildRelease -match '\$Version = \$raw')
 Assert-True "Install-Desktop reads root VERSION" ($installDesktop -match '\$versionFile = Join-Path \$repoRoot ''VERSION''')
 Assert-True "Install-Release ships COMPATIBILITY.json" ($installRelease -match "'COMPATIBILITY\.json'")
-Assert-True "release.yml defaults to repo version 1.0.1" ($releaseYml -match "default: '1\.0\.1'")
+Assert-True "release.yml defaults to repo version 1.0.2" ($releaseYml -match "default: '1\.0\.2'")
 Assert-True "release.yml gates version against VERSION file" ($releaseYml -match 'Get-Content -LiteralPath VERSION -Raw')
 Assert-True "release.yml still freezes old releases (no delete step)" ($releaseYml -notmatch 'delete_release|delete-existing')
 
 # ---- 4. 根目录版本文件与兼容基线内容自洽 ----
 $versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
-Assert-True "root VERSION is 1.0.1 (got: $versionText)" ($versionText -eq '1.0.1')
+Assert-True "root VERSION is 1.0.2 (got: $versionText)" ($versionText -eq '1.0.2')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True "COMPATIBILITY.json verifiedDshVersion is a valid semver (got: $($compat.verifiedDshVersion))" ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 

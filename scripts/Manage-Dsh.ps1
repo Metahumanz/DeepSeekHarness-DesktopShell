@@ -82,7 +82,7 @@ $PluginCatalog = @(
     # ---- 高级/实验（默认不装） ----
     [pscustomobject]@{ No=12; Id='auto-mode';     Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@0.1.4'; Tier='advanced'; Allow=@() },
     [pscustomobject]@{ No=13; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter@1.5.10'; Tier='advanced'; Allow=@(); Note='统计参考，不等于官方账单' },
-    [pscustomobject]@{ No=14; Id='dream-skin';    Name='Dream Skin 主题';           Spec='dsh-dream-skin@0.3.0'; Tier='advanced'; Allow=@() },
+    [pscustomobject]@{ No=14; Id='dream-skin';    Name='Dream Skin 主题';           Spec='https://github.com/RevolutionLA/dsh-dream-skin/archive/28497f5294ba20f44acf8eecc62891297d38fc24.tar.gz'; Tier='advanced'; Allow=@(); Note='固定 commit（含 sticky restore 加固与 host-backed 持久化，修复重启回退问题）' },
     [pscustomobject]@{ No=15; Id='status';        Name='Status Rotator 状态文案';   Spec='dsh-status-rotator@0.3.0'; Tier='advanced'; Allow=@() },
     [pscustomobject]@{ No=16; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@() },
     [pscustomobject]@{ No=17; Id='modlens';       Name='ModLens 视觉包装';          Spec='@liustack/modlens@3.21.1'; Tier='advanced'; Allow=@() },
@@ -692,8 +692,41 @@ function Configure-BetterSidebar {
     }
 }
 
+# Dream Skin 持久化修复检测：上游修复版与旧 npm 0.3.0 的 package.json 版本号完全相同
+# （都是 0.3.0），单看版本号分不出来——必须检查源码里的两个能力 marker：
+#   'dsh-dream-skin: sticky skin restore'  （sticky restore 加固）
+#   '/dream-skin/api'                       （host-backed 持久化接口）
+# 两个都存在才算“已修”，缺任意一个都按旧实现处理。
+function Test-DreamSkinPersistenceFix([string]$profile) {
+    $client = Join-Path $dshHome ("profiles\{0}\node_modules\dsh-dream-skin\lib\client.js" -f $profile)
+    if (-not (Test-Path -LiteralPath $client -PathType Leaf)) { return $false }
+    try {
+        $text = Get-Content -LiteralPath $client -Raw -Encoding UTF8
+        return ($text.Contains('dsh-dream-skin: sticky skin restore') -and $text.Contains('/dream-skin/api'))
+    } catch { return $false }
+}
+
 function Install-Plugins([string]$profile, [object[]]$selected) {
     if (-not $selected -or $selected.Count -eq 0) { return }
+
+    # Dream Skin 非破坏升级：Profile 里已是旧实现（无持久化修复 marker）时，
+    # 先说明再确认；确认后按目录里的固定 commit 安装（同名包会替换旧实现）。
+    # 绝不删 webview2-data / ~/.dsh / Profile，也不手工改 DSH 官方 ThemeRuntime。
+    $dreamSkin = @($selected | Where-Object { $_.Id -eq 'dream-skin' } | Select-Object -First 1)
+    if ($dreamSkin -and -not (Test-DreamSkinPersistenceFix $profile)) {
+        $dreamSpec = [string]$dreamSkin.Spec
+        if ($NonInteractive) {
+            Warn 'Dream Skin：Profile 中检测到旧 0.3.0 实现（无持久化修复 marker），将替换为 DesktopShell 审核的固定 commit。'
+        } elseif (Read-YesNo '检测到 Dream Skin 0.3.0 旧实现，存在重启后第三方皮肤回退问题。是否升级到 DesktopShell 审核的固定 commit？' $true) {
+            Ok '确认升级 Dream Skin 到固定 commit。'
+        } else {
+            $selected = @($selected | Where-Object { $_.Id -ne 'dream-skin' })
+            Warn '已跳过 Dream Skin 升级。'
+        }
+        if ($selected.Id -contains 'dream-skin') {
+            Say "Dream Skin 固定 commit：$dreamSpec"
+        }
+    }
 
     $allow = @($selected | ForEach-Object { $_.Allow } | Where-Object { $_ })
     Update-AllowBuilds $profile $allow
@@ -745,6 +778,16 @@ function Show-Diagnostics([string]$profile) {
         $code = Invoke-ManagedDsh $profile @('plugin','--profile',$profile,'list')
         if ($code -ne 0) { Warn 'plugin list 返回非 0。' }
     } catch { Warn $_.Exception.Message }
+
+    # Dream Skin 持久化修复状态：版本号分不出新旧（都是 0.3.0），必须查能力 marker
+    $dreamSkinDir = Join-Path $dshHome "profiles\$profile\node_modules\dsh-dream-skin"
+    if (Test-Path -LiteralPath $dreamSkinDir -PathType Container) {
+        if (Test-DreamSkinPersistenceFix $profile) {
+            Ok 'Dream Skin：持久化修复已安装'
+        } else {
+            Warn 'Dream Skin：检测到旧 0.3.0 实现，建议升级（管理器重装 14 号插件即可替换为固定 commit）'
+        }
+    }
 }
 
 function Guided-Setup {

@@ -4,6 +4,42 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.2（第九轮修复：重启事务与 Dream Skin，2026-08-19）
+
+> **尚未发布**：等待用户本机压力测试（连续重启 20 次 + 午夜皮肤持久化）通过后才发布。
+> 本版不修改 v1.0.1 tag / Release；也不删除 `~\.dsh`、不清 WebView2 数据、不重装 DSH/Node。
+
+- **重启 DSH 后端改为有状态事务**：`restart.preflight → snapshot → stop-wrapper →
+  wait-port-close → stop-listener-fallback → compat → start → wait-ready → navigate →
+  complete` 十个阶段，每阶段 ENTER/OK/FAIL 写入宿主日志，并记录新旧 wrapper/listener
+  PID、ownsBackend、port——失败时立刻能看出是"停不下来"还是"新进程起不来"
+- **修复旧 DSH 子进程没彻底退出**：npx 经 .cmd 启动时保存的进程只是 cmd 包装进程。
+  现在 DSH 首次就绪即记录真正监听端口的 Node PID；停止时 Job 关闭 → Kill wrapper →
+  WaitForExit(3s) → 端口仍开时**身份验证通过才**结束真正 listener（PID 与记录一致，
+  或命令行复验为 DSH + 当前 profile + 当前 port），端口连续两次确认关闭后才释放所有权；
+  绝不因为端口还开着就盲目杀 PID
+- **修复重启与 5 秒健康检查的竞态**：重启开始即停健康定时器并递增 backendGeneration，
+  已飞出的旧代检查结果直接作废；重启结束统一重置 healthFailures 并重启定时器——
+  重启期间不再出现"后端连接已中断"假警报
+- **重启失败按真实后端状态分流**：A 重启未完成但原后端仍健康 / B 重启失败且旧后端已停止 /
+  C 新后端已就绪但页面恢复失败；webViewReady 按实际健康状态重算，泛化提示不再盖掉真因
+- **Dream Skin 改钉审核固定 commit**（`28497f52`，含 sticky restore 加固与 host-backed
+  持久化），不再锁 npm 0.3.0；升级不删 webview2-data / `~\.dsh` / Profile，不改官方
+  ThemeRuntime，不注入 JS
+- **Dream Skin 新旧实现按能力 marker 区分**（版本号都是 0.3.0 无法区分）：
+  `Test-DreamSkinPersistenceFix` 检查 `lib\client.js` 是否含
+  `dsh-dream-skin: sticky skin restore` 与 `/dream-skin/api`；管理器安装旧实现时先询问
+  是否升级，诊断菜单显示修复状态
+- **WebView 失败重试改为真重建**：`ReplaceWebViewControlAsync` 摘除并 Dispose 旧控件、
+  新建控件后重新初始化/配置/导航；WebView 失败绝不碰健康 DSH 后端
+- **Release 真冻结**：发布前 `gh release view` 检查，Release 已存在直接失败
+  （"禁止覆盖，请增加版本号"），不再依赖 softprops 的隐式行为
+- **清掉最后一个 DSH 版本硬编码**：`AppSettings.Load` 缺省 dshVersion 改读
+  `DshProcessManager.VerifiedDshVersion`（COMPATIBILITY.json 单一来源）
+- **验证门禁 11 → 15 项**：新增 test-restart-state / test-dream-skin-pin /
+  test-release-immutable / test-version-source；托盘、WebView2、连续重启、Dream Skin
+  真实恢复保留人工 Windows 验收（docs/DREAM_SKIN_ACCEPTANCE.md）
+
 ## v1.0.1（第八轮修复：启动运行期稳健性，2026-08-19）
 
 v1.0.0 冻结后的第一个修复版本。

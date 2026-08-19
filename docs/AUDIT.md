@@ -286,3 +286,31 @@ PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:w
 - csc 全量编译（DeepSeekHarness.cs + HostLog.cs + NativeTcpTable.cs）无警告；
 - `tests/test-port-owner.ps1` 证明原生 TCP 解析返回真实 owner PID（与 netstat 一致）；
 - Release 工作流门禁：`workflowVersion != VERSION 文件` 直接失败，防止手滑发错版本。
+
+## 14. 2026-08-19 v1.0.2 修复轮（第九轮：重启事务与 Dream Skin，未发布）
+
+> 目标版本 v1.0.2；v1.0.1 tag/Release 冻结不动。**发布前必须等用户本机压力测试
+> （连续重启 20 次 + 午夜皮肤持久化）通过**，见 docs/DREAM_SKIN_ACCEPTANCE.md。
+
+| # | 项目 | 实现 |
+| --- | --- | --- |
+| 1 | 重启有状态事务 | `RestartBackendAsync` 十阶段（preflight/snapshot/stop-wrapper/wait-port-close/stop-listener-fallback/compat/start/wait-ready/navigate/complete），`RestartPhase` 统一 ENTER/OK/FAIL；快照记录旧/新 wrapper+listener PID、ownsBackend、port |
+| 2 | 旧子进程未退出路径 | `ownedListenerPid` 首次就绪时记录（`CaptureOwnedListenerPid`，含身份验证）；停止链：Job 关闭 → Kill wrapper → `WaitForExit(3000)` → `TryStopListenerFallback`（PID 与记录一致 **或** 命令行复验 DSH+profile+port 才 Kill）→ `WaitForPortClosedTwice`（连续两次确认）→ 最后才 `OwnsBackend=false` |
+| 3 | 重启/健康检查竞态 | `backendGeneration`：重启开始 `healthTimer.Stop()` + 代数递增；健康检查完成后 `generation != backendGeneration` 直接丢弃结果；finally 统一 `healthFailures=0` + `healthTimer.Start()` |
+| 4 | 失败分流 | `HandleRestartError` 按真实状态分 A（原后端仍健康）/ B（旧后端已停止）/ C（新后端已监听但页面失败），`webViewReady = IsDshHealthy(...)` 重算，不再笼统"重启失败" |
+| 5 | Dream Skin 固定 commit | 目录 `dsh-dream-skin@0.3.0` → `https://github.com/RevolutionLA/dsh-dream-skin/archive/28497f52...tar.gz`（已验证含 sticky restore + host-backed 持久化 marker；不用 main.tar.gz） |
+| 6 | marker 检测 | `Test-DreamSkinPersistenceFix`：`profiles\<profile>\node_modules\dsh-dream-skin\lib\client.js` 需同时含 `dsh-dream-skin: sticky skin restore` 与 `/dream-skin/api`；诊断菜单显示已修/旧实现 |
+| 7 | 非破坏升级 | `Install-Plugins` 选中 dream-skin 且旧实现时：说明 → 确认 → 走固定 commit `plugin add`（同名包替换）；不删 webview2-data / `~\.dsh` / Profile，不改 ThemeRuntime，不注入 JS |
+| 8 | 验收覆盖 | docs/DREAM_SKIN_ACCEPTANCE.md：午夜 ×（Reload 5 + 重启后端 10 + 退出重开 5 + 设置开关 5）；「默认」不被 sticky 拉回；`$DSH_HOME\dream-skin.json` 持久化检查 |
+| 9 | WebView 真重建 | `ReplaceWebViewControlAsync`：Remove+Dispose 旧控件 → 新建 → 初始化/配置/权限/导航；失败不碰健康后端 |
+| 10 | Release 真冻结 | publish job 发布前 `gh release view "v$version"` 已存在直接失败（"禁止覆盖，请增加版本号"）；不进入 softprops |
+| 11 | 最后硬编码 | `AppSettings.Load` 缺省 `dshVersion = DshProcessManager.VerifiedDshVersion`（src 中 rc.7 仅剩 VerifiedDshVersion 的合法回退 1 处） |
+| 12 | 门禁 11 → 15 | 新增 `test-restart-state`（ownedListenerPid/WaitForExit/身份兜底/generation/十阶段日志/A·B·C 分流）、`test-dream-skin-pin`（无 @0.3.0、40 位 commit、marker 检测 + 行为矩阵）、`test-release-immutable`（gh view 门禁、无删除步骤、v1.0.0/v1.0.1 tag 仍在且为祖先）、`test-version-source`（C#/PS 硬编码清零、VERSION=1.0.2 与 release.yml 默认一致） |
+
+### 验证
+
+- 15 项回归测试 PowerShell 7 先行全绿（csc 编译无警告）；双宿主全量在提交前跑；
+- Dream Skin 固定 commit 已实测：`client.js` 含两个 marker，package.json 版本仍为 0.3.0
+  （印证不能靠版本号判断）；
+- 托盘、WebView2、连续重启、Dream Skin 真实恢复：保留人工 Windows 验收（不发布
+  v1.0.2，直到用户本机压力测试通过）。
