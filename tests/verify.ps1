@@ -26,6 +26,7 @@ $tests = @(
     'test-restart-state.ps1',
     'test-startup-identity.ps1',
     'test-tray-quit-deferred.ps1',
+    'test-web-context-menu-lifecycle.ps1',
     'test-dream-skin-pin.ps1',
     'test-release-immutable.ps1',
     'test-version-source.ps1'

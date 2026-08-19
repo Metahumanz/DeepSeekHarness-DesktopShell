@@ -3290,8 +3290,13 @@ namespace DeepSeekHarnessDesktop
             {
                 if (activeWebContextMenu != null)
                 {
-                    try { activeWebContextMenu.Close(); activeWebContextMenu.Dispose(); } catch { }
+                    ContextMenuStrip previous = activeWebContextMenu;
                     activeWebContextMenu = null;
+                    // 只关闭旧菜单，Dispose 延迟到当前 WinForms 菜单消息处理完成之后，
+                    // 避免在 ToolStripDropDown 的 Close/SetVisibleCore 调用栈中同步释放。
+                    if (!previous.IsDisposed)
+                        previous.Close();
+                    DisposeWebContextMenuDeferred(previous);
                 }
 
                 ContextMenuStrip menu = new ContextMenuStrip();
@@ -3385,10 +3390,22 @@ namespace DeepSeekHarnessDesktop
                     return;
                 }
 
+                bool deferralCompleted = false;
+
                 menu.Closed += delegate
                 {
-                    try { deferral.Complete(); } catch { }
-                    try { menu.Dispose(); } catch { }
+                    if (!deferralCompleted)
+
+                    {
+
+                        try { deferral.Complete(); } catch { }
+
+                        deferralCompleted = true;
+
+                    }
+
+                    DisposeWebContextMenuDeferred(menu);
+
                     if (Object.ReferenceEquals(activeWebContextMenu, menu))
                         activeWebContextMenu = null;
                 };
@@ -3401,6 +3418,31 @@ namespace DeepSeekHarnessDesktop
                 try { deferral.Complete(); } catch { }
             }
         }
+
+        /// <summary>
+        /// 延迟释放 WebView 右键菜单。菜单的 Closed/替换路径可能正处在 WinForms
+        /// ToolStripDropDown 的关闭消息处理中，此时同步 Dispose 会让框架继续访问已释放对象；
+        /// 放到 UI 线程下一条消息再释放，避免 ObjectDisposedException。
+        /// </summary>
+        private void DisposeWebContextMenuDeferred(ContextMenuStrip menu)
+        {
+            if (menu == null) return;
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!menu.IsDisposed)
+                        menu.Dispose();
+                });
+            }
+            catch (InvalidOperationException)
+            {
+                // 窗体已关闭/句柄不可用时不会有活动菜单消息，直接释放是安全的。
+                if (!menu.IsDisposed)
+                    menu.Dispose();
+            }
+        }
+
 
         private bool AddBuiltInContextItem(ContextMenuStrip menu,
             CoreWebView2ContextMenuRequestedEventArgs args, string name, string label)
