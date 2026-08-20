@@ -2905,6 +2905,7 @@ namespace DeepSeekHarnessDesktop
         private readonly ContextMenuStrip trayMenu;
         private readonly System.Windows.Forms.Timer themeTimer;
         private readonly System.Windows.Forms.Timer healthTimer;
+        private readonly System.Windows.Forms.Timer trayShowAnimationTimer;
         private readonly Guid mainFormInstanceId = Guid.NewGuid();
 
         private EventHandler overlayPrimaryHandler;
@@ -2921,6 +2922,9 @@ namespace DeepSeekHarnessDesktop
         private bool recoveryBusy;
         private bool hiddenToTray;
         private bool trayTransition;
+        private int trayShowAnimationStep;
+        private double trayShowAnimationTargetOpacity = 1.0;
+        private const int TrayShowAnimationSteps = 12;
         // 后端“代”：每次重启/停止递增；已飞出的健康检查完成时对比代数，旧代结果直接丢弃，
         // 避免重启期间健康检查把“后端被主动停掉”误报成“后端中断”。
         private long backendGeneration;
@@ -3043,12 +3047,16 @@ namespace DeepSeekHarnessDesktop
             trayIcon.Text = "DeepSeek Harness";
             trayIcon.Visible = true;
             trayIcon.ContextMenuStrip = trayMenu;
-            trayIcon.DoubleClick += delegate { RestoreFromTray(); };
+            trayIcon.DoubleClick += delegate { ToggleTrayWindow(); };
 
             themeTimer = new System.Windows.Forms.Timer();
             themeTimer.Interval = 1000;
             themeTimer.Tick += delegate { ApplyThemeIfChanged(); };
             themeTimer.Start();
+
+            trayShowAnimationTimer = new System.Windows.Forms.Timer();
+            trayShowAnimationTimer.Interval = 16;
+            trayShowAnimationTimer.Tick += delegate { AdvanceTrayShowAnimation(); };
 
             healthTimer = new System.Windows.Forms.Timer();
             healthTimer.Interval = 5000;
@@ -4854,14 +4862,94 @@ namespace DeepSeekHarnessDesktop
             }
         }
 
+        private void ToggleTrayWindow()
+        {
+            if (LifetimeCancelled || trayTransition) return;
+
+            // 双击托盘图标是“显示/隐藏”切换：最小化窗口也视为当前没有打开，
+            // 先恢复到正常窗口；真正可见的窗口则沿用关闭到托盘的安全隐藏路径。
+            if (hiddenToTray || !Visible || WindowState == FormWindowState.Minimized)
+            {
+                HostLog.Line("TRAY toggle action=restore");
+                RestoreFromTray();
+                return;
+            }
+
+            HostLog.Line("TRAY toggle action=hide");
+            trayTransition = true;
+            if (!IsHandleCreated)
+            {
+                trayTransition = false;
+                return;
+            }
+
+            BeginInvoke((MethodInvoker)delegate
+            {
+                trayTransition = false;
+                if (!LifetimeCancelled && !IsDisposed && !Disposing)
+                    HideToTray();
+            });
+        }
+
         private void RestoreFromTray()
         {
+            if (LifetimeCancelled) return;
             hiddenToTray = false;
             HostLog.Line("TRAY restore");
+            PrepareTrayShowAnimation();
             Show();
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Activate();
             BringToFront();
+            StartTrayShowAnimation();
+        }
+
+        private void PrepareTrayShowAnimation()
+        {
+            trayShowAnimationTimer.Stop();
+            trayShowAnimationStep = 0;
+            trayShowAnimationTargetOpacity = Opacity;
+            if (trayShowAnimationTargetOpacity <= 0.0 || trayShowAnimationTargetOpacity > 1.0)
+                trayShowAnimationTargetOpacity = 1.0;
+            try { Opacity = 0.0; } catch { }
+        }
+
+        private void StartTrayShowAnimation()
+        {
+            if (!CanTouchControls) return;
+            try { trayShowAnimationTimer.Start(); }
+            catch { StopTrayShowAnimation(true); }
+        }
+
+        private void AdvanceTrayShowAnimation()
+        {
+            if (!CanTouchControls || !Visible)
+            {
+                StopTrayShowAnimation(true);
+                return;
+            }
+
+            trayShowAnimationStep++;
+            double progress = Math.Min(1.0,
+                (double)trayShowAnimationStep / (double)TrayShowAnimationSteps);
+            try { Opacity = trayShowAnimationTargetOpacity * progress; }
+            catch
+            {
+                StopTrayShowAnimation(true);
+                return;
+            }
+
+            if (progress >= 1.0)
+                StopTrayShowAnimation(false);
+        }
+
+        private void StopTrayShowAnimation(bool restoreOpacity)
+        {
+            try { trayShowAnimationTimer.Stop(); } catch { }
+            if (restoreOpacity && !IsDisposed && !Disposing)
+            {
+                try { Opacity = trayShowAnimationTargetOpacity; } catch { }
+            }
         }
 
         /// <summary>
@@ -4872,6 +4960,7 @@ namespace DeepSeekHarnessDesktop
         {
             hiddenToTray = true;
             HostLog.Line("TRAY hide");
+            StopTrayShowAnimation(true);
             Hide();
         }
 
@@ -5059,6 +5148,7 @@ namespace DeepSeekHarnessDesktop
             {
                 try { themeTimer.Stop(); themeTimer.Dispose(); } catch { }
                 try { healthTimer.Stop(); healthTimer.Dispose(); } catch { }
+                try { trayShowAnimationTimer.Stop(); trayShowAnimationTimer.Dispose(); } catch { }
                 try { trayIcon.Visible = false; trayIcon.Dispose(); } catch { }
                 try { trayMenu.Dispose(); } catch { }
                 try { if (webContextMenu != null) webContextMenu.Dispose(); } catch { }

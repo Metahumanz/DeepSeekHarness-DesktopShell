@@ -13,7 +13,8 @@
 当前收口内容：
 
 - 托盘 hide/restore 不再运行期切换 MainForm 的 `ShowInTaskbar`；Form、WebView2、backend
-  复用同一实例，并记录 `HANDLE created/destroyed instance=<guid>` 诊断。
+  复用同一实例，并记录 `HANDLE created/destroyed instance=<guid>` 诊断；托盘双击在显示/隐藏
+  间切换，恢复时使用轻量淡入动效。
 - 真实退出统一取消 lifetime；startup/restart/health/retry 在 await 后检查取消，取消后
   清理本轮启动的 wrapper/listener；关闭到托盘不取消。
 - WebView2、overlay configure、backend start/restart 共用非阻塞恢复门禁；持续
@@ -25,7 +26,7 @@
   `DshHomeUrl` 继续使用当前运行快照；托盘状态下对话框使用 ownerless + CenterScreen。
 - DPI 本轮只加入 100%/125%/150%/200% 的人工验收矩阵，不在没有实测错位前改 DPI 代码。
 
-`tests/verify.ps1` 当前列出 28 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
+`tests/verify.ps1` 当前列出 29 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
 双宿主执行；托盘/WebView2/连续重启/DPI/Dream Skin 仍需真实 Windows 验收。发布包文件数不在
 文档中另行维护：以 `scripts/Build-Release.ps1` 内的 authoritative expected-file 自校验为准，
 当前构建清单实际为 15 个文件。

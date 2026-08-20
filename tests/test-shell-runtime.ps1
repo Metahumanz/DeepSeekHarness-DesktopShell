@@ -40,10 +40,12 @@ Assert-True "overlay buttons themed" ($cs -match 'ThemeHelper\.ApplyButtonTheme\
 # ---- 4. 托盘生命周期（延迟隐藏，恢复不重建 WebView） ----
 Assert-True "HideToTray helper exists" ($cs -match 'private void HideToTray\(\)')
 Assert-True "tray close deferred via BeginInvoke(MethodInvoker)" ($cs -match 'trayTransition' -and $cs -match 'BeginInvoke\(\(MethodInvoker\)delegate')
-$restore = [regex]::Match($cs, 'private void RestoreFromTray\(\)[\s\S]{0,700}?private void HideToTray\(\)')
-if ($restore.Success) {
-    Assert-True "RestoreFromTray restores window" ($restore.Value -match 'Show\(\);')
-    Assert-True "RestoreFromTray reuses window (no webview recreation)" ($restore.Value -notmatch 'CreateWebViewControl')
+$restoreStart = $cs.IndexOf('private void RestoreFromTray()', [System.StringComparison]::Ordinal)
+$restoreEnd = $cs.IndexOf('private void HideToTray()', $restoreStart, [System.StringComparison]::Ordinal)
+if ($restoreStart -ge 0 -and $restoreEnd -gt $restoreStart) {
+    $restoreBody = $cs.Substring($restoreStart, $restoreEnd - $restoreStart)
+    Assert-True "RestoreFromTray restores window" ($restoreBody -match 'Show\(\);')
+    Assert-True "RestoreFromTray reuses window (no webview recreation)" ($restoreBody -notmatch 'CreateWebViewControl')
 } else {
     Assert-True "RestoreFromTray body located" $false
 }

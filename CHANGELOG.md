@@ -6,7 +6,7 @@
 
 ## v1.0.4（未发布，运行期生命周期修复，2026-08-20）
 
-- **托盘隐藏/恢复不再重建主窗口句柄**：MainForm 运行期间不再切换 `ShowInTaskbar`；关闭到托盘与恢复复用同一个 Form、WebView2 和 backend，并增加 Handle 创建/销毁诊断。
+- **托盘隐藏/恢复不再重建主窗口句柄**：MainForm 运行期间不再切换 `ShowInTaskbar`；关闭到托盘与恢复复用同一个 Form、WebView2 和 backend，并增加 Handle 创建/销毁诊断。托盘图标双击现在在显示/隐藏间切换，恢复时使用轻量淡入动效。
 - **退出生命周期统一取消**：真实退出、Windows 关机和重启应用会取消 lifetime；startup/restart/health/retry 在 await 后检查取消，取消后清理本轮启动的 wrapper/listener，不再操作已 Dispose 控件。关闭到托盘不取消。
 - **恢复动作串行化**：WebView2 重建、配置、backend 启动/重启共用恢复门禁，重复点击不会并发 Dispose/Create；持续 WebView2 Unresponsive 时保留页面并提供显式“重建 WebView2”入口。
 - **探测进程有界执行**：版本、netstat/CIM fallback 和 `--help` 探测统一异步读取 stdout/stderr、超时回收进程树，不按进程名误杀。

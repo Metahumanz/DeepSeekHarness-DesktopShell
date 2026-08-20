@@ -20,7 +20,7 @@ Assert-True 'unified dialog owner helper exists' ($owner -match 'IWin32Window Ef
 Assert-True 'tray owner is null' ($owner -match 'if \(hiddenToTray\) return null;')
 Assert-True 'visible valid MainForm is owner' ($owner -match 'Visible && IsHandleCreated && !IsDisposed && !Disposing' -and $owner -match 'return this;')
 
-$settings = Get-MethodBody $cs 'private async Task ShowSettingsAsync()' 'private void RestoreFromTray()'
+$settings = Get-MethodBody $cs 'private async Task ShowSettingsAsync()' 'private void ToggleTrayWindow()'
 Assert-True 'settings chooses EffectiveDialogOwner' ($settings -match 'IWin32Window owner = EffectiveDialogOwner\(\)')
 Assert-True 'tray settings use ownerless ShowDialog' ($settings -match 'dialog\.ShowDialog\(\)')
 Assert-True 'ownerless settings are centered on screen' ($settings -match 'dialog\.StartPosition = FormStartPosition\.CenterScreen')

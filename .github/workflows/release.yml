@@ -167,13 +167,13 @@ jobs:
 
             **v1.0.4 发布摘要**：运行期生命周期与进程安全修复
             - 托盘隐藏/恢复复用同一个 MainForm/WebView2，不再运行期切换 ShowInTaskbar 重建 HWND；
-              增加 Handle 创建/销毁诊断
+              增加 Handle 创建/销毁诊断，托盘双击切换显示/隐藏并在恢复时淡入
             - 真实退出统一取消 startup/restart/retry，取消后清理本轮启动的 backend，不再触碰已 Dispose 控件
             - WebView2/overlay 恢复动作串行化；持续 Unresponsive 提供显式重建入口，不重启健康 DSH
             - 探测子进程统一使用有界 stdout/stderr 读取与进程树清理；自有 backend 健康检查校验监听身份
             - 持久设置与 active runtime snapshot 分离；托盘路径对话框不再把隐藏 MainForm 作为 modal owner
             - 保持 v1.0.3 的 DSH 默认版本与推荐插件集合不变；PerMonitorV2 仅增加人工验收矩阵
-            - 28 项自动回归门禁与 PowerShell 5.1 兼容门禁
+            - 29 项自动回归门禁与 PowerShell 5.1 兼容门禁
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
