@@ -2774,7 +2774,7 @@ namespace DeepSeekHarnessDesktop
         private bool webViewReady;
         private bool healthCheckBusy;
         private bool restartBusy;
-        private bool startBusy;
+        private bool recoveryBusy;
         private bool hiddenToTray;
         private bool trayTransition;
         // 后端“代”：每次重启/停止递增；已飞出的健康检查完成时对比代数，旧代结果直接丢弃，
@@ -2944,6 +2944,31 @@ namespace DeepSeekHarnessDesktop
             try { lifetimeCts.Cancel(); } catch (ObjectDisposedException) { }
         }
 
+        private bool TryBeginRecoveryOperation(string operation)
+        {
+            if (LifetimeCancelled || recoveryBusy) return false;
+            recoveryBusy = true;
+            HostLog.Line("RECOVERY begin operation=" + operation);
+            if (CanTouchControls)
+            {
+                overlayPrimaryButton.Enabled = false;
+                overlaySecondaryButton.Enabled = false;
+            }
+            return true;
+        }
+
+        private void EndRecoveryOperation(string operation)
+        {
+            recoveryBusy = false;
+            if (CanTouchControls)
+            {
+                overlayPrimaryButton.Enabled = true;
+                overlaySecondaryButton.Enabled = true;
+            }
+            HostLog.Line("RECOVERY end operation=" + operation +
+                " closing=" + LifetimeCancelled.ToString());
+        }
+
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
@@ -3103,10 +3128,12 @@ namespace DeepSeekHarnessDesktop
 
             overlayPrimaryButton.Visible = !String.IsNullOrEmpty(primaryText) && primaryHandler != null;
             overlayPrimaryButton.Text = primaryText ?? "";
+            overlayPrimaryButton.Enabled = !recoveryBusy;
             if (overlayPrimaryButton.Visible) overlayPrimaryButton.Click += overlayPrimaryHandler;
 
             overlaySecondaryButton.Visible = !String.IsNullOrEmpty(secondaryText) && secondaryHandler != null;
             overlaySecondaryButton.Text = secondaryText ?? "";
+            overlaySecondaryButton.Enabled = !recoveryBusy;
             if (overlaySecondaryButton.Visible) overlaySecondaryButton.Click += overlaySecondaryHandler;
 
             loadingPanel.Visible = true;
@@ -3209,9 +3236,8 @@ namespace DeepSeekHarnessDesktop
 
         private async Task StartAsync()
         {
-            if (LifetimeCancelled || startBusy) return;
+            if (!TryBeginRecoveryOperation("start")) return;
             CancellationToken token = lifetimeCts.Token;
-            startBusy = true;
             currentPhase = StartupPhase.CommandVerify;
             ShowOverlay("startup", "正在启动 DeepSeek Harness...", null, null, null, null);
 
@@ -3384,7 +3410,7 @@ namespace DeepSeekHarnessDesktop
             }
             finally
             {
-                startBusy = false;
+                EndRecoveryOperation("start");
             }
         }
 
@@ -3466,8 +3492,16 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private async Task RetryWebViewAsync()
         {
-            ThrowIfLifetimeCancelled();
-            await ReplaceWebViewControlAsync();
+            if (!TryBeginRecoveryOperation("webview-replace")) return;
+            try
+            {
+                ThrowIfLifetimeCancelled();
+                await ReplaceWebViewControlAsync();
+            }
+            finally
+            {
+                EndRecoveryOperation("webview-replace");
+            }
         }
 
         /// <summary>
@@ -3543,6 +3577,7 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private async Task RetryConfigureAsync()
         {
+            if (!TryBeginRecoveryOperation("webview-configure")) return;
             try
             {
                 CancellationToken token = lifetimeCts.Token;
@@ -3577,6 +3612,10 @@ namespace DeepSeekHarnessDesktop
                 HostLog.Fail("RETRY-CONFIGURE failed phase=" + currentPhase.ToString(), ex);
                 webViewReady = false;
                 HandleStartupError(ex);
+            }
+            finally
+            {
+                EndRecoveryOperation("webview-configure");
             }
         }
 
@@ -4069,7 +4108,7 @@ namespace DeepSeekHarnessDesktop
 
         private async Task RestartBackendAsync()
         {
-            if (LifetimeCancelled || restartBusy) return;
+            if (!TryBeginRecoveryOperation("backend-restart")) return;
             CancellationToken token = lifetimeCts.Token;
             restartBusy = true;
             activeRestartPhase = "restart.preflight";
@@ -4247,6 +4286,7 @@ namespace DeepSeekHarnessDesktop
                 healthFailures = 0;
                 if (!LifetimeCancelled && !IsDisposed && !Disposing)
                     healthTimer.Start();
+                EndRecoveryOperation("backend-restart");
             }
         }
 
