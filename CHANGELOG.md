@@ -10,10 +10,12 @@
 - **退出生命周期统一取消**：真实退出、Windows 关机和重启应用会取消 lifetime；startup/restart/health/retry 在 await 后检查取消，取消后清理本轮启动的 wrapper/listener，不再操作已 Dispose 控件。关闭到托盘不取消。
 - **恢复动作串行化**：WebView2 重建、配置、backend 启动/重启共用恢复门禁，重复点击不会并发 Dispose/Create；持续 WebView2 Unresponsive 时保留页面并提供显式“重建 WebView2”入口。
 - **设置运行时事务收口**：立即应用使用 oldRuntime/targetRuntime 双快照；旧 backend 的停止链只使用旧端口，目标 backend 的启动链只使用新端口，target ready 后才提交 active runtime。
+- **启动完成判定收紧**：DesktopShell 自己启动的 DSH 必须完成 listener 身份确认、`dsh web` ready banner、HTTP 200 和短暂稳定确认后才进入 WebView；监听后插件/Profile 初始化失败并退出会直接判为启动失败。
+- **启动失败与运行中断分流**：BootReady 前退出显示插件/Profile 启动失败与重试、复制错误、日志目录入口；BootReady 后才显示“DSH 后端连接已中断”。`desktop-shell.log` 记录 wrapper PID、退出码、expectedStop、状态，并保留最近 stdout/stderr fatal 摘要。
 - **探测进程有界执行**：版本、netstat/CIM fallback 和 `--help` 探测统一异步读取 stdout/stderr、超时回收进程树，不按进程名误杀。
 - **运行配置与持久设置分离**：backend 影响字段使用 active runtime snapshot；保存但稍后重启时，当前 backend 继续按旧端口/profile 运行，立即应用走既有重启事务。
 - **健康身份与对话框边界收紧**：自有 backend 健康检查校验监听 PID/Job 归属；托盘隐藏时对话框改用 ownerless + CenterScreen。
-- **保持 v1.0.3 的 DSH 默认版本和推荐插件集合不变**；DPI 本轮只增加 100%/125%/150%/200% 的人工 Windows 验收矩阵。
+- **保持 v1.0.3 的 DSH 默认版本、测试版本和已确认插件规格不变**；插件兼容验收改为真实 Profile BootReady、HTTP 200、稳定 10 秒且进程存活；dsh-remote 尚未通过完整验收，暂时移出 v1.0.4 推荐目录。DPI 本轮只增加 100%/125%/150%/200% 的人工 Windows 验收矩阵。
 
 > 本版本尚未创建 tag 或 Release，当前处于预发布分支验证阶段；发布前必须完成 `tests/verify.ps1`、Release 构建和真实 Windows 验收。
 
@@ -25,7 +27,7 @@
 - **已知 CLI 能力收口**：rc.8 直接命中 `--no-open` 并缓存，不再为探测启动 npx --help；
   通用探测超时按 PID 回收进程树（`taskkill /T /F`），不按进程名误杀
 - **推荐插件选择性 pin**：dshmarket ^1.16.0、Dream Skin npm ^0.4.1、at-file v0.6.6、
-  file-mentions v1.0.6、outline v1.1.1、modlens ^3.22.0、remote 0.7.1；
+  file-mentions v1.0.6、outline v1.1.1、modlens ^3.22.0、remote 0.7.1（v1.0.3 历史目录）；
   Better Sidebar / Cost Meter / Sentinel 因兼容依赖保持已审核版本
 - **文档同步**：v1.0.2 标记已发布并冻结；rc.8 实际 CLI/Web 验证结论更新
   （默认 rc.7 是 fresh npx 安装可靠性决策，不是 rc.8 运行时不兼容）

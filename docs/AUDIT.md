@@ -9,7 +9,8 @@
 本轮从 `main` 的 `509122e` 创建 `fix/v1.0.4-runtime-lifecycle`；当前分支已推送到 GitHub，
 但尚未创建 v1.0.4 tag 或 Release，处于预发布分支验证阶段。不移动、不删除、不覆盖
 v1.0.3 的 tag/Release，也不提前创建 v1.0.4 tag。DSH 默认版本、`COMPATIBILITY.json`
-和 v1.0.3 的推荐插件集合保持不变；Dream Skin 仍为 npm `^0.4.1`。
+和 rc.7/rc.8 测试基线保持不变；当前活动推荐目录暂不包含尚未完成完整 BootReady 验收的
+dsh-remote，Dream Skin 仍为 npm `^0.4.1`。
 
 当前收口内容：
 
@@ -31,8 +32,15 @@ v1.0.3 的 tag/Release，也不提前创建 v1.0.4 tag。DSH 默认版本、`COM
 - 托盘恢复淡入只发生在 `hiddenToTray` 路径；使用约 160ms ease-out，尊重 Windows 客户区动画
   偏好，普通激活、首次启动、隐藏/退出和再次切换均不产生淡出或残留透明度。
 - DPI 本轮只加入 100%/125%/150%/200% 的人工验收矩阵，不在没有实测错位前改 DPI 代码。
+- DesktopShell 自己启动 DSH 时，listener 身份确认不再等于 ready：必须依次看到 `dsh web`
+  ready banner、HTTP 200 和短暂稳定确认后才允许 Navigate WebView；BootReady 前退出归为启动失败，
+  BootReady 后退出才归为运行期中断。
+- `DshProcessManager` 记录 `BACKEND process-exited` 的 wrapper PID、exitCode、expectedStop、
+  Starting/Running 状态，并保存最近 stdout/stderr；启动错误覆盖层优先显示 fatal/plugin/loader 摘要。
+- 插件管理器把“安装成功”与“运行兼容”分离：完整兼容必须通过真实 Profile BootReady、HTTP 200、
+  稳定运行 10 秒且进程仍存活；dsh-remote 当前从 v1.0.4 活动推荐目录暂停。
 
-`tests/verify.ps1` 当前列出 29 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
+`tests/verify.ps1` 当前列出 33 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
 双宿主执行；托盘/WebView2/连续重启/DPI/Dream Skin 仍需真实 Windows 验收。发布包文件清单不在
 文档中重复维护：唯一权威来源是 `scripts/Build-Release.ps1` 内的 authoritative expected-file
 自校验。
@@ -51,7 +59,7 @@ v1.0.3 的 tag/Release，也不提前创建 v1.0.4 tag。DSH 默认版本、`COM
 | `MainForm` | `src/DeepSeekHarness.cs` / `MainForm` | WebView2 承载、导航守卫、权限、右键菜单、快捷键守卫、健康检查、托盘、窗口位置恢复 |
 | `Program` | `src/DeepSeekHarness.cs` / `Program` | 单实例互斥体 + 激活已有窗口 |
 | `Install-Desktop.ps1` | `scripts/` | 安装：文件分发、WebView2 SDK 获取、csc 编译、开始菜单、旧版清理 |
-| `Manage-Dsh.ps1` | `scripts/` | 初始化向导 + 交互管理：Node 检查、dsh/npx 解析、插件安装、pnpm 版本匹配、诊断 |
+| `Manage-Dsh.ps1` | `scripts/` | 初始化向导 + 交互管理：Node 检查、dsh/npx 解析、插件安装、Profile BootReady 兼容验收、pnpm 版本匹配、诊断 |
 | `Uninstall-DesktopShell.ps1` | `scripts/` | 卸载模式选择（完整/仅壳）、预装 DSH_HOME 警告、延迟自删除 |
 
 ## 2. 边界检查结论
@@ -83,7 +91,8 @@ v1.0.3 的 tag/Release，也不提前创建 v1.0.4 tag。DSH 默认版本、`COM
   读取 stdout/stderr，超时回收本次进程树，失败保守不加；npx 与 command 共用
   `BuildWebLaunchArguments`
 - 推荐插件选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；对 DesktopShell
-  有兼容修复依赖的插件保持已审核版本；未验证新版不升级
+  有兼容修复依赖的插件保持已审核版本；未验证新版不升级。v1.0.4 活动目录暂不包含
+  dsh-remote；插件安装成功不代表 Profile 运行兼容。
 
 ### 2.2 路径边界
 
@@ -151,7 +160,7 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 
 ## 5. 遗留观察项（未修改，文档化）
 
-1. `Manage-Dsh.ps1` 插件目录为静态 19 项清单，版本规格硬编码（如 `@michengai/dsh-skills-manager@0.1.23`），上游发版需人工更新。
+1. `Manage-Dsh.ps1` 插件目录为静态 18 项活动清单（dsh-remote 暂停推荐），版本规格硬编码（如 `@michengai/dsh-skills-manager@0.1.23`），上游发版需人工更新；安装后的完整 Profile BootReady 验收仍需真实环境。
 2. `PluginCompat` 直接改写 `node_modules` 内的插件文件——已用标记 + 幂等 + 原子写 + 备份清理降低风险，但仍依赖插件内部结构字符串特征（上游改动可能导致"无法识别，跳过"，不会误改）。
 3. `FindListeningPid` 优先使用 `NativeTcpTable`，仅原生 API 不可用时才走有界 netstat fallback；IPv6 `[::1]` 行已兼容，极端本地化系统差异未覆盖。
 4. 卸载器 GUI 依赖 Windows Forms，在 PowerShell 5.1 下同样可用（未做强制 PS7 校验，属有意兼容）。
@@ -208,7 +217,7 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 | 4 | P1 | `-NoWizard` 语义不一致：源码安装器跑非交互初始化，Release 安装器直接跳过（CI 环境会出现"Release 包装好、启动才发现缺 Node"） | 统一为两者都执行 `Manage-Dsh -FirstInstall -NonInteractive`（检查 Node、解析 DSH/npx、初始化 Profile；缺 Node 即中止）；回归测试改为隔离环境（假 node/npx shim + 临时 DSH_HOME + 受限 PATH）覆盖该路径 |
 | 5 | P2 | 缺少 WebView2 Runtime 时用户等到首次启动才看到"启动失败" | 两个安装器增加 Evergreen Runtime 注册表预检（EdgeUpdate Clients `{F3017226-…}`），缺失时给出官方下载入口；C# 启动失败检测 WebView2 异常并显示"下载 WebView2 Runtime"按钮（`OnOverlayOpenWebView2Download`） |
 | 6 | P2 | 预编译 Release 的 `WebView2Loader.dll` 跟随构建机架构，README 只笼统写 Windows 10/11 | `Build-Release.ps1` 增加 `-Arch`（x64/arm64/x86，默认 x64）；v1.0.0 首发明确 x64（README 前置条件、Release body 注明）；ARM64 上运行 x64 发布包时安装器给出提示（模拟运行或改用源码安装） |
-| 7 | P2 | 新 Profile 默认"推荐组合"一次装 13 个插件，官方/附加体验不分层；6 个可选插件仍追 `@latest`，"全部"按钮引入不可复现模式 | 插件目录改为三层：`core`（5 个默认勾选）/ `enhanced`（6 个默认展示可取消）/ `advanced`（8 个默认不装，Cost Meter 标注"统计参考，不等于官方账单"）；**全部 19 项锁定精确版本/commit**，"全部已审核插件"也只装锁定版本；追新走"额外插件"自定义 spec；安装完成后提示"托盘 → 重启 DSH 后端" |
+| 7 | P2 | 新 Profile 默认"推荐组合"一次装 13 个插件，官方/附加体验不分层；6 个可选插件仍追 `@latest`，"全部"按钮引入不可复现模式 | **历史记录（v1.0.3 目录当时为 19 项）**：插件目录改为三层并锁定精确版本/commit；v1.0.4 活动目录为 18 项，dsh-remote 在完整 BootReady 验收通过前暂不推荐；安装成功不等于运行兼容 |
 | 8 | P3 | README 结构像维护文档，安全细节前置、普通用户路径不清晰 | README 重写为：前置条件 → 一键安装（含无人值守）→ 安装器行为 → 插件分层表 → 第一次启动/日常管理/更新插件/卸载/故障排查 → 安全设计摘要 → 源码构建/Release 流程/项目结构/第三方许可（细节链接 `docs/AUDIT.md`） |
 
 验证：四项回归测试全部通过（版本门槛 15 断言、账本正则、安装所有权 10 项、卸载守卫 3 项）；

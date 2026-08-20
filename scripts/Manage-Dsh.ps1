@@ -101,8 +101,7 @@ $PluginCatalog = @(
     [pscustomobject]@{ No=15; Id='status';        Name='Status Rotator 状态文案';   Spec='dsh-status-rotator@0.3.0'; Tier='advanced'; Allow=@(); Note='上游暂无 0.4.0，保持 0.3.0' },
     [pscustomobject]@{ No=16; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@() },
     [pscustomobject]@{ No=17; Id='modlens';       Name='ModLens 视觉包装';          Spec='@liustack/modlens@^3.22.0'; Tier='advanced'; Allow=@() },
-    [pscustomobject]@{ No=18; Id='remote';        Name='Remote SSH 工作区';         Spec='dsh-remote@0.7.1'; Tier='advanced'; Allow=@(); Note='0.7.1 先隔离测试，通过后再推广' },
-    [pscustomobject]@{ No=19; Id='video';         Name='视频预览';                  Spec='dsh-video-preview@0.1.1'; Tier='advanced'; Allow=@() }
+    [pscustomobject]@{ No=18; Id='video';         Name='视频预览';                  Spec='dsh-video-preview@0.1.1'; Tier='advanced'; Allow=@() }
 )
 
 function Read-Default([string]$prompt, [string]$default) {
@@ -861,7 +860,7 @@ function Select-Plugins([bool]$existingProfile) {
     }
     Write-Host '  1. 核心推荐（5 个：插件市场 / 工作台 / Skills / @file / Rewind）'
     Write-Host '  2. 核心推荐 + 体验增强（11 个）'
-    Write-Host '  3. 全部已审核插件（19 个，选择性 pin）'
+    Write-Host '  3. 全部已审核插件（18 个，选择性 pin）'
     Write-Host '  4. 自定义选择'
     $choice = Read-Default '插件安装方案' '0'
     if ($choice -eq '0') { return @() }

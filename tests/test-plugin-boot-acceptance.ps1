@@ -12,6 +12,9 @@ function Assert-True([string]$label, [bool]$condition) {
 $start = $ps.IndexOf('function Test-PluginProfileBootCompatibility', [System.StringComparison]::Ordinal)
 $end = $ps.IndexOf('function Get-Npx', $start, [System.StringComparison]::Ordinal)
 $body = if ($start -ge 0 -and $end -gt $start) { $ps.Substring($start, $end - $start) } else { '' }
+$catalogStart = $ps.IndexOf('$PluginCatalog = @(', [System.StringComparison]::Ordinal)
+$catalogEnd = $ps.IndexOf('function Read-Default', $catalogStart, [System.StringComparison]::Ordinal)
+$catalog = if ($catalogStart -ge 0 -and $catalogEnd -gt $catalogStart) { $ps.Substring($catalogStart, $catalogEnd - $catalogStart) } else { '' }
 
 Assert-True 'generic Profile boot acceptance helper exists' ($body -match 'function Test-PluginProfileBootCompatibility')
 Assert-True 'acceptance uses a random free port and avoids current port' (
@@ -35,6 +38,10 @@ Assert-True 'plugin add success is not called compatibility' (
     $ps -match '安装成功 ≠ 运行兼容' -and
     $ps -match 'Test-PluginProfileBootCompatibility \$profile')
 Assert-True 'real Profile is passed to DSH boot probe' ($ps.Contains('profileArg') -and $ps.Contains('New-PluginBootProbeCommand $current $profile'))
+Assert-True 'dsh-remote is absent from the active recommendation catalog' (
+    $catalog -notmatch "Id='remote'" -and
+    $catalog -notmatch 'dsh-remote' -and
+    $catalog -match 'No=18; Id=\x27video\x27')
 
 if ($fail -eq 0) { Write-Host 'PLUGIN BOOT ACCEPTANCE TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })
