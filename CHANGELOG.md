@@ -4,6 +4,19 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.3（仓库维护收尾，2026-08-20）
+
+- **CI/Actions 维护**：checkout v6、upload-artifact v6、download-artifact v7、
+  action-gh-release v3；CI 与 Release checkout 均 `fetch-depth: 0`；
+  `test-release-immutable` 改为冻结 v1.0.0 / v1.0.1 / v1.0.2 必须存在且为当前 HEAD 祖先
+- **已知 CLI 能力收口**：rc.8 直接命中 `--no-open` 并缓存，不再为探测启动 npx --help；
+  通用探测超时按 PID 回收进程树（`taskkill /T /F`），不按进程名误杀
+- **推荐插件选择性 pin**：dshmarket ^1.16.0、Dream Skin npm ^0.4.1、at-file v0.6.6、
+  file-mentions v1.0.6、outline v1.1.1、modlens ^3.22.0、remote 0.7.1；
+  Better Sidebar / Cost Meter / Sentinel 因兼容依赖保持已审核版本
+- **文档同步**：v1.0.2 标记已发布并冻结；rc.8 实际 CLI/Web 验证结论更新
+  （默认 rc.7 是 fresh npx 安装可靠性决策，不是 rc.8 运行时不兼容）
+
 ## v1.0.2（第九轮修复：重启事务与 Dream Skin，2026-08-19）
 
 > **已发布**：最终发布基线为 `34deef4`。历史上曾覆盖重建 v1.0.2，自此 v1.0.2 冻结，不再覆盖。

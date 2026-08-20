@@ -19,7 +19,7 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> 当前基线：DesktopShell v1.0.2 · DSH 0.1.0-rc.7（默认，因 fresh npx 安装可靠性；rc.8 已实测 CLI/Web 兼容）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
+> 当前基线：DesktopShell v1.0.3 · DSH 0.1.0-rc.7（默认，因 fresh npx 安装可靠性；rc.8 已实测 CLI/Web 兼容）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
 
 ## 安装
 
@@ -39,8 +39,8 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.2/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.2
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.3/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.3
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
@@ -52,7 +52,7 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.2 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.3 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -183,7 +183,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.2`，必须与根目录
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.3`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
 1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（19 项，PowerShell 7 + 5.1）
