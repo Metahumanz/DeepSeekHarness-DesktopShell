@@ -16,8 +16,8 @@ Assert-True "guard runs before creating release" (($releaseYml.IndexOf('Refuse t
 Assert-True "no delete-existing-release step anywhere" ($releaseYml -notmatch 'delete_release|delete-existing')
 Assert-True "softprops still used for creation only" ($releaseYml -match 'softprops/action-gh-release')
 
-# ---- 2. 历史发布 tag 不可改写：v1.0.0 / v1.0.1 / v1.0.2 必须存在且是当前 HEAD 祖先 ----
-$frozenTags = @('v1.0.0', 'v1.0.1', 'v1.0.2')
+# ---- 2. 历史发布 tag 不可改写：v1.0.0 / v1.0.1 / v1.0.2 / v1.0.3 必须存在且是当前 HEAD 祖先 ----
+$frozenTags = @('v1.0.0', 'v1.0.1', 'v1.0.2', 'v1.0.3')
 foreach ($tag in $frozenTags) {
     git -C $repo rev-parse -q --verify "refs/tags/$tag" | Out-Null
     Assert-True "$tag tag still exists" ($LASTEXITCODE -eq 0)
