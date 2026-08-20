@@ -3001,9 +3001,10 @@ namespace DeepSeekHarnessDesktop
         private bool recoveryBusy;
         private bool hiddenToTray;
         private bool trayTransition;
+        private bool trayShowAnimationActive;
         private int trayShowAnimationStep;
         private double trayShowAnimationTargetOpacity = 1.0;
-        private const int TrayShowAnimationSteps = 12;
+        private const int TrayShowAnimationSteps = 10;
         // 后端“代”：每次重启/停止递增；已飞出的健康检查完成时对比代数，旧代结果直接丢弃，
         // 避免重启期间健康检查把“后端被主动停掉”误报成“后端中断”。
         private long backendGeneration;
@@ -3168,6 +3169,7 @@ namespace DeepSeekHarnessDesktop
         {
             bool wasClosing = closing;
             closing = true;
+            StopTrayShowAnimation(true, "lifetime-" + reason);
             if (!wasClosing)
             {
                 backendGeneration++;
@@ -5068,19 +5070,30 @@ namespace DeepSeekHarnessDesktop
         private void RestoreFromTray()
         {
             if (LifetimeCancelled) return;
+            bool wasHiddenToTray = hiddenToTray;
+            bool animate = wasHiddenToTray && SystemAnimationPreferences.AreClientAreaAnimationsEnabled();
             hiddenToTray = false;
             HostLog.Line("TRAY restore");
-            PrepareTrayShowAnimation();
+            if (animate)
+            {
+                PrepareTrayShowAnimation();
+            }
+            else
+            {
+                if (wasHiddenToTray)
+                    HostLog.Line("TRAY animation cancel reason=system-preference");
+                StopTrayShowAnimation(true, "not-tray-restore");
+            }
             Show();
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Activate();
             BringToFront();
-            StartTrayShowAnimation();
+            if (animate) StartTrayShowAnimation();
         }
 
         private void PrepareTrayShowAnimation()
         {
-            trayShowAnimationTimer.Stop();
+            StopTrayShowAnimation(true, "restart");
             trayShowAnimationStep = 0;
             trayShowAnimationTargetOpacity = Opacity;
             if (trayShowAnimationTargetOpacity <= 0.0 || trayShowAnimationTargetOpacity > 1.0)
@@ -5090,40 +5103,68 @@ namespace DeepSeekHarnessDesktop
 
         private void StartTrayShowAnimation()
         {
-            if (!CanTouchControls) return;
-            try { trayShowAnimationTimer.Start(); }
-            catch { StopTrayShowAnimation(true); }
+            if (!CanTouchControls)
+            {
+                StopTrayShowAnimation(true, "lifetime");
+                return;
+            }
+            try
+            {
+                trayShowAnimationActive = true;
+                HostLog.Line("TRAY animation start");
+                trayShowAnimationTimer.Start();
+            }
+            catch
+            {
+                StopTrayShowAnimation(true, "timer-start-failed");
+            }
         }
 
         private void AdvanceTrayShowAnimation()
         {
             if (!CanTouchControls || !Visible)
             {
-                StopTrayShowAnimation(true);
+                StopTrayShowAnimation(true, !Visible ? "hidden" : "lifetime");
                 return;
             }
 
             trayShowAnimationStep++;
             double progress = Math.Min(1.0,
                 (double)trayShowAnimationStep / (double)TrayShowAnimationSteps);
-            try { Opacity = trayShowAnimationTargetOpacity * progress; }
+            double eased = 1.0 - Math.Pow(1.0 - progress, 3.0);
+            try { Opacity = trayShowAnimationTargetOpacity * eased; }
             catch
             {
-                StopTrayShowAnimation(true);
+                StopTrayShowAnimation(true, "opacity-failed");
                 return;
             }
 
             if (progress >= 1.0)
-                StopTrayShowAnimation(false);
+            {
+                try { trayShowAnimationTimer.Stop(); } catch { }
+                trayShowAnimationActive = false;
+                try { Opacity = trayShowAnimationTargetOpacity; } catch { }
+                HostLog.Line("TRAY animation complete");
+            }
         }
 
         private void StopTrayShowAnimation(bool restoreOpacity)
         {
+            StopTrayShowAnimation(restoreOpacity, "stopped");
+        }
+
+        private void StopTrayShowAnimation(bool restoreOpacity, string cancelReason)
+        {
+            bool wasActive = trayShowAnimationActive;
+            try { wasActive = wasActive || trayShowAnimationTimer.Enabled; } catch { }
             try { trayShowAnimationTimer.Stop(); } catch { }
+            trayShowAnimationActive = false;
             if (restoreOpacity && !IsDisposed && !Disposing)
             {
                 try { Opacity = trayShowAnimationTargetOpacity; } catch { }
             }
+            if (wasActive && !String.IsNullOrEmpty(cancelReason))
+                HostLog.Line("TRAY animation cancel reason=" + cancelReason);
         }
 
         /// <summary>
