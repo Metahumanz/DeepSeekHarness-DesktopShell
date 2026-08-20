@@ -36,7 +36,7 @@ try {
         "param([string]`$Profile='web',[int]`$Port=3080)`r`n" +
         "`$mode=if(Test-Path (Join-Path `$PSScriptRoot 'mode.txt')){(Get-Content (Join-Path `$PSScriptRoot 'mode.txt') -Raw).Trim()}else{'pass'}`r`n" +
         "`$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,`$Port); `$l.Start()`r`n" +
-        "if(`$mode -eq 'fail'){ Start-Sleep -Milliseconds 500; Write-Error 'plugin tree failed to load'; exit 1 }`r`n" +
+        "if(`$mode -eq 'fail'){ Start-Sleep -Milliseconds 500; [Console]::Error.WriteLine('plugin tree failed to load'); exit 1 }`r`n" +
         "Write-Output ('dsh web: http://127.0.0.1:{0}' -f `$Port)`r`n" +
         "while(`$true){ `$c=`$l.AcceptTcpClient(); `$s=`$c.GetStream(); `$b=[Text.Encoding]::ASCII.GetBytes(('HTTP/1.1 200 OK' + [char]13 + [char]10 + 'Content-Length: 0' + [char]13 + [char]10 + 'Connection: close' + [char]13 + [char]10 + [char]13 + [char]10)); `$s.Write(`$b,0,`$b.Length); `$s.Close(); `$c.Close() }`r`n")
 
@@ -90,6 +90,7 @@ class BootReadyHarness
         string dshPath = Path.Combine(baseDir, "dsh", "dsh.cmd");
         string modePath = Path.Combine(baseDir, "dsh", "mode.txt");
         string logsDir = Path.Combine(baseDir, "logs");
+        string failedSummary = "";
 
         try
         {
@@ -108,6 +109,9 @@ class BootReadyHarness
                 Assert(ex.Message.IndexOf("BootReady", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     ex.Message.IndexOf("插件或 Profile", StringComparison.OrdinalIgnoreCase) >= 0,
                     "listen then exit=1 reports startup failure");
+                failedSummary = failed.GetRecentFailureSummary();
+                Assert(failedSummary.IndexOf("plugin tree failed", StringComparison.OrdinalIgnoreCase) >= 0,
+                    "startup failure retains fatal plugin summary");
             }
             finally { failed.Dispose(); }
             Assert(!Open(failPort), "failed boot leaves no listening port");
@@ -136,6 +140,11 @@ class BootReadyHarness
             Assert(log.IndexOf("HTTP200", StringComparison.OrdinalIgnoreCase) >= 0 &&
                 log.IndexOf("BOOTREADY", StringComparison.OrdinalIgnoreCase) >= 0,
                 "HTTP200 and BootReady confirmation are logged");
+            Assert(log.IndexOf("BACKEND process-exited wrapperPid=", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                log.IndexOf("exitCode=1", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                log.IndexOf("expectedStop=false", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                log.IndexOf("state=Starting", StringComparison.OrdinalIgnoreCase) >= 0,
+                "unexpected pre-BootReady exit is diagnosed with state and exit code");
         }
         catch (Exception ex)
         {

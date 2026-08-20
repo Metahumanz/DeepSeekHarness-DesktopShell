@@ -48,7 +48,7 @@ Assert-True "listener fallback exists" ($cs -match 'public void TryStopListenerF
 Assert-True "fallback refuses unverified identity" ($cs -match 'STOP-FALLBACK refused')
 Assert-True "fallback re-verifies DSH identity first" ($cs -match 'if \(IsLikelyDshProcess\(currentPid, out commandLine, port\)\)')
 Assert-True "port must close twice before success" ($cs -match 'public bool WaitForPortClosedTwice\(int port, int timeoutMs\)')
-Assert-True "OwnsBackend released only after stop sequence" ($cs -match 'OwnsBackend = false;\r?\n\s*BootReady = false;\r?\n\s*HostLog\.Line\("STOP-OWNED complete')
+Assert-True "OwnsBackend released only after stop sequence" ($cs -match 'OwnsBackend = false;\r?\n\s*BootReady = false;\r?\n\s*BackendState = "Stopped";\r?\n\s*HostLog\.Line\("STOP-OWNED complete')
 
 # ---- 3. 健康检查竞态（generation） ----
 Assert-True "backendGeneration field exists" ($cs -match 'private long backendGeneration;')
