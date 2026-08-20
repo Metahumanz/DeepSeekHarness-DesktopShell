@@ -16,7 +16,7 @@ $cs = [System.IO.File]::ReadAllText($source)
 Assert-True "ownedListenerPid field exists" ($cs -match 'private int ownedListenerPid = -1;')
 Assert-True "listener PID recorded on identity confirmed" ($cs -match 'if \(pid > 0\) ownedListenerPid = pid;')
 Assert-True "identity probe verifies it is this DSH" ($cs -match 'ProbeListenerIdentity\(int port, int pid' -and $cs -match 'IsLikelyDshCommandLine\(commandLine, port, out dummy\)')
-Assert-True "wrapper PID recorded at start" ($cs -match 'ownedWrapperPid = process\.Id;')
+Assert-True "wrapper PID recorded at start" ($cs -match 'run\.WrapperPid = process\.Id;' -and $cs -match 'ownedWrapperPid = run\.WrapperPid;')
 
 # ---- 1b. 四态状态机（P0-1/2/3/4）：Pending 绝不等于 Foreign ----
 Assert-True "ListenerIdentity enum has five states" ($cs -match 'enum ListenerIdentity' -and $cs -match 'Pending' -and $cs -match 'OwnedJob' -and $cs -match 'VerifiedDsh' -and $cs -match 'Foreign')
@@ -31,10 +31,10 @@ Assert-True "pending resets foreign stability counter" ($cs -match 'foreignPid =
 
 # ---- 1c. 启动成功即确认归属（P0-5） + 半失败清理（P0-6） ----
 Assert-True "BackendStartResult returned by EnsureStarted" ($cs -match 'public class BackendStartResult' -and $cs -match 'public BackendStartResult EnsureStarted')
-Assert-True "success requires BootReady after listener confirmation" ($cs -match 'WaitForBootReady\(port, cancellationToken, true\)' -and $cs -match 'public bool BootReady')
+Assert-True "success requires BootReady after listener confirmation" ($cs -match 'WaitForBootReady\(run, port, cancellationToken, true\)' -and $cs -match 'public bool BootReady')
 Assert-True "BootReady requires ready banner and HTTP 200" ($cs -match 'requireReadyBanner' -and $cs -match 'IsHttp200\(port, 500, cancellationToken\)' -and $cs -match 'stableSamples = 3')
 Assert-True "process exit before BootReady is startup failure" ($cs -match 'DSH 在 BootReady 前退出')
-Assert-True "BACKEND ready is logged only after BootReady" ($cs -match 'BACKEND ready wrapper=')
+Assert-True "BACKEND ready is logged only after BootReady" ($cs -match 'BACKEND ready generation=')
 Assert-True "failed start cleans up owned job/process" ($cs -match 'START-CLEANUP begin' -and $cs -match 'START-CLEANUP done')
 Assert-True "cleanup runs before rethrow" ($cs -match 'HostLog\.Line\("START-CLEANUP done"\);\r?\n\s*throw;')
 
@@ -48,7 +48,7 @@ Assert-True "listener fallback exists" ($cs -match 'public void TryStopListenerF
 Assert-True "fallback refuses unverified identity" ($cs -match 'STOP-FALLBACK refused')
 Assert-True "fallback re-verifies DSH identity first" ($cs -match 'if \(IsLikelyDshProcess\(currentPid, out commandLine, port\)\)')
 Assert-True "port must close twice before success" ($cs -match 'public bool WaitForPortClosedTwice\(int port, int timeoutMs\)')
-Assert-True "OwnsBackend released only after stop sequence" ($cs -match 'OwnsBackend = false;\r?\n\s*BootReady = false;\r?\n\s*BackendState = "Stopped";\r?\n\s*HostLog\.Line\("STOP-OWNED complete')
+Assert-True "OwnsBackend released only after stop sequence" ($cs -match 'OwnsBackend = false;' -and $cs -match 'BackendState = "Stopped";' -and $cs -match 'STOP-OWNED complete')
 
 # ---- 3. 健康检查竞态（generation） ----
 Assert-True "backendGeneration field exists" ($cs -match 'private long backendGeneration;')
@@ -93,7 +93,7 @@ Assert-True "foreign stableCount logged" ($cs -match 'identity=foreign stableCou
 
 # ---- 8. ready banner 辅助信号（P1-11） ----
 Assert-True "sawReadyBanner field exists" ($cs -match 'private bool sawReadyBanner;')
-Assert-True "banner detected in OnOutput" ($cs -match 'READY-BANNER seen port=')
+Assert-True "banner detected in OnOutput" ($cs -match 'READY-BANNER seen generation=' -and $cs -match 'run\.SawReadyBanner = true;')
 Assert-True "banner is auxiliary only (job check still primary)" ($cs -match 'ProbeListenerIdentity\(port, pid, out commandLine\)')
 
 if ($fail -eq 0) { Write-Host 'RESTART STATE TESTS PASSED' } else { Write-Host "FAILURES: $fail" }

@@ -11,6 +11,7 @@ function Assert-True([string]$label, [bool]$condition) {
 
 Assert-True 'backend exit event carries identity and state' (
     $cs -match 'class BackendProcessExitedEventArgs' -and
+    $cs -match 'Generation' -and
     $cs -match 'WrapperPid' -and
     $cs -match 'ExitCode' -and
     $cs -match 'ExpectedStop' -and
@@ -21,26 +22,33 @@ Assert-True 'manager exposes backend state and exit event' (
     $cs -match 'BackendState = "Starting"' -and
     $cs -match 'BackendState = "Running"')
 Assert-True 'process exit is observed before normal cleanup' (
-    $cs -match 'process\.Exited \+= OnProcessExited' -and
+    $cs -match 'process\.Exited \+= delegate' -and
+    $cs -match 'OnProcessExited\(capturedRun\)' -and
     $cs -match 'private void OnProcessExited')
 Assert-True 'desktop-shell log records unexpected process exit fields' (
     $cs -match 'BACKEND process-exited wrapperPid=' -and
     $cs -match 'expectedStop=' -and
     $cs -match 'state=" \+ state')
 Assert-True 'stdout and stderr are captured from process start' (
-    $cs -match 'process\.OutputDataReceived \+= OnOutput' -and
-    $cs -match 'process\.ErrorDataReceived \+= OnError' -and
-    $cs -match 'CaptureOutput\("stdout"' -and
-    $cs -match 'CaptureOutput\("stderr"')
+    $cs -match 'process\.OutputDataReceived \+= delegate' -and
+    $cs -match 'process\.ErrorDataReceived \+= delegate' -and
+    $cs -match 'CaptureOutput\(run, "stdout"' -and
+    $cs -match 'CaptureOutput\(run, "stderr"')
 Assert-True 'recent output is bounded and fatal summary is extracted' (
-    $cs -match 'Queue<string> recentOutput' -and
+    $cs -match 'Queue<string> RecentOutput' -and
+    $cs -match 'BackendRun' -and
     $cs -match 'RecentOutputLimit' -and
     $cs -match 'GetRecentFailureSummary' -and
     $cs -match 'plugin tree' -and
     $cs -match 'loader entry')
 Assert-True 'output drain is bounded after process exit' (
     $cs -match 'WaitForOutputDrain' -and
-    $cs -match 'WaitOne\(1000\)')
+    $cs -match 'run\.StdoutClosed\.WaitOne\(1000\)' -and
+    $cs -match 'run\.StderrClosed\.WaitOne\(1000\)')
+Assert-True 'stale generation exit is logged and ignored' (
+    $cs -match 'ignored=true' -and
+    $cs -match 'if \(!current\)' -and
+    $cs -match '也不向 MainForm 发送')
 Assert-True 'MainForm routes post-BootReady exit to runtime interruption' (
     $cs -match 'dsh\.BackendProcessExited \+= OnBackendProcessExited' -and
     $cs -match 'private void OnBackendProcessExited' -and

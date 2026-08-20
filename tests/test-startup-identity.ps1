@@ -120,7 +120,9 @@ namespace Harness
                 if (File.Exists(hostLogA))
                 {
                     string logText = File.ReadAllText(hostLogA);
-                    Assert(logText.IndexOf("BACKEND ready wrapper=") >= 0, "A: BACKEND ready logged with wrapper+listener");
+                    Assert(logText.IndexOf("BACKEND ready generation=") >= 0 &&
+                        logText.IndexOf("wrapper=") >= 0 && logText.IndexOf("listener=") >= 0,
+                        "A: BACKEND ready logged with generation+wrapper+listener");
                     Assert(logText.IndexOf("inOwnJob=true") >= 0 || logText.IndexOf("identity=verified-dsh") >= 0,
                         "A: identity transition logged (inOwnJob or verified-dsh)");
                     Assert(logText.IndexOf("identity=pending") >= 0 || logText.IndexOf("PORT closed") >= 0,

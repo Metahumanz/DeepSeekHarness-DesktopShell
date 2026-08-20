@@ -912,6 +912,7 @@ namespace DeepSeekHarnessDesktop
 
     internal sealed class BackendProcessExitedEventArgs : EventArgs
     {
+        public readonly long Generation;
         public readonly int WrapperPid;
         public readonly int ExitCode;
         public readonly bool ExpectedStop;
@@ -920,7 +921,14 @@ namespace DeepSeekHarnessDesktop
 
         public BackendProcessExitedEventArgs(int wrapperPid, int exitCode,
             bool expectedStop, string state, bool bootReadyAtExit)
+            : this(0, wrapperPid, exitCode, expectedStop, state, bootReadyAtExit)
         {
+        }
+
+        public BackendProcessExitedEventArgs(long generation, int wrapperPid, int exitCode,
+            bool expectedStop, string state, bool bootReadyAtExit)
+        {
+            Generation = generation;
             WrapperPid = wrapperPid;
             ExitCode = exitCode;
             ExpectedStop = expectedStop;
@@ -931,12 +939,53 @@ namespace DeepSeekHarnessDesktop
 
     internal sealed class DshProcessManager : IDisposable
     {
+        /// <summary>
+        /// 一次 backend 启动就是一个不可变身份的 run。Process 的 Exited/stdout/stderr
+        /// 回调捕获它，而不是回头读取 manager 当前的 process/状态字段；这样旧代回调
+        /// 即使延迟到新代启动之后，也只能写旧 run 的诊断，不能污染新代状态机。
+        /// </summary>
+        private sealed class BackendRun : IDisposable
+        {
+            public readonly long Generation;
+            public readonly int Port;
+            public readonly string Profile;
+            public readonly string LogPath;
+            public readonly object OutputLock = new object();
+            public readonly Queue<string> RecentOutput = new Queue<string>();
+            public readonly ManualResetEvent StdoutClosed = new ManualResetEvent(true);
+            public readonly ManualResetEvent StderrClosed = new ManualResetEvent(true);
+            public Process Process;
+            public int WrapperPid = -1;
+            public bool ExpectedStop;
+            public string State = "Starting";
+            public bool BootReady;
+            public bool SawReadyBanner;
+            public string LastPortLog = "";
+
+            public BackendRun(long generation, int port, string profile, string logPath)
+            {
+                Generation = generation;
+                Port = port;
+                Profile = profile ?? "";
+                LogPath = logPath ?? "";
+            }
+
+            public void Dispose()
+            {
+                try { if (Process != null) Process.Dispose(); } catch { }
+                try { StdoutClosed.Dispose(); } catch { }
+                try { StderrClosed.Dispose(); } catch { }
+            }
+        }
+
         private Process process;
         private IntPtr jobHandle = IntPtr.Zero;
         private readonly object logLock = new object();
-        private readonly Queue<string> recentOutput = new Queue<string>();
-        private readonly ManualResetEvent stdoutClosed = new ManualResetEvent(true);
-        private readonly ManualResetEvent stderrClosed = new ManualResetEvent(true);
+        private readonly object runLock = new object();
+        private readonly List<BackendRun> backendRuns = new List<BackendRun>();
+        private long backendGeneration;
+        private BackendRun currentRun;
+        private bool disposed;
         private string logPath;
         public bool OwnsBackend { get; private set; }
         public bool BootReady { get; private set; }
@@ -947,7 +996,61 @@ namespace DeepSeekHarnessDesktop
 
         public DshProcessManager()
         {
+            backendGeneration = 0;
             BackendState = "Stopped";
+        }
+
+        private BackendRun CurrentRun
+        {
+            get
+            {
+                lock (runLock) return currentRun;
+            }
+        }
+
+        private bool IsCurrentRun(BackendRun run)
+        {
+            if (run == null) return false;
+            lock (runLock) return Object.ReferenceEquals(currentRun, run);
+        }
+
+        private BackendRun RegisterRun(int port, string profile, string runLogPath)
+        {
+            BackendRun run = new BackendRun(
+                Interlocked.Increment(ref backendGeneration), port, profile, runLogPath);
+            lock (runLock)
+            {
+                backendRuns.Add(run);
+                currentRun = run;
+                // 与 currentRun 的换代一起更新这些仍为旧调用方保留的镜像字段，
+                // 让延迟旧代 stdout/Exited 回调没有“换代窗口”可以写入新代镜像。
+                process = null;
+                OwnsBackend = false;
+                expectedStop = false;
+                BackendState = "Starting";
+                BootReady = false;
+                ownedListenerPid = -1;
+                ownedWrapperPid = -1;
+                ownedPort = port;
+                ownedProfile = profile ?? "";
+                sawReadyBanner = false;
+                lastPortLog = "";
+            }
+            return run;
+        }
+
+        private BackendRun FindRun(Process candidate)
+        {
+            if (candidate == null) return null;
+            lock (runLock)
+            {
+                for (int i = 0; i < backendRuns.Count; i++)
+                {
+                    if (Object.ReferenceEquals(backendRuns[i].Process, candidate))
+                        return backendRuns[i];
+                }
+            }
+            return null;
         }
 
         // 真正监听 DSH 端口的进程（npx 经 .cmd 启动时，process 只是 cmd 包装进程，
@@ -1575,7 +1678,7 @@ namespace DeepSeekHarnessDesktop
                         "。已拒绝直接附着。请结束该进程后重试，或重新启动桌面壳并在提示时确认附着。");
                 }
 
-                WaitForBootReady(port, cancellationToken, false);
+                WaitForBootReady(null, port, cancellationToken, false);
                 expectedStop = false;
                 BackendState = "Running";
                 OwnsBackend = false;
@@ -1599,6 +1702,7 @@ namespace DeepSeekHarnessDesktop
 
             string version = AppSettings.NormalizeDshVersion(requestedVersion);
             string profile = AppSettings.NormalizeProfileName(profileName);
+            BackendRun run = null;
             string command = configuredDshPath == null ? "" : configuredDshPath.Trim();
             bool usingNpx = false;
 
@@ -1650,7 +1754,6 @@ namespace DeepSeekHarnessDesktop
 
             bool noOpen = SupportsNoOpen(command, usingNpx, effectiveVersion, profile);
             string arguments = BuildWebLaunchArguments(usingNpx, version, profile, port, noOpen);
-            AppendLog("CLI capabilities noOpen=" + noOpen.ToString() + " effectiveVersion=" + effectiveVersion);
 
             cancellationToken.ThrowIfCancellationRequested();
             ProcessStartInfo psi = BuildStartInfo(command, arguments, workingDirectory);
@@ -1662,33 +1765,47 @@ namespace DeepSeekHarnessDesktop
             // 那会污染整个 DSH 进程树（Agent/终端/子进程执行 git@github.com:... 时被
             // 强制改成 https，破坏本应正常的 SSH 私有仓库认证）。
             // git+ssh→https 降级只保留在 PowerShell 管理器“插件安装事务”的进程内作用域。
+            run = RegisterRun(port, profile, logPath);
+            // 新 run 接管“当前代”身份；旧代回调仍然持有自己的 BackendRun，不能再通过
+            // manager 的这些镜像字段影响它。
+            AppendLog(run, "CLI capabilities noOpen=" + noOpen.ToString() + " effectiveVersion=" + effectiveVersion);
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                expectedStop = false;
-                BackendState = "Starting";
-                BootReady = false;
-                process = new Process();
+                run.ExpectedStop = false;
+                run.State = "Starting";
+                run.BootReady = false;
+                run.Process = new Process();
+                process = run.Process;
                 process.StartInfo = psi;
                 process.EnableRaisingEvents = true;
-                process.OutputDataReceived += OnOutput;
-                process.ErrorDataReceived += OnError;
-                process.Exited += OnProcessExited;
+                BackendRun capturedRun = run;
+                process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    OnOutput(capturedRun, e);
+                };
+                process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    OnError(capturedRun, e);
+                };
+                process.Exited += delegate(object sender, EventArgs e)
+                {
+                    OnProcessExited(capturedRun);
+                };
 
-                AppendLog("Launching: " + psi.FileName + " " + psi.Arguments);
-                stdoutClosed.Reset();
-                stderrClosed.Reset();
+                AppendLog(run, "Launching: " + psi.FileName + " " + psi.Arguments);
+                run.StdoutClosed.Reset();
+                run.StderrClosed.Reset();
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!process.Start())
                     throw new InvalidOperationException("无法启动 DeepSeek Harness。");
 
                 OwnsBackend = true;
-                ownedWrapperPid = process.Id;
-                ownedPort = port;
-                ownedProfile = profile;
+                run.WrapperPid = process.Id;
+                ownedWrapperPid = run.WrapperPid;
+                ownedPort = run.Port;
+                ownedProfile = run.Profile;
                 ownedListenerPid = -1;
-                sawReadyBanner = false;
-                lastPortLog = "";
                 TryAttachJob(process);
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
@@ -1723,15 +1840,22 @@ namespace DeepSeekHarnessDesktop
                         // 归属已确认（Job 证明优先，命令行证明次之）：这仍不是 BootReady。
                         if (pid > 0) ownedListenerPid = pid;
                         LogPortState(port, pid, identity, 0);
-                        WaitForBootReady(port, cancellationToken, true);
-                        BootReady = true;
-                        BackendState = "Running";
-                        HostLog.Line("BACKEND ready wrapper=" + ownedWrapperPid.ToString() +
+                        WaitForBootReady(run, port, cancellationToken, true);
+                        run.BootReady = true;
+                        run.State = "Running";
+                        if (IsCurrentRun(run))
+                        {
+                            BootReady = true;
+                            BackendState = "Running";
+                            sawReadyBanner = run.SawReadyBanner;
+                        }
+                        HostLog.Line("BACKEND ready generation=" + run.Generation.ToString() +
+                            " wrapper=" + run.WrapperPid.ToString() +
                             " listener=" + pid.ToString() + " identity=" + identity.ToString() +
-                            " sawReadyBanner=" + sawReadyBanner.ToString());
-                        AppendLog("Listener PID: " + pid.ToString() + " identity=" + identity.ToString());
+                            " sawReadyBanner=" + run.SawReadyBanner.ToString());
+                        AppendLog(run, "Listener PID: " + pid.ToString() + " identity=" + identity.ToString());
                         cancellationToken.ThrowIfCancellationRequested();
-                        return new BackendStartResult { WrapperPid = ownedWrapperPid, ListenerPid = pid, BootReady = true };
+                        return new BackendStartResult { WrapperPid = run.WrapperPid, ListenerPid = pid, BootReady = true };
                     }
 
                     if (identity == ListenerIdentity.Foreign)
@@ -1752,9 +1876,9 @@ namespace DeepSeekHarnessDesktop
                         foreignStable = 0;
                     }
 
-                    if (process.HasExited)
+                    if (run.Process.HasExited)
                         throw new InvalidOperationException("DSH 在 Web 服务就绪前退出，退出码 " +
-                            process.ExitCode.ToString() + "。请查看日志：" + logPath);
+                            run.Process.ExitCode.ToString() + "。请查看日志：" + run.LogPath);
 
                     cancellationToken.ThrowIfCancellationRequested();
                     Thread.Sleep(120);
@@ -1768,23 +1892,27 @@ namespace DeepSeekHarnessDesktop
                 // 半失败清理：UI 会报失败，绝不能留下“OwnsBackend=true 但 DSH 还在后台跑”；
                 // 只清理本次刚创建的 Job/process（未验证身份的监听者绝不动）。
                 HostLog.Line("START-CLEANUP begin (failed backend start, port=" + port.ToString() + ")");
-                WaitForOutputDrain();
-                if (OwnsBackend)
+                WaitForOutputDrain(run);
+                if (OwnsBackend && IsCurrentRun(run))
                 {
-                    StopOwnedWrapper();
+                    StopOwnedWrapper(run);
                     TryStopListenerFallback(port);
                     WaitForPortClosedTwice(port, 5000);
                 }
-                OwnsBackend = false;
-                BootReady = false;
-                BackendState = "Stopped";
-                ownedListenerPid = -1;
-                ownedWrapperPid = -1;
-                ownedPort = -1;
-                ownedProfile = "";
-                sawReadyBanner = false;
-                try { if (process != null) process.Dispose(); } catch { }
-                process = null;
+                run.BootReady = false;
+                run.State = "Stopped";
+                if (IsCurrentRun(run))
+                {
+                    OwnsBackend = false;
+                    BootReady = false;
+                    BackendState = "Stopped";
+                    ownedListenerPid = -1;
+                    ownedWrapperPid = -1;
+                    ownedPort = -1;
+                    ownedProfile = "";
+                    sawReadyBanner = false;
+                    process = null;
+                }
                 HostLog.Line("START-CLEANUP done");
                 throw;
             }
@@ -1795,27 +1923,29 @@ namespace DeepSeekHarnessDesktop
         /// 自有后端必须先输出官方 dsh web banner，再连续收到 HTTP 200，且进程仍然存活，
         /// 才返回 BootReady。外部附着没有本次启动的 banner，因此只要求 HTTP 200 稳定确认。
         /// </summary>
-        private void WaitForBootReady(int port, CancellationToken cancellationToken, bool requireReadyBanner)
+        private void WaitForBootReady(BackendRun run, int port, CancellationToken cancellationToken, bool requireReadyBanner)
         {
             const int timeoutMs = 120000;
             const int stableSamples = 3;
             int waited = 0;
             int stable = 0;
+            string bootLogPath = run == null ? logPath : run.LogPath;
 
             while (waited < timeoutMs)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (OwnsBackend && process != null && process.HasExited)
+                if (run != null && run.Process != null && run.Process.HasExited)
                 {
                     int exitCode = -1;
-                    try { exitCode = process.ExitCode; } catch { }
+                    try { exitCode = run.Process.ExitCode; } catch { }
                     throw new InvalidOperationException(
                         "DSH 在 BootReady 前退出，退出码 " + exitCode.ToString() +
-                        "。请查看日志：" + logPath);
+                        "。请查看日志：" + bootLogPath);
                 }
 
-                if (requireReadyBanner && !sawReadyBanner)
+                bool readyBannerSeen = run == null ? sawReadyBanner : run.SawReadyBanner;
+                if (requireReadyBanner && !readyBannerSeen)
                 {
                     Thread.Sleep(120);
                     waited += 120;
@@ -1827,19 +1957,21 @@ namespace DeepSeekHarnessDesktop
                 {
                     stable++;
                     HostLog.Line("BOOT HTTP200 port=" + port.ToString() +
+                        " generation=" + (run == null ? "external" : run.Generation.ToString()) +
                         " stableCount=" + stable.ToString());
                     if (stable >= stableSamples)
                     {
-                        if (OwnsBackend && process != null && process.HasExited)
+                        if (run != null && run.Process != null && run.Process.HasExited)
                         {
                             int exitCode = -1;
-                            try { exitCode = process.ExitCode; } catch { }
+                            try { exitCode = run.Process.ExitCode; } catch { }
                             throw new InvalidOperationException(
                                 "DSH 在 BootReady 确认完成前退出，退出码 " + exitCode.ToString() +
-                                "。请查看日志：" + logPath);
+                                "。请查看日志：" + bootLogPath);
                         }
                         HostLog.Line("BOOTREADY port=" + port.ToString() +
-                            " banner=" + sawReadyBanner.ToString() +
+                            " generation=" + (run == null ? "external" : run.Generation.ToString()) +
+                            " banner=" + readyBannerSeen.ToString() +
                             " http200=true stableCount=" + stable.ToString());
                         return;
                     }
@@ -1857,7 +1989,7 @@ namespace DeepSeekHarnessDesktop
 
             throw new TimeoutException(
                 "等待 DSH 完成引导超时（需要 ready banner、HTTP 200 和稳定确认）。请查看日志：" +
-                logPath);
+                bootLogPath);
         }
 
         private bool IsHttp200(int port, int timeoutMs, CancellationToken cancellationToken)
@@ -2135,15 +2267,25 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         public void StopOwnedWrapper()
         {
-            if (!OwnsBackend) return;
+            StopOwnedWrapper(CurrentRun);
+        }
+
+        private void StopOwnedWrapper(BackendRun run)
+        {
+            if (run == null || !IsCurrentRun(run) || !OwnsBackend) return;
+
+            Process ownedProcess = run.Process;
 
             bool alreadyExited = false;
-            try { alreadyExited = process == null || process.HasExited; } catch { }
+            try { alreadyExited = ownedProcess == null || ownedProcess.HasExited; } catch { }
+            run.ExpectedStop = true;
+            expectedStop = true;
             if (!alreadyExited)
             {
-                expectedStop = true;
+                run.State = "Stopping";
                 BackendState = "Stopping";
             }
+            run.BootReady = false;
             BootReady = false;
 
             if (jobHandle != IntPtr.Zero)
@@ -2152,11 +2294,13 @@ namespace DeepSeekHarnessDesktop
                 jobHandle = IntPtr.Zero;
             }
 
-            try { if (process != null && !process.HasExited) process.Kill(); } catch { }
-            try { if (process != null) process.WaitForExit(3000); } catch { }
+            try { if (ownedProcess != null && !ownedProcess.HasExited) ownedProcess.Kill(); } catch { }
+            try { if (ownedProcess != null) ownedProcess.WaitForExit(3000); } catch { }
 
-            HostLog.Line("STOP-WRAPPER done wrapperPid=" + ownedWrapperPid.ToString() +
-                " exited=" + (process == null || process.HasExited).ToString());
+            bool exited = false;
+            try { exited = ownedProcess == null || ownedProcess.HasExited; } catch { }
+            HostLog.Line("STOP-WRAPPER done generation=" + run.Generation.ToString() +
+                " wrapperPid=" + run.WrapperPid.ToString() + " exited=" + exited.ToString());
         }
 
         /// <summary>
@@ -2216,20 +2360,29 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         public void StopOwnedBackend()
         {
-            if (!OwnsBackend) return;
+            BackendRun run = CurrentRun;
+            if (!OwnsBackend || run == null) return;
 
-            int port = ownedPort;
-            HostLog.Line("STOP-OWNED begin port=" + port.ToString() +
-                " oldWrapperPid=" + ownedWrapperPid.ToString() +
+            int port = run.Port;
+            HostLog.Line("STOP-OWNED begin generation=" + run.Generation.ToString() +
+                " port=" + port.ToString() +
+                " oldWrapperPid=" + run.WrapperPid.ToString() +
                 " oldListenerPid=" + ownedListenerPid.ToString());
 
-            StopOwnedWrapper();
+            StopOwnedWrapper(run);
             TryStopListenerFallback(port);
             WaitForPortClosedTwice(port, 5000);
 
-            OwnsBackend = false;
-            BootReady = false;
-            BackendState = "Stopped";
+            run.BootReady = false;
+            run.State = "Stopped";
+            run.ExpectedStop = true;
+            if (IsCurrentRun(run))
+            {
+                OwnsBackend = false;
+                BootReady = false;
+                BackendState = "Stopped";
+                expectedStop = true;
+            }
             HostLog.Line("STOP-OWNED complete port=" + port.ToString() + " ownsBackend=false");
         }
 
@@ -2323,66 +2476,100 @@ namespace DeepSeekHarnessDesktop
 
         private void OnOutput(object sender, DataReceivedEventArgs e)
         {
+            OnOutput(FindRun(sender as Process), e);
+        }
+
+        private void OnOutput(BackendRun run, DataReceivedEventArgs e)
+        {
+            if (run == null || e == null) return;
             if (e.Data == null)
             {
-                try { stdoutClosed.Set(); } catch { }
+                try { run.StdoutClosed.Set(); } catch { }
                 return;
             }
 
-            CaptureOutput("stdout", e.Data);
-                // DSH 官方 ready banner（如 "dsh web: http://127.0.0.1:3080"）来自本次自己
-                // 启动的进程树时是额外强信号；只记录标志作辅助，不取代 Job/PID 归属检查。
-            if (!sawReadyBanner && ownedPort > 0 &&
+            CaptureOutput(run, "stdout", e.Data);
+            // DSH 官方 ready banner（如 "dsh web: http://127.0.0.1:3080"）来自本次自己
+            // 启动的进程树时是额外强信号；只记录到本 run，不取代 Job/PID 归属检查。
+            if (!run.SawReadyBanner && run.Port > 0 &&
                 e.Data.IndexOf("dsh web", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                e.Data.IndexOf("127.0.0.1:" + ownedPort.ToString(), StringComparison.OrdinalIgnoreCase) >= 0)
+                (e.Data.IndexOf("127.0.0.1:" + run.Port.ToString(), StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 e.Data.IndexOf("localhost:" + run.Port.ToString(), StringComparison.OrdinalIgnoreCase) >= 0))
             {
-                sawReadyBanner = true;
-                HostLog.Line("READY-BANNER seen port=" + ownedPort.ToString());
+                run.SawReadyBanner = true;
+                lock (runLock)
+                {
+                    if (Object.ReferenceEquals(currentRun, run)) sawReadyBanner = true;
+                }
+                HostLog.Line("READY-BANNER seen generation=" + run.Generation.ToString() +
+                    " port=" + run.Port.ToString());
             }
         }
 
         private void OnError(object sender, DataReceivedEventArgs e)
         {
+            OnError(FindRun(sender as Process), e);
+        }
+
+        private void OnError(BackendRun run, DataReceivedEventArgs e)
+        {
+            if (run == null || e == null) return;
             if (e.Data == null)
             {
-                try { stderrClosed.Set(); } catch { }
+                try { run.StderrClosed.Set(); } catch { }
                 return;
             }
-            CaptureOutput("stderr", e.Data);
+            CaptureOutput(run, "stderr", e.Data);
         }
 
         private void WaitForOutputDrain()
         {
-            try
-            {
-                if (process != null && !process.HasExited) return;
-            }
-            catch { }
-            try { stdoutClosed.WaitOne(1000); } catch { }
-            try { stderrClosed.WaitOne(1000); } catch { }
+            WaitForOutputDrain(CurrentRun);
         }
 
-        private void CaptureOutput(string stream, string text)
+        private void WaitForOutputDrain(BackendRun run)
         {
-            if (text == null) return;
-            AppendLog("[" + stream + "] " + text);
+            if (run == null) return;
+            try
+            {
+                if (run.Process != null && !run.Process.HasExited) return;
+            }
+            catch { }
+            try { run.StdoutClosed.WaitOne(1000); } catch { }
+            try { run.StderrClosed.WaitOne(1000); } catch { }
+        }
+
+        private void CaptureOutput(BackendRun run, string stream, string text)
+        {
+            if (run == null || text == null) return;
+            AppendLog(run, "[" + stream + "] " + text);
         }
 
         private void AppendLog(string text)
         {
+            AppendLog(CurrentRun, text);
+        }
+
+        private void AppendLog(BackendRun run, string text)
+        {
             try
             {
-                lock (logLock)
+                if (run != null && !String.IsNullOrEmpty(text))
                 {
-                    if (!String.IsNullOrEmpty(text))
+                    lock (run.OutputLock)
                     {
-                        recentOutput.Enqueue(text);
-                        while (recentOutput.Count > RecentOutputLimit)
-                            recentOutput.Dequeue();
+                        run.RecentOutput.Enqueue(text);
+                        while (run.RecentOutput.Count > RecentOutputLimit)
+                            run.RecentOutput.Dequeue();
                     }
-                    if (!String.IsNullOrEmpty(logPath))
+                }
+
+                string targetLogPath = run == null ? logPath : run.LogPath;
+                if (!String.IsNullOrEmpty(targetLogPath))
+                {
+                    lock (logLock)
                     {
-                        File.AppendAllText(logPath, "[" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " +
+                        File.AppendAllText(targetLogPath, "[" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " +
                             text + "\r\n", Encoding.UTF8);
                     }
                 }
@@ -2396,70 +2583,113 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         public string GetRecentFailureSummary()
         {
-            lock (logLock)
+            BackendRun run = CurrentRun;
+            List<string> lines;
+            if (run == null)
             {
-                List<string> lines = new List<string>(recentOutput);
-                List<string> selected = new List<string>();
-                string[] markers = new string[]
-                {
-                    "fatal", "failed", "error", "exception", "plugin tree", "loader entry"
-                };
-
-                for (int i = lines.Count - 1; i >= 0 && selected.Count < 8; i--)
-                {
-                    string line = lines[i] ?? "";
-                    string lower = line.ToLowerInvariant();
-                    bool match = false;
-                    foreach (string marker in markers)
-                    {
-                        if (lower.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            match = true;
-                            break;
-                        }
-                    }
-                    if (match) selected.Insert(0, line);
-                }
-
-                if (selected.Count == 0)
-                {
-                    for (int i = Math.Max(0, lines.Count - 8); i < lines.Count; i++)
-                        selected.Add(lines[i]);
-                }
-
-                if (selected.Count == 0)
-                    return "（没有捕获到后端 stdout/stderr。）";
-                return String.Join(Environment.NewLine, selected.ToArray());
+                lines = new List<string>();
             }
+            else
+            {
+                lock (run.OutputLock)
+                {
+                    lines = new List<string>(run.RecentOutput);
+                }
+            }
+
+            List<string> selected = new List<string>();
+            string[] markers = new string[]
+            {
+                "fatal", "failed", "error", "exception", "plugin tree", "loader entry"
+            };
+
+            for (int i = lines.Count - 1; i >= 0 && selected.Count < 8; i--)
+            {
+                string line = lines[i] ?? "";
+                string lower = line.ToLowerInvariant();
+                bool match = false;
+                foreach (string marker in markers)
+                {
+                    if (lower.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        match = true;
+                        break;
+                    }
+                }
+                if (match) selected.Insert(0, line);
+            }
+
+            if (selected.Count == 0)
+            {
+                for (int i = Math.Max(0, lines.Count - 8); i < lines.Count; i++)
+                    selected.Add(lines[i]);
+            }
+
+            if (selected.Count == 0)
+                return "（没有捕获到后端 stdout/stderr。）";
+            return String.Join(Environment.NewLine, selected.ToArray());
         }
 
         private void OnProcessExited(object sender, EventArgs e)
         {
-            WaitForOutputDrain();
-            Process exitedProcess = sender as Process;
+            OnProcessExited(FindRun(sender as Process));
+        }
+
+        private void OnProcessExited(BackendRun run)
+        {
+            if (run == null || disposed) return;
+            WaitForOutputDrain(run);
+            Process exitedProcess = run.Process;
             int wrapperPid = -1;
             int exitCode = -1;
-            try { if (exitedProcess != null) wrapperPid = exitedProcess.Id; } catch { }
+            try { wrapperPid = run.WrapperPid; } catch { }
+            if (wrapperPid <= 0)
+            {
+                try { if (exitedProcess != null) wrapperPid = exitedProcess.Id; } catch { }
+            }
             try
             {
                 if (exitedProcess != null) exitCode = exitedProcess.ExitCode;
-                else if (process != null) exitCode = process.ExitCode;
             }
             catch { }
 
-            bool wasExpected = expectedStop;
-            string state = BackendState ?? "Unknown";
-            bool wasBootReady = BootReady;
+            bool wasExpected = run.ExpectedStop;
+            string state = run.State ?? "Unknown";
+            bool wasBootReady = run.BootReady;
+            bool current = false;
+            lock (runLock)
+            {
+                current = Object.ReferenceEquals(currentRun, run);
+                if (current)
+                {
+                    run.BootReady = false;
+                    if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
+                        run.State = "Stopped";
+                    BootReady = false;
+                    if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
+                        BackendState = "Stopped";
+                    expectedStop = run.ExpectedStop;
+                }
+            }
             string line = "BACKEND process-exited wrapperPid=" + wrapperPid.ToString() +
+                " generation=" + run.Generation.ToString() +
                 " exitCode=" + exitCode.ToString() +
                 " expectedStop=" + wasExpected.ToString().ToLowerInvariant() +
-                " state=" + state;
+                " state=" + state +
+                (current ? "" : " ignored=true");
             HostLog.Line(line);
-            AppendLog(line);
+            AppendLog(run, line);
 
-            BootReady = false;
-            if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
-                BackendState = "Stopped";
+            if (!current)
+            {
+                // 旧代 Exited 可能在新代已经启动后才到达。它只保留在自己的
+                // recent output/log 中；绝不改新代 BootReady/BackendState/expectedStop，
+                // 也不向 MainForm 发送“后端中断”事件。
+                return;
+            }
+            // 换代可能发生在日志写入期间；在向 MainForm 派发前再确认一次，
+            // 避免旧代 callback 变成新代的“后端中断”事件。
+            if (!IsCurrentRun(run)) return;
 
             EventHandler<BackendProcessExitedEventArgs> handler = BackendProcessExited;
             if (handler != null)
@@ -2467,7 +2697,7 @@ namespace DeepSeekHarnessDesktop
                 try
                 {
                     handler(this, new BackendProcessExitedEventArgs(
-                        wrapperPid, exitCode, wasExpected, state, wasBootReady));
+                        run.Generation, wrapperPid, exitCode, wasExpected, state, wasBootReady));
                 }
                 catch (Exception handlerError)
                 {
@@ -2685,10 +2915,16 @@ namespace DeepSeekHarnessDesktop
 
         public void Dispose()
         {
+            if (disposed) return;
             StopOwnedBackend();
-            try { if (process != null) process.Dispose(); } catch { }
-            try { stdoutClosed.Dispose(); } catch { }
-            try { stderrClosed.Dispose(); } catch { }
+            disposed = true;
+            List<BackendRun> runs;
+            lock (runLock) runs = new List<BackendRun>(backendRuns);
+            foreach (BackendRun run in runs)
+            {
+                try { run.Dispose(); } catch { }
+            }
+            process = null;
         }
     }
 
