@@ -2884,15 +2884,30 @@ namespace DeepSeekHarnessDesktop
             healthTimer.Start();
 
             Shown += async delegate { await StartAsync(); };
-            HandleCreated += delegate
-            {
-                HostLog.Line("HANDLE created");
-                chromeApplied = false;
-                ApplyThemeIfChanged(true);
-            };
             FormClosing += OnFormClosing;
 
             ApplyThemeIfChanged(true);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            HostLog.Line("HANDLE created instance=" + mainFormInstanceId.ToString("N") +
+                " hwnd=" + Handle.ToInt64().ToString("X"));
+            chromeApplied = false;
+            ApplyThemeIfChanged(true);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            IntPtr hwnd = IntPtr.Zero;
+            try { hwnd = Handle; } catch { }
+            bool recreating = false;
+            try { recreating = RecreatingHandle; } catch { }
+            HostLog.Line("HANDLE destroyed instance=" + mainFormInstanceId.ToString("N") +
+                " hwnd=" + hwnd.ToInt64().ToString("X") +
+                " recreating=" + recreating.ToString().ToLowerInvariant());
+            base.OnHandleDestroyed(e);
         }
 
         private string ReadVersionText()
@@ -4347,7 +4362,6 @@ namespace DeepSeekHarnessDesktop
             hiddenToTray = false;
             HostLog.Line("TRAY restore");
             Show();
-            ShowInTaskbar = true;
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Activate();
             BringToFront();
@@ -4362,7 +4376,6 @@ namespace DeepSeekHarnessDesktop
             hiddenToTray = true;
             HostLog.Line("TRAY hide");
             Hide();
-            ShowInTaskbar = false;
         }
 
         protected override void WndProc(ref Message m)
