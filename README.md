@@ -19,7 +19,7 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> 当前基线：DesktopShell v1.0.2 · DSH 0.1.0-rc.7（默认，因上游 rc.8 npm 依赖发布暂不完整）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
+> 当前基线：DesktopShell v1.0.2 · DSH 0.1.0-rc.7（默认，因 fresh npx 安装可靠性；rc.8 已实测 CLI/Web 兼容）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
 
 ## 安装
 
