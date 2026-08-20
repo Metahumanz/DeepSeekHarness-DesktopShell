@@ -1428,7 +1428,8 @@ namespace DeepSeekHarnessDesktop
 
         /// <summary>
         /// 后台健康检查专用（每 5 秒一次）：
-        /// - 自家后端：进程存活 + TCP 即可（无需身份复验）
+        /// - 自家后端：wrapper 存活 + TCP + 当前 listener PID 与已记录 PID 相同，
+        ///   或当前 PID 属于本壳 Job；端口换手到 foreign process 时立即不健康
         /// - 外部后端：每次用廉价的原生 TCP 表拿「当前端口 owner PID」（GetExtendedTcpTable，
         ///   不拉 netstat 子进程）；owner PID 与上次已验证的 PID 相同 → 身份未变，直接健康；
         ///   PID 变化（端口被换手）才做昂贵的 CIM 命令行验证。不再使用 30 秒时间窗缓存。
@@ -1438,7 +1439,12 @@ namespace DeepSeekHarnessDesktop
             if (OwnsBackend)
             {
                 if (process == null || process.HasExited) return false;
-                return IsReady(port, timeoutMs);
+                if (!IsReady(port, timeoutMs)) return false;
+
+                int currentPid = FindListeningPid(port);
+                if (currentPid <= 0) return false;
+                if (ownedListenerPid > 0 && currentPid == ownedListenerPid) return true;
+                return IsProcessInOwnedJob(currentPid);
             }
 
             if (!IsReady(port, timeoutMs))
@@ -1463,6 +1469,20 @@ namespace DeepSeekHarnessDesktop
             }
             lastExternalPid = pid;
             return true;
+        }
+
+        private bool IsProcessInOwnedJob(int pid)
+        {
+            if (pid <= 0 || jobHandle == IntPtr.Zero) return false;
+            try
+            {
+                using (Process processToCheck = Process.GetProcessById(pid))
+                {
+                    bool inJob;
+                    return IsProcessInJob(processToCheck.Handle, jobHandle, out inJob) && inJob;
+                }
+            }
+            catch { return false; }
         }
 
         /// <summary>启动结果：wrapper（cmd/npx 包装进程）与真正 listener 的 PID。</summary>
