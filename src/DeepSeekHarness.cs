@@ -2089,6 +2089,12 @@ namespace DeepSeekHarnessDesktop
                 supported = false;
             }
 
+            // rc.8 是已确认支持 --no-open 的测试版本：即使 --help 探测因上游 npm 发布不完整
+            // 或帮助文本未列出该隐藏参数而失败，也强制加入 --no-open，避免自动打开浏览器。
+            // rc.7 不启用；未来未测试版本仍以实际探测结果为准（失败保守不加）。
+            if (!supported && String.Equals(version, "0.1.0-rc.8", StringComparison.OrdinalIgnoreCase))
+                supported = true;
+
             cliCapabilityKey = key;
             supportsNoOpenCache = supported;
             return supported;

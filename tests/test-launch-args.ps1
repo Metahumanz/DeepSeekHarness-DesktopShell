@@ -29,6 +29,7 @@ Assert-True "BuildWebLaunchArguments shared by npx/command" ($cs -match 'BuildWe
 Assert-True "no-open appended only when supported" ($cs -match 'if \(noOpen\)\s*args \+= " --no-open";')
 Assert-True "no hardcoded version gate for no-open" ($cs -notmatch 'CompareDshVersion\(version, "0\.1\.0-rc\.8"\)')
 Assert-True "SupportsNoOpen failure is conservative (false)" ($cs -match 'supported = false;')
+Assert-True "rc.8 fallback forces no-open even if probe fails" ($cs -match 'String\.Equals\(version, "0\.1\.0-rc\.8"')
 
 # ---- 3. COMPATIBILITY.json 默认版本自洽 ----
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
