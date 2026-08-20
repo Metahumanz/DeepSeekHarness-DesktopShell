@@ -37,7 +37,7 @@ Assert-True "cleanup runs before rethrow" ($cs -match 'HostLog\.Line\("START-CLE
 
 # ---- 1d. 停止前冻结 listener 身份（P0-7） ----
 Assert-True "FreezeOwnedListener exists" ($cs -match 'public void FreezeOwnedListener\(int port\)')
-Assert-True "snapshot freezes listener before stopping" ($cs -match 'dsh\.FreezeOwnedListener\(settings\.port\);')
+Assert-True "snapshot freezes listener before stopping" ($cs -match 'dsh\.FreezeOwnedListener\(activeRuntimeSettings\.port\);')
 
 # ---- 2. 停止链：WaitForExit + 身份验证兜底 + 端口两次确认 ----
 Assert-True "stop waits for wrapper exit (3s)" ($cs -match 'process\.WaitForExit\(3000\)')

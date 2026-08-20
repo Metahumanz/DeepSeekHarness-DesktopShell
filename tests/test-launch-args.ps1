@@ -24,7 +24,7 @@ Assert-True "cache key includes command path" ($cs -match 'string key = \(usingN
 Assert-True "known rc.8 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.0-rc\.8"' -and $cs -match 'supportsNoOpenCache = true;' -and $cs -match 'return true;')
 Assert-True "known rc.8 => --no-open" ($cs -match 'if \(noOpen\)\s*args \+= " --no-open";')
 Assert-True "BuildWebLaunchArguments shared by npx/command" ($cs -match 'BuildWebLaunchArguments\(usingNpx, version, profile, port, noOpen\)')
-Assert-True "probe timeout uses bounded process-tree cleanup" ($cs -match 'KillProcessTree\(p\)' -and $cs -match 'taskkill\.exe' -and $cs -match 'WaitForExit\(5000\)')
+Assert-True "probe timeout uses bounded process-tree cleanup" ($cs -match 'KillProcessTree\(processProbe\)' -and $cs -match 'taskkill\.exe' -and $cs -match 'WaitForExit\(2000\)')
 Assert-True "no process-name based kill" ($cs -notmatch 'taskkill /IM')
 
 # ---- 3. COMPATIBILITY.json 默认版本自洽 ----

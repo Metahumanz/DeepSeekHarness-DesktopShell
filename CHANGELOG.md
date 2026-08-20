@@ -4,6 +4,18 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.4（未发布，运行期生命周期修复，2026-08-20）
+
+- **托盘隐藏/恢复不再重建主窗口句柄**：MainForm 运行期间不再切换 `ShowInTaskbar`；关闭到托盘与恢复复用同一个 Form、WebView2 和 backend，并增加 Handle 创建/销毁诊断。
+- **退出生命周期统一取消**：真实退出、Windows 关机和重启应用会取消 lifetime；startup/restart/health/retry 在 await 后检查取消，取消后清理本轮启动的 wrapper/listener，不再操作已 Dispose 控件。关闭到托盘不取消。
+- **恢复动作串行化**：WebView2 重建、配置、backend 启动/重启共用恢复门禁，重复点击不会并发 Dispose/Create；持续 WebView2 Unresponsive 时保留页面并提供显式“重建 WebView2”入口。
+- **探测进程有界执行**：版本、netstat/CIM fallback 和 `--help` 探测统一异步读取 stdout/stderr、超时回收进程树，不按进程名误杀。
+- **运行配置与持久设置分离**：backend 影响字段使用 active runtime snapshot；保存但稍后重启时，当前 backend 继续按旧端口/profile 运行，立即应用走既有重启事务。
+- **健康身份与对话框边界收紧**：自有 backend 健康检查校验监听 PID/Job 归属；托盘隐藏时对话框改用 ownerless + CenterScreen。
+- **保持 v1.0.3 的 DSH 默认版本和推荐插件集合不变**；DPI 本轮只增加 100%/125%/150%/200% 的人工 Windows 验收矩阵。
+
+> 本版本尚未创建 tag、Release 或推送；发布前必须完成 `tests/verify.ps1`、Release 构建和真实 Windows 验收。
+
 ## v1.0.3（仓库维护收尾，2026-08-20）
 
 - **CI/Actions 维护**：checkout v6、upload-artifact v6、download-artifact v7、
