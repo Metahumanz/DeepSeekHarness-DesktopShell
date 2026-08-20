@@ -3106,6 +3106,10 @@ namespace DeepSeekHarnessDesktop
         private bool chromeApplied;
         private bool webViewReady;
         private bool backendBootReady;
+        private bool bootReadyReached;
+        private bool startOperationActive;
+        private bool startupFailureShown;
+        private bool backendInterruptionShown;
         private int unresponsiveCount;
         private DateTime unresponsiveFirstUtc = DateTime.MinValue;
         private bool healthCheckBusy;
@@ -3592,7 +3596,11 @@ namespace DeepSeekHarnessDesktop
         {
             if (!TryBeginRecoveryOperation("start")) return;
             CancellationToken token = lifetimeCts.Token;
+            startOperationActive = true;
+            startupFailureShown = false;
+            backendInterruptionShown = false;
             backendBootReady = dsh.BootReady;
+            bootReadyReached = dsh.BootReady;
             currentPhase = StartupPhase.CommandVerify;
             ShowOverlay("startup", "正在启动 DeepSeek Harness...", null, null, null, null);
 
@@ -3700,6 +3708,7 @@ namespace DeepSeekHarnessDesktop
                     throw new InvalidOperationException(
                         "DSH listener 已确认，但尚未完成 BootReady（ready banner + HTTP 200 稳定确认）。");
                 backendBootReady = true;
+                bootReadyReached = true;
                 HostLog.Ok("START phase=Backend bootReady=true");
 
                 // 阶段四：WebView2 环境
@@ -3770,12 +3779,31 @@ namespace DeepSeekHarnessDesktop
                 if (LifetimeCancelled) return;
                 HostLog.Fail("START failed phase=" + currentPhase.ToString(), ex);
                 webViewReady = false;
-                HandleStartupError(ex);
+                if (startOperationActive && bootReadyReached && !backendBootReady)
+                    ShowBackendInterruption(ex);
+                else
+                    HandleStartupError(ex);
             }
             finally
             {
+                startOperationActive = false;
                 EndRecoveryOperation("start");
             }
+        }
+
+        private void ShowBackendInterruption(Exception ex)
+        {
+            if (backendInterruptionShown || LifetimeCancelled || restartBusy) return;
+            backendInterruptionShown = true;
+            webViewReady = false;
+            backendBootReady = false;
+            ShowOverlay(
+                "backend",
+                "DSH 后端连接已中断。",
+                "重启 DSH 后端",
+                OnOverlayRestartBackend,
+                "重新检查",
+                OnOverlayRetryHealth);
         }
 
         /// <summary>
@@ -3784,6 +3812,8 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private void HandleStartupError(Exception ex)
         {
+            if (startupFailureShown) return;
+            startupFailureShown = true;
             webViewReady = false;
 
             // 缺少 WebView2 Runtime 是普通用户最常见的启动失败原因：
@@ -3834,14 +3864,15 @@ namespace DeepSeekHarnessDesktop
                         retryHandler = OnOverlayRetryStart;
                         break;
                 }
-                message = "启动失败（" + phaseName + "阶段）。\r\n\r\n" + ex.Message;
-                primaryText = "重试";
+                message = "DSH 启动失败。\r\n插件或 Profile 未能完成加载。\r\n\r\n" +
+                    "启动阶段：" + phaseName + "。\r\n\r\n" + ex.Message;
+                primaryText = "重新尝试";
                 primaryHandler = retryHandler;
             }
 
             ShowErrorOverlay(
                 "startup-error",
-                "启动失败",
+                "DSH 启动失败",
                 message,
                 ex.ToString(),
                 primaryText,
