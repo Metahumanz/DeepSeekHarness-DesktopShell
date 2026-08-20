@@ -51,7 +51,7 @@ Assert-True "OwnsBackend released only after stop sequence" ($cs -match 'OwnsBac
 Assert-True "backendGeneration field exists" ($cs -match 'private long backendGeneration;')
 Assert-True "restart bumps generation and stops health timer" ($cs -match 'healthTimer\.Stop\(\);\r?\n\s*backendGeneration\+\+;')
 Assert-True "stale generation results dropped" ($cs -match 'if \(generation != backendGeneration\) return;')
-Assert-True "health timer restarted after restart" ($cs -match 'finally\r?\n\s*\{\r?\n\s*restartBusy = false;\r?\n\s*healthFailures = 0;\r?\n\s*healthTimer\.Start\(\);')
+Assert-True "health timer restarted after restart when lifetime is active" ($cs -match 'restartBusy = false;\r?\n\s*healthFailures = 0;' -and $cs -match 'healthTimer\.Start\(\);')
 
 # ---- 4. 重启分阶段日志（10 个阶段 + 快照 PID） ----
 # RestartPhase("...") 包装的阶段在源码里是 RestartPhase("phase", ...) 形式，
