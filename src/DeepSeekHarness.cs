@@ -1237,6 +1237,129 @@ namespace DeepSeekHarnessDesktop
             return null;
         }
 
+        /// <summary>
+        /// 运行探测子进程并在有界 deadline 内异步捕获 stdout/stderr。
+        /// 不使用 ReadToEnd，避免子进程 pipe 写满后 WaitForExit 与读取互相等待。
+        /// timeout 只按本次 Process 的 PID 清理整棵子树，不按 node/cmd/powershell 名称误杀。
+        /// </summary>
+        internal static bool RunCapturedProcessBounded(
+            ProcessStartInfo psi,
+            int timeoutMs,
+            out string stdout,
+            out string stderr)
+        {
+            stdout = "";
+            stderr = "";
+            if (psi == null || timeoutMs <= 0) return false;
+
+            StringBuilder output = new StringBuilder();
+            StringBuilder error = new StringBuilder();
+            using (ManualResetEvent outputClosed = new ManualResetEvent(false))
+            using (ManualResetEvent errorClosed = new ManualResetEvent(false))
+            using (Process processProbe = new Process())
+            {
+                IntPtr probeJobHandle = IntPtr.Zero;
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                processProbe.StartInfo = psi;
+                processProbe.EnableRaisingEvents = true;
+                processProbe.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) outputClosed.Set();
+                    else output.AppendLine(e.Data);
+                };
+                processProbe.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) errorClosed.Set();
+                    else error.AppendLine(e.Data);
+                };
+
+                bool completed = false;
+                bool cleanupRequested = false;
+                try
+                {
+                    if (!processProbe.Start()) return false;
+                    probeJobHandle = TryCreateProbeKillJob(processProbe);
+                    processProbe.BeginOutputReadLine();
+                    processProbe.BeginErrorReadLine();
+
+                    if (!processProbe.WaitForExit(timeoutMs))
+                    {
+                        cleanupRequested = true;
+                        CloseProbeKillJob(ref probeJobHandle);
+                        KillProcessTree(processProbe);
+                        try { processProbe.WaitForExit(2000); } catch { }
+                        return false;
+                    }
+
+                    // Process 已退出；异步读取事件最多再排空 1 秒，绝不无限等待 child-held pipe。
+                    outputClosed.WaitOne(1000);
+                    errorClosed.WaitOne(1000);
+                    completed = true;
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+                finally
+                {
+                    stdout = output.ToString();
+                    stderr = error.ToString();
+                    CloseProbeKillJob(ref probeJobHandle);
+                    if (!completed && !cleanupRequested)
+                    {
+                        // 进程已启动但启动/读取路径异常时也只按 PID 做一次有界树清理。
+                        try
+                        {
+                            if (!processProbe.HasExited)
+                            {
+                                KillProcessTree(processProbe);
+                                processProbe.WaitForExit(2000);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+        }
+
+        private static IntPtr TryCreateProbeKillJob(Process processProbe)
+        {
+            try
+            {
+                IntPtr job = CreateJobObject(IntPtr.Zero, null);
+                if (job == IntPtr.Zero) return IntPtr.Zero;
+
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                int length = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+                IntPtr ptr = Marshal.AllocHGlobal(length);
+                try
+                {
+                    Marshal.StructureToPtr(info, ptr, false);
+                    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)length) ||
+                        !AssignProcessToJobObject(job, processProbe.Handle))
+                    {
+                        CloseHandle(job);
+                        return IntPtr.Zero;
+                    }
+                }
+                finally { Marshal.FreeHGlobal(ptr); }
+                return job;
+            }
+            catch { return IntPtr.Zero; }
+        }
+
+        private static void CloseProbeKillJob(ref IntPtr job)
+        {
+            if (job == IntPtr.Zero) return;
+            try { CloseHandle(job); } catch { }
+            job = IntPtr.Zero;
+        }
+
         /// <summary>读取 dsh 命令自身的版本（运行 &lt;command&gt; --version）。读不到返回 null。</summary>
         public static string GetCommandVersion(string command)
         {
@@ -1261,23 +1384,13 @@ namespace DeepSeekHarnessDesktop
                 psi.RedirectStandardError = true;
                 psi.StandardOutputEncoding = Encoding.UTF8;
 
-                using (Process p = Process.Start(psi))
-                {
-                    if (p == null) return null;
-                    if (!p.WaitForExit(5000))
-                    {
-                        try { p.Kill(); } catch { }
-                        return null;
-                    }
-
-                    string output = p.StandardOutput.ReadToEnd();
-                    if (String.IsNullOrWhiteSpace(output)) return null;
-                    Match m = Regex.Match(output, @"\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?");
-                    if (m.Success) return m.Value;
-                    return output.Trim();
-                }
-
-
+                string output;
+                string error;
+                if (!RunCapturedProcessBounded(psi, 5000, out output, out error)) return null;
+                if (String.IsNullOrWhiteSpace(output)) return null;
+                Match m = Regex.Match(output, @"\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?");
+                if (m.Success) return m.Value;
+                return output.Trim();
             }
             catch { return null; }
         }
@@ -1706,25 +1819,22 @@ namespace DeepSeekHarnessDesktop
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
 
-                using (Process probe = Process.Start(psi))
+                string output;
+                string error;
+                if (!RunCapturedProcessBounded(psi, 5000, out output, out error)) return -1;
+                string suffix = ":" + port.ToString();
+
+                foreach (string raw in output.Split(new string[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
                 {
-                    if (probe == null) return -1;
-                    string output = probe.StandardOutput.ReadToEnd();
-                    probe.WaitForExit(5000);
-                    string suffix = ":" + port.ToString();
+                    string line = raw.Trim();
+                    if (!line.StartsWith("TCP", StringComparison.OrdinalIgnoreCase)) continue;
+                    string[] parts = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 5) continue;
+                    if (!parts[1].EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!parts[3].Equals("LISTENING", StringComparison.OrdinalIgnoreCase)) continue;
 
-                    foreach (string raw in output.Split(new string[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        string line = raw.Trim();
-                        if (!line.StartsWith("TCP", StringComparison.OrdinalIgnoreCase)) continue;
-                        string[] parts = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length < 5) continue;
-                        if (!parts[1].EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!parts[3].Equals("LISTENING", StringComparison.OrdinalIgnoreCase)) continue;
-
-                        int foundPid;
-                        if (Int32.TryParse(parts[4], out foundPid)) return foundPid;
-                    }
+                    int foundPid;
+                    if (Int32.TryParse(parts[4], out foundPid)) return foundPid;
                 }
             }
             catch { }
@@ -1795,13 +1905,10 @@ namespace DeepSeekHarnessDesktop
                 psi.RedirectStandardError = true;
                 psi.StandardOutputEncoding = Encoding.UTF8;
 
-                using (Process probe = Process.Start(psi))
-                {
-                    if (probe == null) return null;
-                    string output = probe.StandardOutput.ReadToEnd();
-                    probe.WaitForExit(5000);
-                    return output == null ? null : output.Trim();
-                }
+                string output;
+                string error;
+                if (!RunCapturedProcessBounded(psi, 5000, out output, out error)) return null;
+                return output == null ? null : output.Trim();
             }
             catch
             {
@@ -2099,25 +2206,11 @@ namespace DeepSeekHarnessDesktop
                 psi.StandardOutputEncoding = Encoding.UTF8;
                 psi.StandardErrorEncoding = Encoding.UTF8;
 
-                using (Process p = Process.Start(psi))
-                {
-                    if (p != null)
-                    {
-                        if (!p.WaitForExit(15000))
-                        {
-                            // 超时：回收本次探测的完整进程树（按 PID，不按进程名），
-                            // 避免只 Kill cmd/npx wrapper 后留下 node 子进程。
-                            KillProcessTree(p);
-                            supported = false;
-                        }
-                        else
-                        {
-                            string output = p.StandardOutput.ReadToEnd();
-                            string error = p.StandardError.ReadToEnd();
-                            supported = (output + System.Environment.NewLine + error).IndexOf("--no-open", StringComparison.OrdinalIgnoreCase) >= 0;
-                        }
-                    }
-                }
+                string output;
+                string error;
+                bool completed = RunCapturedProcessBounded(psi, 15000, out output, out error);
+                supported = completed &&
+                    (output + System.Environment.NewLine + error).IndexOf("--no-open", StringComparison.OrdinalIgnoreCase) >= 0;
             }
             catch
             {
@@ -2137,15 +2230,29 @@ namespace DeepSeekHarnessDesktop
             if (p == null) return;
             try
             {
+                int pid = p.Id;
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe");
-                psi.Arguments = "/PID " + p.Id.ToString() + " /T /F";
+                psi.Arguments = "/PID " + pid.ToString() + " /T /F";
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 using (Process k = Process.Start(psi))
                 {
-                    if (k != null) k.WaitForExit(5000);
+                    if (k != null && !k.WaitForExit(1000))
+                    {
+                        try { k.Kill(); } catch { }
+                        try { k.WaitForExit(1000); } catch { }
+                    }
                 }
+            }
+            catch { }
+
+            // taskkill 是树清理的主路径；若它本身不可用或超时，至少按同一 PID
+            // 结束探测 wrapper，绝不退化为按 node/cmd/powershell 名称全局杀进程。
+            try
+            {
+                if (!p.HasExited) p.Kill();
+                try { p.WaitForExit(1000); } catch { }
             }
             catch { }
         }
