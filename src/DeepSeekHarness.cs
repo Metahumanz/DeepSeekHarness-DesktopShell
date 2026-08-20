@@ -961,6 +961,11 @@ namespace DeepSeekHarnessDesktop
             public bool BootReady;
             public bool SawReadyBanner;
             public string LastPortLog = "";
+            // 只有 Exited callback 已经完成自己的日志/事件派发后，旧 run 才可回收。
+            // 这样 RegisterRun 在 callback 尚未返回时不会 Dispose 正在使用的 drain 句柄。
+            public bool ExitObserved;
+            public bool OutputDrained;
+            public bool ExitCallbackCompleted;
 
             public BackendRun(long generation, int port, string profile, string logPath)
             {
@@ -1036,7 +1041,54 @@ namespace DeepSeekHarnessDesktop
                 sawReadyBanner = false;
                 lastPortLog = "";
             }
+            // 换代之后，之前已经完整结束的 run 不再是 currentRun，可以立即回收；
+            // 尚未完成 Exited callback/drain 的 run 会由 callback 返回时再回收。
+            ReclaimCompletedRuns();
             return run;
+        }
+
+        private void ReclaimCompletedRuns()
+        {
+            List<BackendRun> reclaim = new List<BackendRun>();
+            lock (runLock)
+            {
+                for (int i = backendRuns.Count - 1; i >= 0; i--)
+                {
+                    BackendRun candidate = backendRuns[i];
+                    if (Object.ReferenceEquals(candidate, currentRun) ||
+                        !candidate.ExitObserved || !candidate.OutputDrained ||
+                        !candidate.ExitCallbackCompleted)
+                        continue;
+
+                    backendRuns.RemoveAt(i);
+                    reclaim.Add(candidate);
+                }
+            }
+
+            foreach (BackendRun candidate in reclaim)
+            {
+                HostLog.Line("BACKEND run-reclaimed generation=" + candidate.Generation.ToString());
+                try { candidate.Dispose(); } catch { }
+            }
+        }
+
+        private void ReclaimRunIfEligible(BackendRun candidate)
+        {
+            if (candidate == null) return;
+            bool reclaim = false;
+            lock (runLock)
+            {
+                if (!disposed && !Object.ReferenceEquals(candidate, currentRun) &&
+                    candidate.ExitObserved && candidate.OutputDrained &&
+                    candidate.ExitCallbackCompleted)
+                    reclaim = backendRuns.Remove(candidate);
+            }
+
+            if (reclaim)
+            {
+                HostLog.Line("BACKEND run-reclaimed generation=" + candidate.Generation.ToString());
+                try { candidate.Dispose(); } catch { }
+            }
         }
 
         private BackendRun FindRun(Process candidate)
@@ -2638,71 +2690,89 @@ namespace DeepSeekHarnessDesktop
         private void OnProcessExited(BackendRun run)
         {
             if (run == null || disposed) return;
-            WaitForOutputDrain(run);
-            Process exitedProcess = run.Process;
-            int wrapperPid = -1;
-            int exitCode = -1;
-            try { wrapperPid = run.WrapperPid; } catch { }
-            if (wrapperPid <= 0)
-            {
-                try { if (exitedProcess != null) wrapperPid = exitedProcess.Id; } catch { }
-            }
             try
             {
-                if (exitedProcess != null) exitCode = exitedProcess.ExitCode;
-            }
-            catch { }
-
-            bool wasExpected = run.ExpectedStop;
-            string state = run.State ?? "Unknown";
-            bool wasBootReady = run.BootReady;
-            bool current = false;
-            lock (runLock)
-            {
-                current = Object.ReferenceEquals(currentRun, run);
-                if (current)
+                WaitForOutputDrain(run);
+                lock (runLock)
                 {
-                    run.BootReady = false;
-                    if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
-                        run.State = "Stopped";
-                    BootReady = false;
-                    if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
-                        BackendState = "Stopped";
-                    expectedStop = run.ExpectedStop;
+                    // Exited callback 已经等待过本 run 的两个 drain 结束信号；只有到这里
+                    // 才允许 RegisterRun/本 callback finally 回收它。
+                    run.ExitObserved = true;
+                    run.OutputDrained = true;
                 }
-            }
-            string line = "BACKEND process-exited wrapperPid=" + wrapperPid.ToString() +
-                " generation=" + run.Generation.ToString() +
-                " exitCode=" + exitCode.ToString() +
-                " expectedStop=" + wasExpected.ToString().ToLowerInvariant() +
-                " state=" + state +
-                (current ? "" : " ignored=true");
-            HostLog.Line(line);
-            AppendLog(run, line);
 
-            if (!current)
-            {
-                // 旧代 Exited 可能在新代已经启动后才到达。它只保留在自己的
-                // recent output/log 中；绝不改新代 BootReady/BackendState/expectedStop，
-                // 也不向 MainForm 发送“后端中断”事件。
-                return;
-            }
-            // 换代可能发生在日志写入期间；在向 MainForm 派发前再确认一次，
-            // 避免旧代 callback 变成新代的“后端中断”事件。
-            if (!IsCurrentRun(run)) return;
-
-            EventHandler<BackendProcessExitedEventArgs> handler = BackendProcessExited;
-            if (handler != null)
-            {
+                Process exitedProcess = run.Process;
+                int wrapperPid = -1;
+                int exitCode = -1;
+                try { wrapperPid = run.WrapperPid; } catch { }
+                if (wrapperPid <= 0)
+                {
+                    try { if (exitedProcess != null) wrapperPid = exitedProcess.Id; } catch { }
+                }
                 try
                 {
-                    handler(this, new BackendProcessExitedEventArgs(
-                        run.Generation, wrapperPid, exitCode, wasExpected, state, wasBootReady));
+                    if (exitedProcess != null) exitCode = exitedProcess.ExitCode;
                 }
-                catch (Exception handlerError)
+                catch { }
+
+                bool wasExpected = run.ExpectedStop;
+                string state = run.State ?? "Unknown";
+                bool wasBootReady = run.BootReady;
+                bool current = false;
+                lock (runLock)
                 {
-                    HostLog.Fail("BACKEND process-exited handler", handlerError);
+                    current = Object.ReferenceEquals(currentRun, run);
+                    if (current)
+                    {
+                        run.BootReady = false;
+                        if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
+                            run.State = "Stopped";
+                        BootReady = false;
+                        if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
+                            BackendState = "Stopped";
+                        expectedStop = run.ExpectedStop;
+                    }
                 }
+                string line = "BACKEND process-exited wrapperPid=" + wrapperPid.ToString() +
+                    " generation=" + run.Generation.ToString() +
+                    " exitCode=" + exitCode.ToString() +
+                    " expectedStop=" + wasExpected.ToString().ToLowerInvariant() +
+                    " state=" + state +
+                    (current ? "" : " ignored=true");
+                HostLog.Line(line);
+                AppendLog(run, line);
+
+                if (!current)
+                {
+                    // 旧代 Exited 可能在新代已经启动后才到达。它只保留在自己的
+                    // recent output/log 中；绝不改新代 BootReady/BackendState/expectedStop，
+                    // 也不向 MainForm 发送“后端中断”事件。
+                    return;
+                }
+                // 换代可能发生在日志写入期间；在向 MainForm 派发前再确认一次，
+                // 避免旧代 callback 变成新代的“后端中断”事件。
+                if (!IsCurrentRun(run)) return;
+
+                EventHandler<BackendProcessExitedEventArgs> handler = BackendProcessExited;
+                if (handler != null)
+                {
+                    try
+                    {
+                        handler(this, new BackendProcessExitedEventArgs(
+                            run.Generation, wrapperPid, exitCode, wasExpected, state, wasBootReady));
+                    }
+                    catch (Exception handlerError)
+                    {
+                        HostLog.Fail("BACKEND process-exited handler", handlerError);
+                    }
+                }
+            }
+            finally
+            {
+                lock (runLock) run.ExitCallbackCompleted = true;
+                // 如果 handler 中同步启动了下一代，此时 run 已不是 currentRun；如果下一代
+                // 异步稍后才启动，则 RegisterRun 会通过 ReclaimCompletedRuns 补回收。
+                ReclaimRunIfEligible(run);
             }
         }
 
@@ -2917,9 +2987,14 @@ namespace DeepSeekHarnessDesktop
         {
             if (disposed) return;
             StopOwnedBackend();
-            disposed = true;
             List<BackendRun> runs;
-            lock (runLock) runs = new List<BackendRun>(backendRuns);
+            lock (runLock)
+            {
+                disposed = true;
+                runs = new List<BackendRun>(backendRuns);
+                backendRuns.Clear();
+                currentRun = null;
+            }
             foreach (BackendRun run in runs)
             {
                 try { run.Dispose(); } catch { }

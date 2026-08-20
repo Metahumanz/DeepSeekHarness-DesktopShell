@@ -87,6 +87,26 @@ class GenerationRaceHarness
         return field == null ? -1 : (long)field.GetValue(run);
     }
 
+    static int RunCount(DshProcessManager manager)
+    {
+        FieldInfo field = typeof(DshProcessManager).GetField(
+            "backendRuns", BindingFlags.Instance | BindingFlags.NonPublic);
+        System.Collections.IList runs = field == null ? null : field.GetValue(manager) as System.Collections.IList;
+        return runs == null ? -1 : runs.Count;
+    }
+
+    static int WaitForRunCountAtMost(DshProcessManager manager, int max, int timeoutMs)
+    {
+        Stopwatch watch = Stopwatch.StartNew();
+        int count = RunCount(manager);
+        while (watch.ElapsedMilliseconds < timeoutMs && count > max)
+        {
+            System.Threading.Thread.Sleep(25);
+            count = RunCount(manager);
+        }
+        return count;
+    }
+
     static void DispatchDelayedExit(DshProcessManager manager, object oldRun)
     {
         MethodInfo callback = null;
@@ -163,6 +183,27 @@ class GenerationRaceHarness
                 "delayed old Exited is logged as ignored with its own generation");
             Assert(log.IndexOf("generation=" + newGeneration.ToString(), StringComparison.OrdinalIgnoreCase) >= 0,
                 "new generation diagnostics remain present");
+
+            int maxRunCount = RunCount(manager);
+            int cyclePort = newPort;
+            for (int cycle = 1; cycle <= 25; cycle++)
+            {
+                manager.StopOwnedBackend();
+                cyclePort = FreePort();
+                DshProcessManager.BackendStartResult cycleResult = manager.EnsureStarted(
+                    cyclePort, baseDir, logsDir, "0.1.0-rc.7", "cycle" + cycle.ToString(),
+                    dshPath, "command", false);
+                int count = WaitForRunCountAtMost(manager, 2, 3000);
+                if (count > maxRunCount) maxRunCount = count;
+                Assert(cycleResult.BootReady && manager.BootReady && manager.BackendRunning,
+                    "restart cycle " + cycle.ToString() + " current backend remains healthy");
+                Assert(count <= 2,
+                    "restart cycle " + cycle.ToString() + " run contexts stay bounded (count=" + count.ToString() + ")");
+            }
+            Assert(maxRunCount <= 2,
+                "25 restart cycles keep historical BackendRun contexts bounded (max=" + maxRunCount.ToString() + ")");
+            Assert(manager.IsDshHealthy(cyclePort, 500),
+                "current backend remains healthy after 25 restart cycles");
         }
         catch (Exception ex)
         {
