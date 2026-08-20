@@ -1032,7 +1032,7 @@ namespace DeepSeekHarnessDesktop
         }
 
         /// <summary>
-        /// DSH 就绪判定 = TCP 可连 + 监听进程 PID 可查 + 命令行像 DSH。
+        /// DSH 就绪判定 = TCP 可连 + 监听进程 PID 可查 +（自有 Job/PID 归属或命令行像 DSH）。
         /// 只用 TCP 判定存在 TOCTOU 窗口：DSH 崩溃后端口被其它本地服务抢到，
         /// 纯 TCP 探测会误以为 DSH 正常，并继续把 127.0.0.1:port 当可信 DSH origin。
         /// </summary>
@@ -1042,6 +1042,11 @@ namespace DeepSeekHarnessDesktop
 
             int pid = FindListeningPid(port);
             if (pid <= 0) return false;
+
+            // 自有后端的 listener 已在 EnsureStarted 中用精确 PID/Job 归属确认过；
+            // 不应因为 PowerShell/CIM 暂时读不到其命令行而把自己的 listener 判成非 DSH。
+            if (OwnsBackend && ((ownedListenerPid > 0 && pid == ownedListenerPid) || IsProcessInOwnedJob(pid)))
+                return true;
 
             string commandLine;
             return IsLikelyDshProcess(pid, out commandLine, port);
@@ -1908,6 +1913,11 @@ namespace DeepSeekHarnessDesktop
         {
             try
             {
+                // 受限 Windows 环境可能拒绝 CIM 读取当前宿主自身的命令行；
+                // 当前进程的 Environment.CommandLine 等价且不涉及外部进程权限。
+                if (pid == Process.GetCurrentProcess().Id)
+                    return Environment.CommandLine;
+
                 string powershell = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.System),
                     @"WindowsPowerShell\v1.0\powershell.exe");
