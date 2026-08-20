@@ -13,10 +13,11 @@
 - **启动完成判定收紧**：DesktopShell 自己启动的 DSH 必须完成 listener 身份确认、`dsh web` ready banner、HTTP 200 和短暂稳定确认后才进入 WebView；监听后插件/Profile 初始化失败并退出会直接判为启动失败。
 - **启动失败与运行中断分流**：BootReady 前退出显示插件/Profile 启动失败与重试、复制错误、日志目录入口；BootReady 后才显示“DSH 后端连接已中断”。`desktop-shell.log` 记录 wrapper PID、退出码、expectedStop、状态，并保留最近 stdout/stderr fatal 摘要。
 - **后端代际事件隔离**：每次 backend 启动拥有独立 generation、stdout/stderr drain 和 recent output；旧代延迟 `Exited`/输出只写自己的诊断并被标记 ignored，不会清除新代 BootReady、Running 或 expectedStop。
+- **后端运行上下文回收**：旧 run 在 Exited callback 完成且 stdout/stderr drain 排空、确认不再是 current 后立即移除并 Dispose；连续 25 次真实 fake backend 重启验证 run 数量保持有界。
 - **探测进程有界执行**：版本、netstat/CIM fallback 和 `--help` 探测统一异步读取 stdout/stderr、超时回收进程树，不按进程名误杀。
 - **运行配置与持久设置分离**：backend 影响字段使用 active runtime snapshot；保存但稍后重启时，当前 backend 继续按旧端口/profile 运行，立即应用走既有重启事务。
 - **健康身份与对话框边界收紧**：自有 backend 健康检查校验监听 PID/Job 归属；托盘隐藏时对话框改用 ownerless + CenterScreen。
-- **保持 v1.0.3 的 DSH 默认版本、测试版本和已确认插件规格不变**；日常插件安装不启动用户真实 Profile，完整兼容验收改由独立 release preflight 在临时 `DSH_HOME`/Profile/随机端口中完成；dsh-remote 尚未通过完整验收，暂时移出 v1.0.4 推荐目录。DPI 本轮只增加 100%/125%/150%/200% 的人工 Windows 验收矩阵。
+- **保持 v1.0.3 的 DSH 默认版本、测试版本和已确认插件规格不变**；日常插件安装不启动用户真实 Profile，完整兼容验收改由独立 release preflight 在临时 `DSH_HOME`/Profile/随机端口中完成；结束时按随机端口解析精确 listener PID 并确认端口/进程无残留，不按 node/cmd 进程名清理；dsh-remote 尚未通过完整验收，暂时移出 v1.0.4 推荐目录。DPI 本轮只增加 100%/125%/150%/200% 的人工 Windows 验收矩阵。
 
 > 本版本尚未创建 tag 或 Release，当前处于预发布分支验证阶段；发布前必须完成 `tests/verify.ps1`、Release 构建和真实 Windows 验收。
 

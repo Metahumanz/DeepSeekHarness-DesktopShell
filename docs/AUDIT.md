@@ -37,14 +37,15 @@ dsh-remote，Dream Skin 仍为 npm `^0.4.1`。
   BootReady 后退出才归为运行期中断。
 - `DshProcessManager` 记录 `BACKEND process-exited` 的 generation、wrapper PID、exitCode、
   expectedStop、Starting/Running 状态，并为每个 backend run 保存独立 stdout/stderr drain 与最近输出；
-  旧代延迟 Exited 只写自己的日志并标记 ignored，不得改变新代状态。启动错误覆盖层优先显示
-  fatal/plugin/loader 摘要。
+  旧代延迟 Exited 只写自己的日志并标记 ignored，不得改变新代状态；旧 run 在退出回调和 drain
+  完成后从历史列表移除并 Dispose。启动错误覆盖层优先显示 fatal/plugin/loader 摘要。
 - 插件管理器把“安装成功”与“运行兼容”分离：日常 `Manage-Dsh.ps1` 不启动用户真实 Profile；
   完整兼容必须由 `scripts/Test-PluginBootPreflight.ps1` 在临时 `DSH_HOME`、临时 Profile、随机端口中
   完成 BootReady、HTTP 200、稳定运行 10 秒且进程仍存活的验收。隔离条件不能确认时不得返回兼容 PASS；
-  dsh-remote 当前从 v1.0.4 活动推荐目录暂停。
+  结束时按随机端口找到并验证精确 listener PID，确认端口与进程均已清理；dsh-remote 当前从 v1.0.4
+  活动推荐目录暂停。
 
-`tests/verify.ps1` 当前列出 34 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
+`tests/verify.ps1` 当前列出 35 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
 双宿主执行；托盘/WebView2/连续重启/DPI/Dream Skin 仍需真实 Windows 验收。发布包文件清单不在
 文档中重复维护：唯一权威来源是 `scripts/Build-Release.ps1` 内的 authoritative expected-file
 自校验。

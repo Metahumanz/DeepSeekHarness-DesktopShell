@@ -32,7 +32,8 @@ Assert-True 'preflight uses an isolated temporary Profile and refuses unsafe con
     $preflight -match '未返回兼容 PASS')
 Assert-True 'preflight installs plugins before booting the isolated Profile' (
     $preflight -match '\x27plugin\x27,\s+\x27--profile\x27,\s+\$profile,\s+\x27add\x27,\s+\$spec' -and
-    $preflight -match '\x27web\x27,\s+\x27--profile\x27,\s+\$profile,\s+\x27--port\x27')
+    $preflight -match '\$webArgs = New-DshArguments @\(\x27--profile\x27,\s+\$profile,\s+\x27--port\x27' -and
+    $preflight -notmatch 'New-DshArguments @\(\x27web\x27,\s+\x27--profile\x27')
 Assert-True 'preflight uses a random port and the full BootReady gate' (
     $preflight -match 'Get-FreeTcpPort' -and
     $preflight -match 'dsh\\s\+web:' -and
@@ -41,9 +42,13 @@ Assert-True 'preflight uses a random port and the full BootReady gate' (
     $preflight -match '\$webProcess\.HasExited')
 Assert-True 'preflight cleans only its own process tree and restores DSH_HOME' (
     $preflight -match 'Stop-ProcessTree' -and
+    $preflight -match 'Get-ListeningPidForPort' -and
+    $preflight -match 'Stop-ListenerByPort' -and
+    $preflight -match 'Wait-PortClosed' -and
     $preflight -match 'taskkill\.exe' -and
     $preflight -match '/PID \$processToStop\.Id /T /F' -and
     $preflight -match 'Remove-Item Env:DSH_HOME' -and
+    $preflight -match 'cleanup=closed' -and
     $preflight -notmatch 'Get-Process\s+node|Get-Process\s+cmd|Get-Process\s+powershell')
 Assert-True 'install success is explicitly not compatibility success' (
     $manage -match '仅安装成功，尚未证明运行兼容' -and

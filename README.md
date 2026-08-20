@@ -188,7 +188,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
 **发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
-回归测试在 `tests\`（34 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
+回归测试在 `tests\`（35 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
 插件完整 BootReady 验收是独立 release preflight，不在日常插件安装流程中启动用户 Profile。
 
 ## Release 流程
@@ -196,7 +196,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.4`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
-1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（34 项，PowerShell 7 + 5.1）
+1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（35 项，PowerShell 7 + 5.1）
 2. `Build-Release -Version`（仅 x64）
 3. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
 4. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
@@ -210,7 +210,7 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.4`�
 ├── assets/                 # 图标（源自官方 favicon.svg）
 ├── scripts/                # 安装 / 管理 / 卸载 / 发布 / 修复脚本
 ├── src/                    # C# 桌面宿主源码（窗口/WebView2/进程托管/兼容修复）
-├── tests/                  # 回归测试（34 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
+├── tests/                  # 回归测试（35 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
 │                           #   生命周期 / 托盘句柄 / WebView 恢复 / 进程有界探测 / 设置快照 /
 │                           #   启动参数 / 端口归属 / 宿主日志 / 壳运行期 / 重验证 / 构建接线
 ├── .github/workflows/      # CI 与 GitHub Release 工作流

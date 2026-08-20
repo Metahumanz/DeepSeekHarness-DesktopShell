@@ -173,7 +173,7 @@ jobs:
             - 探测子进程统一使用有界 stdout/stderr 读取与进程树清理；自有 backend 健康检查校验监听身份
             - 持久设置与 active runtime snapshot 分离；托盘路径对话框不再把隐藏 MainForm 作为 modal owner
             - 保持 v1.0.3 的 DSH 默认/测试版本与已确认插件规格；dsh-remote 未通过完整 BootReady 验收，暂不列入 v1.0.4 推荐；PerMonitorV2 仅增加人工验收矩阵
-            - 34 项自动回归门禁与 PowerShell 5.1 兼容门禁；插件完整 BootReady 验收另行运行隔离 release preflight
+            - 35 项自动回归门禁与 PowerShell 5.1 兼容门禁；插件完整 BootReady 验收另行运行隔离 release preflight
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
