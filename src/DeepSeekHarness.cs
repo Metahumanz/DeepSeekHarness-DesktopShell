@@ -2753,7 +2753,7 @@ namespace DeepSeekHarnessDesktop
             Controls.Add(developerCheck);
 
             Label hint = new Label();
-            hint.Text = "工作目录、端口、Profile、运行方式和开发者模式在下次启动时生效；npx 版本在管理器中调整。";
+            hint.Text = "后端相关设置保存后可选择立即重启；选择稍后时当前运行配置保持不变。npx 版本在管理器中调整。";
             hint.AutoSize = true;
             hint.Left = leftControl;
             hint.Top = 530;
@@ -2855,7 +2855,12 @@ namespace DeepSeekHarnessDesktop
         private readonly string settingsPath;
         private readonly string logsDirectory;
         private readonly string webViewDataDirectory;
-        private readonly AppSettings settings;
+        // persistedSettings 是磁盘上供下次运行/设置 UI 使用的值；
+        // activeRuntimeSettings 是当前已启动 backend/WebView 实际采用的快照。
+        // 保留 settings 属性作为本类旧 UI 代码的持久设置入口，避免把两套字段散落复制。
+        private readonly AppSettings persistedSettings;
+        private readonly AppSettings activeRuntimeSettings;
+        private AppSettings settings { get { return persistedSettings; } }
         private readonly DshProcessManager dsh;
         private readonly CancellationTokenSource lifetimeCts;
         private WebView2 webView;
@@ -2917,7 +2922,8 @@ namespace DeepSeekHarnessDesktop
             settingsPath = Path.Combine(baseDirectory, "settings.json");
             logsDirectory = Path.Combine(baseDirectory, "logs");
             webViewDataDirectory = Path.Combine(baseDirectory, "webview2-data");
-            settings = AppSettings.Load(settingsPath);
+            persistedSettings = AppSettings.Load(settingsPath);
+            activeRuntimeSettings = persistedSettings.Clone();
             dsh = new DshProcessManager();
             lifetimeCts = new CancellationTokenSource();
 
@@ -3266,7 +3272,7 @@ namespace DeepSeekHarnessDesktop
             menu.Items.Add(show);
 
             ToolStripMenuItem prefs = new ToolStripMenuItem("设置...");
-            prefs.Click += delegate { ShowSettings(); };
+            prefs.Click += async delegate { await ShowSettingsAsync(); };
             menu.Items.Add(prefs);
 
             menu.Items.Add(new ToolStripSeparator());
@@ -3369,10 +3375,10 @@ namespace DeepSeekHarnessDesktop
                 await Task.Run(delegate
                 {
                     token.ThrowIfCancellationRequested();
-                    probe = dsh.ProbeExternalDsh(settings.port);
+                    probe = dsh.ProbeExternalDsh(activeRuntimeSettings.port);
                     token.ThrowIfCancellationRequested();
                     compatPendingAtStartup = PluginCompat.ApplyAll(
-                        baseDirectory, logsDirectory, settings.profileName, !probe.PortOpen);
+                        baseDirectory, logsDirectory, activeRuntimeSettings.profileName, !probe.PortOpen);
                     token.ThrowIfCancellationRequested();
                 }, token);
                 token.ThrowIfCancellationRequested();
@@ -3383,7 +3389,7 @@ namespace DeepSeekHarnessDesktop
                 if (probe != null && probe.PortOpen && probe.IsDsh && !probe.IsCompatible)
                 {
                     throw new InvalidOperationException(
-                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过最低兼容版本检查：\r\n" +
+                        "端口 " + activeRuntimeSettings.port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过最低兼容版本检查：\r\n" +
                         (String.IsNullOrEmpty(probe.Version)
                             ? "无法从命令行读取其版本。"
                             : "其版本为 " + probe.Version + "。") +
@@ -3399,7 +3405,7 @@ namespace DeepSeekHarnessDesktop
                         ? "（无法读取命令行）" : probe.CommandLine;
                     DialogResult confirm = ThemedMessageBox.Show(
                         this,
-                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，版本 " + probe.Version +
+                        "端口 " + activeRuntimeSettings.port.ToString() + " 上已有一个 DSH 后端在运行，版本 " + probe.Version +
                         " 未在 testedDshVersions 中，但满足最低兼容版本。\r\n\r\n" +
                         "DesktopShell 默认 npx 版本：" + DshProcessManager.DefaultDshVersion +
                         "。\r\n\r\n命令行：\r\n" + shown +
@@ -3426,22 +3432,22 @@ namespace DeepSeekHarnessDesktop
                     {
                         // 用户已确认结束外部后端：停止 → 补丁 → 启动自己的 DSH
                         token.ThrowIfCancellationRequested();
-                        dsh.StopBackend(settings.port, true);
+                        dsh.StopBackend(activeRuntimeSettings.port, true);
                         token.ThrowIfCancellationRequested();
-                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
+                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, activeRuntimeSettings.profileName, true);
                         compatPendingAtStartup = 0;
                     }
                     if (!dsh.BackendRunning)
                     {
                         token.ThrowIfCancellationRequested();
                         dsh.EnsureStarted(
-                            settings.port,
-                            settings.workingDirectory,
+                            activeRuntimeSettings.port,
+                            activeRuntimeSettings.workingDirectory,
                             logsDirectory,
-                            settings.dshVersion,
-                            settings.profileName,
-                            settings.dshPath,
-                            settings.dshRunnerMode,
+                            activeRuntimeSettings.dshVersion,
+                            activeRuntimeSettings.profileName,
+                            activeRuntimeSettings.dshPath,
+                            activeRuntimeSettings.dshRunnerMode,
                             attachUnverified,
                             token);
                     }
@@ -3749,7 +3755,7 @@ namespace DeepSeekHarnessDesktop
             core.ProcessFailed += OnWebViewProcessFailed;
 
             CoreWebView2Settings viewSettings = core.Settings;
-            viewSettings.AreDevToolsEnabled = settings.developerMode;
+            viewSettings.AreDevToolsEnabled = activeRuntimeSettings.developerMode;
 
             // Keep ContextMenuRequested alive, then always mark the event handled and
             // draw our own native menu.  Setting this false would suppress the event too.
@@ -3772,7 +3778,7 @@ namespace DeepSeekHarnessDesktop
             string shortcutGuard = @"(() => {
   if (window.__dshDesktopShortcutGuardInstalled) return;
   window.__dshDesktopShortcutGuardInstalled = true;
-  const developerMode = " + (settings.developerMode ? "true" : "false") + @";
+  const developerMode = " + (activeRuntimeSettings.developerMode ? "true" : "false") + @";
   window.addEventListener('keydown', (event) => {
     const key = String(event.key || '').toLowerCase();
     const ctrl = event.ctrlKey || event.metaKey;
@@ -3924,7 +3930,7 @@ namespace DeepSeekHarnessDesktop
                     any = true;
                 }
 
-                if (settings.developerMode)
+                if (activeRuntimeSettings.developerMode)
                 {
                     if (any) AddContextSeparator(menu);
                     ToolStripMenuItem devTools = new ToolStripMenuItem("打开开发者工具");
@@ -4043,7 +4049,7 @@ namespace DeepSeekHarnessDesktop
         {
             if (webView.CoreWebView2 == null) return;
 
-            string port = settings.port.ToString();
+            string port = activeRuntimeSettings.port.ToString();
             string[] origins = new string[]
             {
                 "http://127.0.0.1:" + port,
@@ -4076,7 +4082,7 @@ namespace DeepSeekHarnessDesktop
                 bool ready = await Task.Run(delegate
                 {
                     token.ThrowIfCancellationRequested();
-                    bool result = dsh.IsDshHealthy(settings.port, 350);
+                    bool result = dsh.IsDshHealthy(activeRuntimeSettings.port, 350);
                     token.ThrowIfCancellationRequested();
                     return result;
                 }, token);
@@ -4150,16 +4156,16 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private void ConfirmCommandVersionBeforeStart()
         {
-            if (settings.dshRunnerMode == "npx") return;
+            if (activeRuntimeSettings.dshRunnerMode == "npx") return;
 
-            string command = settings.dshPath;
+            string command = activeRuntimeSettings.dshPath;
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
                 command = DshProcessManager.FindCommand("dsh");
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
                 return;   // 没有 dsh：交给 EnsureStarted 走 npx 或报错
 
-            string acceptedPath = settings.acceptedDshCommandPath ?? "";
-            string accepted = settings.acceptedDshCommandVersion ?? "";
+            string acceptedPath = activeRuntimeSettings.acceptedDshCommandPath ?? "";
+            string accepted = activeRuntimeSettings.acceptedDshCommandVersion ?? "";
             string actual = DshProcessManager.GetCommandVersion(command);
 
             bool pathChanged =
@@ -4177,9 +4183,11 @@ namespace DeepSeekHarnessDesktop
             // 已知版本低于最低兼容版本 → 直接取消启动，不允许继续使用过旧 DSH。
             if (!String.IsNullOrEmpty(actual) && DshProcessManager.IsCompatibleDshVersion(actual))
             {
-                settings.acceptedDshCommandPath = command;
-                settings.acceptedDshCommandVersion = actual;
-                settings.Save(settingsPath);
+                activeRuntimeSettings.acceptedDshCommandPath = command;
+                activeRuntimeSettings.acceptedDshCommandVersion = actual;
+                persistedSettings.acceptedDshCommandPath = command;
+                persistedSettings.acceptedDshCommandVersion = actual;
+                persistedSettings.Save(settingsPath);
                 return;
             }
             if (!String.IsNullOrEmpty(actual))
@@ -4208,9 +4216,11 @@ namespace DeepSeekHarnessDesktop
                 throw new InvalidOperationException(
                     "已取消启动：现有 dsh 版本未确认。请确认后重试，或在设置中把运行方式改为 npx。");
 
-            settings.acceptedDshCommandPath = command;
-            settings.acceptedDshCommandVersion = actual ?? "";
-            settings.Save(settingsPath);
+            activeRuntimeSettings.acceptedDshCommandPath = command;
+            activeRuntimeSettings.acceptedDshCommandVersion = actual ?? "";
+            persistedSettings.acceptedDshCommandPath = command;
+            persistedSettings.acceptedDshCommandVersion = actual ?? "";
+            persistedSettings.Save(settingsPath);
         }
 
         private async Task RestartBackendAsync()
@@ -4235,16 +4245,16 @@ namespace DeepSeekHarnessDesktop
                 ConfirmCommandVersionBeforeStart();
                 token.ThrowIfCancellationRequested();
 
-                if (!dsh.OwnsBackend && dsh.IsReady(settings.port, 300))
+                if (!dsh.OwnsBackend && dsh.IsReady(activeRuntimeSettings.port, 300))
                 {
-                    int externalPid = dsh.FindListeningPid(settings.port);
+                    int externalPid = dsh.FindListeningPid(activeRuntimeSettings.port);
                     if (externalPid <= 0)
                         throw new InvalidOperationException("端口正在监听，但无法读取监听进程 PID。");
 
                     string commandLine;
-                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine, settings.port))
+                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine, activeRuntimeSettings.port))
                         throw new InvalidOperationException(
-                            "端口 " + settings.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
+                            "端口 " + activeRuntimeSettings.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
                             (String.IsNullOrWhiteSpace(commandLine) ? "无法读取命令行。" : commandLine));
 
                     DialogResult confirm = ThemedMessageBox.Show(this,
@@ -4270,15 +4280,15 @@ namespace DeepSeekHarnessDesktop
                     //（写入 ownedListenerPid），记录旧 wrapper/listener PID、ownsBackend、port
                     RestartPhase("restart.snapshot", delegate
                     {
-                        dsh.FreezeOwnedListener(settings.port);
+                        dsh.FreezeOwnedListener(activeRuntimeSettings.port);
                         int oldWrapperPid = dsh.WrapperPid;
                         int oldListenerPid = dsh.OwnedListenerPid > 0
                             ? dsh.OwnedListenerPid
-                            : dsh.FindListeningPid(settings.port);
+                            : dsh.FindListeningPid(activeRuntimeSettings.port);
                         HostLog.Line("SNAPSHOT oldWrapperPid=" + oldWrapperPid.ToString() +
                             " oldListenerPid=" + oldListenerPid.ToString() +
                             " ownsBackend=" + dsh.OwnsBackend.ToString() +
-                            " port=" + settings.port.ToString());
+                            " port=" + activeRuntimeSettings.port.ToString());
                     });
 
                     token.ThrowIfCancellationRequested();
@@ -4287,11 +4297,11 @@ namespace DeepSeekHarnessDesktop
                         // restart.stop-wrapper：Job 关闭 → Kill wrapper → WaitForExit(3s)
                         RestartPhase("restart.stop-wrapper", delegate { dsh.StopOwnedWrapper(); });
                         // restart.stop-listener-fallback：端口仍开时，身份验证后才结束真正 listener
-                        RestartPhase("restart.stop-listener-fallback", delegate { dsh.TryStopListenerFallback(settings.port); });
+                        RestartPhase("restart.stop-listener-fallback", delegate { dsh.TryStopListenerFallback(activeRuntimeSettings.port); });
                     }
                     else if (allowExternal)
                     {
-                        RestartPhase("restart.stop-wrapper", delegate { dsh.StopExternalBackend(settings.port); });
+                        RestartPhase("restart.stop-wrapper", delegate { dsh.StopExternalBackend(activeRuntimeSettings.port); });
                         RestartPhase("restart.stop-listener-fallback", delegate { });
                     }
                     else
@@ -4304,9 +4314,9 @@ namespace DeepSeekHarnessDesktop
                     // restart.wait-port-close：端口连续两次确认关闭，10 秒门禁
                     RestartPhase("restart.wait-port-close", delegate
                     {
-                        if (!dsh.WaitForPortClosedTwice(settings.port, 10000, token))
+                        if (!dsh.WaitForPortClosedTwice(activeRuntimeSettings.port, 10000, token))
                             throw new InvalidOperationException(
-                                "旧的 DSH Web 在 10 秒内没有释放端口 " + settings.port.ToString() + "。");
+                                "旧的 DSH Web 在 10 秒内没有释放端口 " + activeRuntimeSettings.port.ToString() + "。");
                     });
 
                     token.ThrowIfCancellationRequested();
@@ -4315,7 +4325,7 @@ namespace DeepSeekHarnessDesktop
                     //（账本清理也不会被旧后端关停写回覆盖）。
                     RestartPhase("restart.compat", delegate
                     {
-                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
+                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, activeRuntimeSettings.profileName, true);
                     });
 
                     token.ThrowIfCancellationRequested();
@@ -4325,13 +4335,13 @@ namespace DeepSeekHarnessDesktop
                     RestartPhase("restart.start", delegate
                     {
                         startResult = dsh.EnsureStarted(
-                            settings.port,
-                            settings.workingDirectory,
+                            activeRuntimeSettings.port,
+                            activeRuntimeSettings.workingDirectory,
                             logsDirectory,
-                            settings.dshVersion,
-                            settings.profileName,
-                            settings.dshPath,
-                            settings.dshRunnerMode,
+                            activeRuntimeSettings.dshVersion,
+                            activeRuntimeSettings.profileName,
+                            activeRuntimeSettings.dshPath,
+                            activeRuntimeSettings.dshRunnerMode,
                             false,
                             token);
                     });
@@ -4343,13 +4353,13 @@ namespace DeepSeekHarnessDesktop
                         if (startResult == null || startResult.ListenerPid <= 0)
                             throw new InvalidOperationException("重启后无法确认 DSH 监听进程。");
                         int waited = 0;
-                        while (waited < 15000 && !dsh.IsDshReady(settings.port, 300))
+                        while (waited < 15000 && !dsh.IsDshReady(activeRuntimeSettings.port, 300))
                         {
                             token.ThrowIfCancellationRequested();
                             Thread.Sleep(250);
                             waited += 250;
                         }
-                        if (!dsh.IsDshReady(settings.port, 300))
+                        if (!dsh.IsDshReady(activeRuntimeSettings.port, 300))
                             throw new InvalidOperationException("重启后 DSH Web 未在预期时间内就绪。");
                         HostLog.Line("SNAPSHOT-NEW newWrapperPid=" + startResult.WrapperPid.ToString() +
                             " newListenerPid=" + startResult.ListenerPid.ToString());
@@ -4404,15 +4414,15 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private void HandleRestartError(Exception ex)
         {
-            bool portOpen = dsh.IsReady(settings.port, 800);
+            bool portOpen = dsh.IsReady(activeRuntimeSettings.port, 800);
             bool dshListening = false;
             if (portOpen)
             {
-                int pid = dsh.FindListeningPid(settings.port);
+                int pid = dsh.FindListeningPid(activeRuntimeSettings.port);
                 string cmd;
-                dshListening = pid > 0 && dsh.IsLikelyDshProcess(pid, out cmd, settings.port);
+                dshListening = pid > 0 && dsh.IsLikelyDshProcess(pid, out cmd, activeRuntimeSettings.port);
             }
-            bool backendStillHealthy = dsh.IsDshHealthy(settings.port, 800);
+            bool backendStillHealthy = dsh.IsDshHealthy(activeRuntimeSettings.port, 800);
             webViewReady = backendStillHealthy;
 
             string title;
@@ -4456,7 +4466,7 @@ namespace DeepSeekHarnessDesktop
 
         private string DshHomeUrl()
         {
-            return "http://127.0.0.1:" + settings.port.ToString() + "/";
+            return "http://127.0.0.1:" + activeRuntimeSettings.port.ToString() + "/";
         }
 
         private bool IsAllowedMainNavigation(string uriText)
@@ -4473,7 +4483,7 @@ namespace DeepSeekHarnessDesktop
                 Uri uri = new Uri(uriText);
                 string host = uri.Host == null ? "" : uri.Host.ToLowerInvariant();
                 bool loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
-                return uri.Scheme == Uri.UriSchemeHttp && loopback && uri.Port == settings.port;
+                return uri.Scheme == Uri.UriSchemeHttp && loopback && uri.Port == activeRuntimeSettings.port;
             }
             catch
             {
@@ -4642,15 +4652,112 @@ namespace DeepSeekHarnessDesktop
             settings.Save(settingsPath);
         }
 
-        private void ShowSettings()
+        private static bool BackendRuntimeSettingsChanged(AppSettings before, AppSettings after)
         {
-            using (SettingsForm dialog = new SettingsForm(settings, currentDark))
+            if (before == null || after == null) return true;
+            return before.port != after.port ||
+                !String.Equals(before.workingDirectory ?? "", after.workingDirectory ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.dshVersion ?? "", after.dshVersion ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.dshPath ?? "", after.dshPath ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.dshRunnerMode ?? "", after.dshRunnerMode ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.profileName ?? "", after.profileName ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task ApplyDeveloperModeChangeAsync(bool previousDeveloperMode)
+        {
+            if (previousDeveloperMode == persistedSettings.developerMode) return;
+
+            if (webView == null || webView.CoreWebView2 == null || !CanTouchControls)
             {
-                if (dialog.ShowDialog(this) == DialogResult.OK)
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+                ThemedMessageBox.Show(this,
+                    "当前 WebView2 尚未完成初始化，开发者模式将在下次启动时生效。",
+                    "DeepSeek Harness",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!TryBeginRecoveryOperation("settings-webview"))
+            {
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+                ThemedMessageBox.Show(this,
+                    "当前正在执行另一项恢复操作，开发者模式将在下次启动时生效。",
+                    "DeepSeek Harness",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            try
+            {
+                activeRuntimeSettings.developerMode = persistedSettings.developerMode;
+                await ConfigureWebViewAsync();
+                HostLog.Line("SETTINGS developerMode applied immediately=" +
+                    activeRuntimeSettings.developerMode.ToString());
+            }
+            catch (OperationCanceledException)
+            {
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+            }
+            catch (Exception ex)
+            {
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+                if (!LifetimeCancelled)
                 {
-                    settings.CopyFrom(dialog.ResultSettings);
-                    settings.Save(settingsPath);
+                    ThemedMessageBox.Show(this,
+                        "开发者模式无法在当前 WebView2 中安全重配，将在下次启动时生效。\r\n\r\n" + ex.Message,
+                        "DeepSeek Harness",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
                 }
+            }
+            finally
+            {
+                EndRecoveryOperation("settings-webview");
+            }
+        }
+
+        private async Task ShowSettingsAsync()
+        {
+            if (LifetimeCancelled) return;
+            using (SettingsForm dialog = new SettingsForm(persistedSettings, currentDark))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+                AppSettings oldSnapshot = persistedSettings.Clone();
+                persistedSettings.CopyFrom(dialog.ResultSettings);
+                persistedSettings.Save(settingsPath);
+
+                bool backendChanged = BackendRuntimeSettingsChanged(oldSnapshot, persistedSettings);
+                bool developerChanged = oldSnapshot.developerMode != persistedSettings.developerMode;
+                HostLog.Line("SETTINGS saved backendAffectingChanged=" + backendChanged.ToString() +
+                    " developerChanged=" + developerChanged.ToString());
+
+                if (backendChanged)
+                {
+                    DialogResult applyNow = ThemedMessageBox.Show(this,
+                        "这些设置需要重启 DSH 后端才能生效。\r\n\r\n是否立即应用并重启 DSH 后端？\r\n选择“否”会保存设置，但当前运行中的后端继续使用原配置。",
+                        "DeepSeek Harness 设置",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Information);
+                    if (applyNow == DialogResult.Yes && !LifetimeCancelled && !recoveryBusy)
+                    {
+                        activeRuntimeSettings.CopyFrom(persistedSettings);
+                        await RestartBackendAsync();
+                    }
+                    else
+                    {
+                        HostLog.Line("SETTINGS backend changes deferred; active runtime remains port=" +
+                            activeRuntimeSettings.port.ToString() + " profile=" + activeRuntimeSettings.profileName);
+                        if (developerChanged)
+                            await ApplyDeveloperModeChangeAsync(oldSnapshot.developerMode);
+                    }
+                    return;
+                }
+
+                if (developerChanged)
+                    await ApplyDeveloperModeChangeAsync(oldSnapshot.developerMode);
             }
         }
 

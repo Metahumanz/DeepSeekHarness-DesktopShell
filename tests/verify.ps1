@@ -31,6 +31,7 @@ $tests = @(
     'test-lifecycle-cancellation.ps1',
     'test-recovery-serialization.ps1',
     'test-bounded-process-probe.ps1',
+    'test-settings-runtime-snapshot.ps1',
     'test-web-context-menu-lifecycle.ps1',
     'test-dream-skin-pin.ps1',
     'test-release-immutable.ps1',
