@@ -4,7 +4,7 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
-## v1.0.4（未发布，运行期生命周期修复）
+## v1.0.4（运行期生命周期修复）
 
 - **托盘隐藏/恢复不再重建主窗口句柄**：MainForm 运行期间不再切换 `ShowInTaskbar`；关闭到托盘与恢复复用同一个 Form、WebView2 和 backend，并增加 Handle 创建/销毁诊断。托盘图标双击现在在显示/隐藏间切换，恢复时使用约 160ms 的 ease-out 淡入动效；普通激活、首次启动和系统关闭动画效果时不播放。
 - **退出生命周期统一取消**：真实退出、Windows 关机和重启应用会取消 lifetime；startup/restart/health/retry 在 await 后检查取消，取消后清理本轮启动的 wrapper/listener，不再操作已 Dispose 控件。关闭到托盘不取消。
@@ -19,7 +19,7 @@
 - **健康身份与对话框边界收紧**：自有 backend 健康检查校验监听 PID/Job 归属；托盘隐藏时对话框改用 ownerless + CenterScreen。
 - **保持 v1.0.3 的 DSH 默认版本、测试版本和已确认插件规格不变**；日常插件安装不启动用户真实 Profile，完整兼容验收改由独立 release preflight 在临时 `DSH_HOME`/Profile/随机端口中完成；结束时按随机端口解析精确 listener PID 并确认端口/进程无残留，不按 node/cmd 进程名清理；dsh-remote 尚未通过完整验收，暂时移出 v1.0.4 推荐目录。DPI 本轮只增加 100%/125%/150%/200% 的人工 Windows 验收矩阵。
 
-> 本版本尚未创建 tag 或 Release，当前处于预发布分支验证阶段；发布前必须完成 `tests/verify.ps1`、Release 构建和真实 Windows 验收。
+> 发布状态以 Git tag 与 GitHub Release 为准；本版本的自动门禁与 Release 构建已完成，真实 Windows 验收结果仍以实际 Windows 记录为准。
 
 ## v1.0.3（仓库维护收尾，2026-08-20）
 

@@ -4,11 +4,11 @@
 - 审计范围：仓库全部源码与脚本（v1.0.4 运行期生命周期修复工作树；v1.0.3 已发布并冻结）
 - 审计方法：静态代码审查 + PowerShell 语言解析器校验 + `csc.exe` 实际编译验证
 
-## 0. 当前真实状态（v1.0.4，未发布）
+## 0. 当前真实状态（v1.0.4）
 
 本轮从 `main` 的 `509122e` 创建 `fix/v1.0.4-runtime-lifecycle`；当前分支已推送到 GitHub，
-但尚未创建 v1.0.4 tag 或 Release，处于预发布分支验证阶段。不移动、不删除、不覆盖
-v1.0.3 的 tag/Release，也不提前创建 v1.0.4 tag。DSH 默认版本、`COMPATIBILITY.json`
+v1.0.4 的发布状态以 Git tag 与 GitHub Release 为准。不移动、不删除、不覆盖
+v1.0.3 的 tag/Release。DSH 默认版本、`COMPATIBILITY.json`
 和 rc.7/rc.8 测试基线保持不变；当前活动推荐目录暂不包含尚未完成完整 BootReady 验收的
 dsh-remote，Dream Skin 仍为 npm `^0.4.1`。
 
@@ -211,7 +211,7 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 | 9 | P3 | 回归测试未入库 | `tests/`：`test-install-ownership.ps1`（10 项）、`test-uninstall-guards.ps1`（3 项，自动备份/恢复开始菜单）、`test-repair-regex.ps1`（合成账本 DryRun） |
 
 发布提醒（历史记录）：README 一键安装引导命令当时钉在 `v1.0.0` tag；后续历史发布已冻结，
-当前 v1.0.4 仍处于预发布分支验证阶段，尚未创建 v1.0.4 tag 或 Release。
+v1.0.4 的 tag 与 Release 由本次发布流程创建，并遵循不可覆盖的冻结策略。
 
 ## 8. 2026-08-19 第四轮修复（第三方审计响应：发布前收口）
 
