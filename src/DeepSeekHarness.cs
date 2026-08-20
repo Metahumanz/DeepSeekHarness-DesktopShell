@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -916,6 +917,7 @@ namespace DeepSeekHarnessDesktop
         private readonly object logLock = new object();
         private string logPath;
         public bool OwnsBackend { get; private set; }
+        public bool BootReady { get; private set; }
 
         // 真正监听 DSH 端口的进程（npx 经 .cmd 启动时，process 只是 cmd 包装进程，
         // 监听 3080 的 Node 是它的子进程）。首次就绪时记录；停止时身份验证后兜底结束。
@@ -1495,6 +1497,7 @@ namespace DeepSeekHarnessDesktop
         {
             public int WrapperPid;
             public int ListenerPid;
+            public bool BootReady;
         }
 
         public BackendStartResult EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowUnverifiedAttach, CancellationToken cancellationToken = default(CancellationToken))
@@ -1541,13 +1544,15 @@ namespace DeepSeekHarnessDesktop
                         "。已拒绝直接附着。请结束该进程后重试，或重新启动桌面壳并在提示时确认附着。");
                 }
 
+                WaitForBootReady(port, cancellationToken, false);
                 OwnsBackend = false;
+                BootReady = true;
                 ownedWrapperPid = -1;
                 ownedListenerPid = -1;
                 ownedPort = -1;
                 ownedProfile = "";
                 lastExternalPid = existingPid;
-                return new BackendStartResult { WrapperPid = -1, ListenerPid = existingPid };
+                return new BackendStartResult { WrapperPid = -1, ListenerPid = existingPid, BootReady = true };
             }
 
             if (!Directory.Exists(logsDirectory)) Directory.CreateDirectory(logsDirectory);
@@ -1627,6 +1632,7 @@ namespace DeepSeekHarnessDesktop
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                BootReady = false;
                 process = new Process();
                 process.StartInfo = psi;
                 process.EnableRaisingEvents = true;
@@ -1676,15 +1682,17 @@ namespace DeepSeekHarnessDesktop
 
                     if (identity == ListenerIdentity.OwnedJob || identity == ListenerIdentity.VerifiedDsh)
                     {
-                        // 归属已确认（Job 证明优先，命令行证明次之）：记录 listener PID 即成功
+                        // 归属已确认（Job 证明优先，命令行证明次之）：这仍不是 BootReady。
                         if (pid > 0) ownedListenerPid = pid;
                         LogPortState(port, pid, identity, 0);
+                        WaitForBootReady(port, cancellationToken, true);
+                        BootReady = true;
                         HostLog.Line("BACKEND ready wrapper=" + ownedWrapperPid.ToString() +
                             " listener=" + pid.ToString() + " identity=" + identity.ToString() +
                             " sawReadyBanner=" + sawReadyBanner.ToString());
                         AppendLog("Listener PID: " + pid.ToString() + " identity=" + identity.ToString());
                         cancellationToken.ThrowIfCancellationRequested();
-                        return new BackendStartResult { WrapperPid = ownedWrapperPid, ListenerPid = pid };
+                        return new BackendStartResult { WrapperPid = ownedWrapperPid, ListenerPid = pid, BootReady = true };
                     }
 
                     if (identity == ListenerIdentity.Foreign)
@@ -1728,6 +1736,7 @@ namespace DeepSeekHarnessDesktop
                     WaitForPortClosedTwice(port, 5000);
                 }
                 OwnsBackend = false;
+                BootReady = false;
                 ownedListenerPid = -1;
                 ownedWrapperPid = -1;
                 ownedPort = -1;
@@ -1737,6 +1746,105 @@ namespace DeepSeekHarnessDesktop
                 process = null;
                 HostLog.Line("START-CLEANUP done");
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// listener 身份确认只是进程归属，不是 DSH 已完成引导。
+        /// 自有后端必须先输出官方 dsh web banner，再连续收到 HTTP 200，且进程仍然存活，
+        /// 才返回 BootReady。外部附着没有本次启动的 banner，因此只要求 HTTP 200 稳定确认。
+        /// </summary>
+        private void WaitForBootReady(int port, CancellationToken cancellationToken, bool requireReadyBanner)
+        {
+            const int timeoutMs = 120000;
+            const int stableSamples = 3;
+            int waited = 0;
+            int stable = 0;
+
+            while (waited < timeoutMs)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (OwnsBackend && process != null && process.HasExited)
+                {
+                    int exitCode = -1;
+                    try { exitCode = process.ExitCode; } catch { }
+                    throw new InvalidOperationException(
+                        "DSH 在 BootReady 前退出，退出码 " + exitCode.ToString() +
+                        "。请查看日志：" + logPath);
+                }
+
+                if (requireReadyBanner && !sawReadyBanner)
+                {
+                    Thread.Sleep(120);
+                    waited += 120;
+                    continue;
+                }
+
+                bool http200 = IsHttp200(port, 500, cancellationToken);
+                if (http200)
+                {
+                    stable++;
+                    HostLog.Line("BOOT HTTP200 port=" + port.ToString() +
+                        " stableCount=" + stable.ToString());
+                    if (stable >= stableSamples)
+                    {
+                        if (OwnsBackend && process != null && process.HasExited)
+                        {
+                            int exitCode = -1;
+                            try { exitCode = process.ExitCode; } catch { }
+                            throw new InvalidOperationException(
+                                "DSH 在 BootReady 确认完成前退出，退出码 " + exitCode.ToString() +
+                                "。请查看日志：" + logPath);
+                        }
+                        HostLog.Line("BOOTREADY port=" + port.ToString() +
+                            " banner=" + sawReadyBanner.ToString() +
+                            " http200=true stableCount=" + stable.ToString());
+                        return;
+                    }
+                }
+                else
+                {
+                    if (stable > 0)
+                        HostLog.Line("BOOT HTTP200 lost port=" + port.ToString());
+                    stable = 0;
+                }
+
+                Thread.Sleep(200);
+                waited += 200;
+            }
+
+            throw new TimeoutException(
+                "等待 DSH 完成引导超时（需要 ready banner、HTTP 200 和稳定确认）。请查看日志：" +
+                logPath);
+        }
+
+        private bool IsHttp200(int port, int timeoutMs, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            HttpWebRequest request = null;
+            try
+            {
+                request = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port.ToString() + "/");
+                request.Method = "GET";
+                request.AllowAutoRedirect = false;
+                request.KeepAlive = false;
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                    return response.StatusCode == HttpStatusCode.OK;
+                }
+            }
+            catch (WebException ex)
+            {
+                HttpWebResponse response = ex.Response as HttpWebResponse;
+                if (response != null) response.Dispose();
+                return false;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -1988,6 +2096,8 @@ namespace DeepSeekHarnessDesktop
         {
             if (!OwnsBackend) return;
 
+            BootReady = false;
+
             if (jobHandle != IntPtr.Zero)
             {
                 try { CloseHandle(jobHandle); } catch { }
@@ -2070,6 +2180,7 @@ namespace DeepSeekHarnessDesktop
             WaitForPortClosedTwice(port, 5000);
 
             OwnsBackend = false;
+            BootReady = false;
             HostLog.Line("STOP-OWNED complete port=" + port.ToString() + " ownsBackend=false");
         }
 
@@ -2994,6 +3105,7 @@ namespace DeepSeekHarnessDesktop
         private bool currentDark;
         private bool chromeApplied;
         private bool webViewReady;
+        private bool backendBootReady;
         private int unresponsiveCount;
         private DateTime unresponsiveFirstUtc = DateTime.MinValue;
         private bool healthCheckBusy;
@@ -3480,6 +3592,7 @@ namespace DeepSeekHarnessDesktop
         {
             if (!TryBeginRecoveryOperation("start")) return;
             CancellationToken token = lifetimeCts.Token;
+            backendBootReady = dsh.BootReady;
             currentPhase = StartupPhase.CommandVerify;
             ShowOverlay("startup", "正在启动 DeepSeek Harness...", null, null, null, null);
 
@@ -3583,7 +3696,11 @@ namespace DeepSeekHarnessDesktop
                     token.ThrowIfCancellationRequested();
                 }, token);
                 token.ThrowIfCancellationRequested();
-                HostLog.Ok("START phase=Backend");
+                if (!dsh.BootReady || (dsh.OwnsBackend && !dsh.BackendRunning))
+                    throw new InvalidOperationException(
+                        "DSH listener 已确认，但尚未完成 BootReady（ready banner + HTTP 200 稳定确认）。");
+                backendBootReady = true;
+                HostLog.Ok("START phase=Backend bootReady=true");
 
                 // 阶段四：WebView2 环境
                 currentPhase = StartupPhase.WebViewEnvironment;
@@ -3620,6 +3737,10 @@ namespace DeepSeekHarnessDesktop
                 currentPhase = StartupPhase.Navigate;
                 HostLog.Enter("START phase=Navigate");
                 token.ThrowIfCancellationRequested();
+                if (!backendBootReady || !dsh.BootReady || (dsh.OwnsBackend && !dsh.BackendRunning))
+                    throw new InvalidOperationException(
+                        "DSH 在 WebView 导航前已退出；后端已完成过 BootReady，但当前连接已中断。\r\n\r\n" +
+                        "请查看 DesktopShell 日志。");
                 webViewReady = true;
                 ClearUnresponsiveState();
                 healthFailures = 0;

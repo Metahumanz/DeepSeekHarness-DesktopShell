@@ -31,7 +31,10 @@ Assert-True "pending resets foreign stability counter" ($cs -match 'foreignPid =
 
 # ---- 1c. 启动成功即确认归属（P0-5） + 半失败清理（P0-6） ----
 Assert-True "BackendStartResult returned by EnsureStarted" ($cs -match 'public class BackendStartResult' -and $cs -match 'public BackendStartResult EnsureStarted')
-Assert-True "success requires confirmed listener" ($cs -match 'BACKEND ready wrapper=')
+Assert-True "success requires BootReady after listener confirmation" ($cs -match 'WaitForBootReady\(port, cancellationToken, true\)' -and $cs -match 'public bool BootReady')
+Assert-True "BootReady requires ready banner and HTTP 200" ($cs -match 'requireReadyBanner' -and $cs -match 'IsHttp200\(port, 500, cancellationToken\)' -and $cs -match 'stableSamples = 3')
+Assert-True "process exit before BootReady is startup failure" ($cs -match 'DSH 在 BootReady 前退出')
+Assert-True "BACKEND ready is logged only after BootReady" ($cs -match 'BACKEND ready wrapper=')
 Assert-True "failed start cleans up owned job/process" ($cs -match 'START-CLEANUP begin' -and $cs -match 'START-CLEANUP done')
 Assert-True "cleanup runs before rethrow" ($cs -match 'HostLog\.Line\("START-CLEANUP done"\);\r?\n\s*throw;')
 
@@ -45,7 +48,7 @@ Assert-True "listener fallback exists" ($cs -match 'public void TryStopListenerF
 Assert-True "fallback refuses unverified identity" ($cs -match 'STOP-FALLBACK refused')
 Assert-True "fallback re-verifies DSH identity first" ($cs -match 'if \(IsLikelyDshProcess\(currentPid, out commandLine, port\)\)')
 Assert-True "port must close twice before success" ($cs -match 'public bool WaitForPortClosedTwice\(int port, int timeoutMs\)')
-Assert-True "OwnsBackend released only after stop sequence" ($cs -match 'OwnsBackend = false;\r?\n\s*HostLog\.Line\("STOP-OWNED complete')
+Assert-True "OwnsBackend released only after stop sequence" ($cs -match 'OwnsBackend = false;\r?\n\s*BootReady = false;\r?\n\s*HostLog\.Line\("STOP-OWNED complete')
 
 # ---- 3. 健康检查竞态（generation） ----
 Assert-True "backendGeneration field exists" ($cs -match 'private long backendGeneration;')

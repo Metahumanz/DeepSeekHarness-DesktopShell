@@ -83,7 +83,8 @@ namespace Harness
                     "Start-Sleep -Milliseconds 500\r\n" +
                     "$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,$Port)\r\n" +
                     "$l.Start()\r\n" +
-                    "while($true){ Start-Sleep -Seconds 1 }\r\n");
+                    "Write-Output ('dsh web: http://127.0.0.1:{0}' -f $Port)\r\n" +
+                    "while($true){ $c=$l.AcceptTcpClient(); $s=$c.GetStream(); $b=[Text.Encoding]::ASCII.GetBytes(('HTTP/1.1 200 OK' + [char]13 + [char]10 + 'Content-Length: 0' + [char]13 + [char]10 + 'Connection: close' + [char]13 + [char]10 + [char]13 + [char]10)); $s.Write($b,0,$b.Length); $s.Close(); $c.Close() }\r\n");
                 string logsA = Path.Combine(baseDir, "logs-a");
                 DeepSeekHarnessDesktop.HostLog.Initialize(logsA, "identity-harness-a");
                 DeepSeekHarnessDesktop.DshProcessManager mgrA = new DeepSeekHarnessDesktop.DshProcessManager();

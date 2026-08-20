@@ -25,6 +25,7 @@ $tests = @(
     'test-accepted-dsh.ps1',
     'test-build-x64.ps1',
     'test-restart-state.ps1',
+    'test-startup-boot-ready.ps1',
     'test-startup-identity.ps1',
     'test-tray-quit-deferred.ps1',
     'test-tray-handle-lifecycle.ps1',

@@ -50,14 +50,10 @@ try {
         "@echo off`r`nsetlocal`r`necho %*|findstr /C:`"--help`" >nul`r`nif not errorlevel 1 ( echo --no-open & exit /b 0 )`r`necho %*|findstr /C:`"--version`" >nul`r`nif not errorlevel 1 ( echo 0.1.0-rc.7 & exit /b 0 )`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0dsh-server.ps1`" %*`r`n")
     [System.IO.File]::WriteAllText((Join-Path $dshDir 'dsh-server.ps1'),
         "param([string]`$Profile='web',[int]`$Port=3080)`r`n" +
-        "`$pidFile=Join-Path `$PSScriptRoot 'listener.pid'`r`n" +
-        "Start-Process powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path `$PSScriptRoot 'listener-worker.ps1'),'-Port',`$Port,'-PidFile',`$pidFile) | Out-Null`r`n" +
-        "while(`$true){ Start-Sleep -Seconds 1 }`r`n")
-    [System.IO.File]::WriteAllText((Join-Path $dshDir 'listener-worker.ps1'),
-        "param([int]`$Port,[string]`$PidFile)`r`n" +
         "`$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,`$Port); `$l.Start()`r`n" +
-        "[IO.File]::WriteAllText(`$PidFile,[string]`$PID)`r`n" +
-        "while(`$true){ Start-Sleep -Seconds 1 }`r`n")
+        "[IO.File]::WriteAllText((Join-Path `$PSScriptRoot 'listener.pid'),[string]`$PID)`r`n" +
+        "Write-Output ('dsh web: http://127.0.0.1:{0}' -f `$Port)`r`n" +
+        "while(`$true){ `$c=`$l.AcceptTcpClient(); `$s=`$c.GetStream(); `$b=[Text.Encoding]::ASCII.GetBytes(('HTTP/1.1 200 OK' + [char]13 + [char]10 + 'Content-Length: 0' + [char]13 + [char]10 + 'Connection: close' + [char]13 + [char]10 + [char]13 + [char]10)); `$s.Write(`$b,0,`$b.Length); `$s.Close(); `$c.Close() }`r`n")
 
     $harnessCs = Join-Path $base 'health-harness.cs'
     $harnessSource = @'
