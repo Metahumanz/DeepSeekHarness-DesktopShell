@@ -4,9 +4,22 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.3（仓库维护收尾，2026-08-20）
+
+- **CI/Actions 维护**：checkout v6、upload-artifact v6、download-artifact v7、
+  action-gh-release v3；CI 与 Release checkout 均 `fetch-depth: 0`；
+  `test-release-immutable` 改为冻结 v1.0.0 / v1.0.1 / v1.0.2 必须存在且为当前 HEAD 祖先
+- **已知 CLI 能力收口**：rc.8 直接命中 `--no-open` 并缓存，不再为探测启动 npx --help；
+  通用探测超时按 PID 回收进程树（`taskkill /T /F`），不按进程名误杀
+- **推荐插件选择性 pin**：dshmarket ^1.16.0、Dream Skin npm ^0.4.1、at-file v0.6.6、
+  file-mentions v1.0.6、outline v1.1.1、modlens ^3.22.0、remote 0.7.1；
+  Better Sidebar / Cost Meter / Sentinel 因兼容依赖保持已审核版本
+- **文档同步**：v1.0.2 标记已发布并冻结；rc.8 实际 CLI/Web 验证结论更新
+  （默认 rc.7 是 fresh npx 安装可靠性决策，不是 rc.8 运行时不兼容）
+
 ## v1.0.2（第九轮修复：重启事务与 Dream Skin，2026-08-19）
 
-> **尚未发布**：等待用户本机压力测试（连续重启 20 次 + 午夜皮肤持久化）通过后才发布。
+> **已发布**：最终发布基线为 `34deef4`。历史上曾覆盖重建 v1.0.2，自此 v1.0.2 冻结，不再覆盖。
 > 本版不修改 v1.0.1 tag / Release；也不删除 `~\.dsh`、不清 WebView2 数据、不重装 DSH/Node。
 
 - **重启 DSH 后端改为有状态事务**：`restart.preflight → snapshot → stop-wrapper →
@@ -23,8 +36,8 @@
   重启期间不再出现"后端连接已中断"假警报
 - **重启失败按真实后端状态分流**：A 重启未完成但原后端仍健康 / B 重启失败且旧后端已停止 /
   C 新后端已就绪但页面恢复失败；webViewReady 按实际健康状态重算，泛化提示不再盖掉真因
-- **Dream Skin 改钉审核固定 commit**（`28497f52`，含 sticky restore 加固与 host-backed
-  持久化），不再锁 npm 0.3.0；升级不删 webview2-data / `~\.dsh` / Profile，不改官方
+- **Dream Skin 改为 npm ^0.4.1**（含 sticky restore 加固与 host-backed 持久化），不再锁 npm 0.3.0、
+  也不再固定 commit；升级不删 webview2-data / `~\.dsh` / Profile，不改官方
   ThemeRuntime，不注入 JS
 - **Dream Skin 新旧实现按能力 marker 区分**（版本号都是 0.3.0 无法区分）：
   `Test-DreamSkinPersistenceFix` 检查 `lib\client.js` 是否含
@@ -71,24 +84,27 @@
 - **兼容策略从“唯一验证版本”改为“默认 + 最低 + 测试”**：`COMPATIBILITY.json` 升到
   schemaVersion 2，`defaultDshVersion=0.1.0-rc.7`、`minimumCompatibleDshVersion=0.1.0-rc.7`、
   `testedDshVersions=[rc.7, rc.8]`；新设置/缺失/无效值使用默认 rc.7，已有 rc.7 配置继续保留。
-  当前默认暂回退 rc.7：上游 `@deepseek-ai/dsh@0.1.0-rc.8` 的 npm 依赖发布不完整
-  （`@deepseek-ai/dsh-agent-loop@^0.1.0-rc.8` ETARGET），rc.8 仍保留在 tested/已知兼容信息中，
-  待上游补发后仅需恢复默认版本即可
+  当前默认暂回退 rc.7。DSH 0.1.0-rc.8 已在 Windows 11 + Node 24.14 完成实际 CLI/Web
+  运行验证（--version、--no-open、web profile、独立 3088 监听与 HTTP 200 均通过）；
+  之前出现的 `dsh-agent-loop` ETARGET 不是“上游缺包”——社区已确认该包存在，
+  而是 fresh isolated cache + official registry + npm 11.19.0 下普通 npx 在深层
+  dependency/peer resolution 中可能长时间卡住。因此默认 rc.7 是出于 fresh npx 安装
+  可靠性，而非 rc.8 运行时不兼容；rc.8 仍保留在 tested 与 CLI capability 兼容信息中。
 - **未来 DSH 版本不再因不在 tested 列表被强制回退**：rc.6 及以下按过旧安全处理；rc.7/rc.8
   直接使用；rc.9/后续正式版只要不低于最低版本就允许尝试，按实际 CLI 能力适配
 - **统一 CLI 能力检测层**：启动流程改为 Resolve runner → 实际版本 → 探测 CLI capabilities →
   构造 Web 启动参数 → 进入现有启动/Restart 生命周期；`--no-open` 通过 `--profile <profile> --help`
   实际探测，支持才加入，探测失败保守不加；npx 与 command 共用同一套参数构造
 - **Web 启动参数保持**：`--profile <profile> --port <明确端口>`，不恢复 `dsh web`，也不引入 `--port 0`
-- **推荐插件保持保守 pin**：当前未完成逐项真实安装/升级验证，因此不批量取消 pin、不批量跟随
-  GitHub `main`；Dream Skin 继续 pin 到已验证 commit（含 sticky restore 与 `/dream-skin/api`
-  marker）。后续逐项确认普通升级不破坏 DesktopShell 后，再取消对应 pin
+- **推荐插件选择性 pin**：已确认兼容的新版使用 npm range 或 GitHub release tag；
+  Dream Skin 切换为 npm 0.4.1（含 sticky restore 与 `/dream-skin/api` marker）；
+  对 DesktopShell 有兼容修复依赖的插件保持已审核版本；未验证新版不升级
 - **修复菜单 Dispose 生命周期**：托盘退出延迟到 Click 消息后执行；WebView 右键菜单改为
   MainForm 生命周期内复用同一个 `ContextMenuStrip`，只在 `MainForm.Dispose` 中释放，
   不在 Closed/替换路径 Dispose，避免 `ContextMenuStrip ObjectDisposedException`（均有回归测试）
 - **测试同步升级**：`test-version-source` / `test-dsh-version` / `test-accepted-dsh` /
   `test-launch-args` / `test-runner-mode` / `test-dream-skin-pin` 覆盖 rc.6/rc.7/rc.8/rc.9、
-  `--no-open` 能力检测、未来版本不强制回退、插件保守 pin 策略等行为
+  `--no-open` 能力检测、未来版本不强制回退、插件选择性 pin 策略等行为
 
 ## v1.0.1（第八轮修复：启动运行期稳健性，2026-08-19）
 

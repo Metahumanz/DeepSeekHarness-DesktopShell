@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$source = Join-Path $repo 'src\DeepSeekHarness.cs'
+$source = Join-Path $repo 'src/DeepSeekHarness.cs'
 
 $fail = 0
 function Assert-True([string]$label, [bool]$condition) {
@@ -9,8 +9,6 @@ function Assert-True([string]$label, [bool]$condition) {
 }
 
 # ---- 1. 源码级守卫：启动参数绝不能拼出 "--profile <profile> web" ----
-# 官方 CLI：`dsh web` 是 `dsh --profile web` 的别名，两者叠加会被
-# rejectParentOptions('web') 拒绝（"web takes none of parent --profile ..."）。
 $cs = [System.IO.File]::ReadAllText($source)
 Assert-True "no web-port suffix in arguments" ($cs -notmatch '" web --port "')
 Assert-True "no web appended after profile arg" ($cs -notmatch 'QuoteArg\(profile\)\s*\+\s*" web')
@@ -18,18 +16,16 @@ Assert-True "uses --profile form" ($cs -match '" --profile " \+ QuoteArg\(profil
 Assert-True "passes --port" ($cs -match '" --port " \+ port\.ToString\(\)')
 
 # ---- 2. 统一 CLI 能力检测与参数构造 ----
-# 自动化测试只做源码级守卫；真实 npx --help 探测在独立人工环境执行，
-# 避免在当前生产 DSH/3080 环境下触发下载或任何端口行为。
-Assert-True "SupportsNoOpen probes --help" ($cs -match '--profile " \+ QuoteArg\(profile\) \+ " --help"')
+Assert-True "SupportsNoOpen probes --help for unknown versions" ($cs -match '--profile " \+ QuoteArg\(profile\) \+ " --help"')
 Assert-True "SupportsNoOpen checks --no-open in output" ($cs -match 'IndexOf\("--no-open"')
 Assert-True "SupportsNoOpen caches capability" ($cs -match 'supportsNoOpenCache')
 Assert-True "SupportsNoOpen uses effectiveVersion" ($cs -match 'SupportsNoOpen\(command, usingNpx, effectiveVersion, profile\)')
 Assert-True "cache key includes command path" ($cs -match 'string key = \(usingNpx \? "npx:" : "cmd:"\) \+ command \+ ":" \+ version \+ ":" \+ profile;')
+Assert-True "known rc.8 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.0-rc\.8"' -and $cs -match 'supportsNoOpenCache = true;' -and $cs -match 'return true;')
+Assert-True "known rc.8 => --no-open" ($cs -match 'if \(noOpen\)\s*args \+= " --no-open";')
 Assert-True "BuildWebLaunchArguments shared by npx/command" ($cs -match 'BuildWebLaunchArguments\(usingNpx, version, profile, port, noOpen\)')
-Assert-True "no-open appended only when supported" ($cs -match 'if \(noOpen\)\s*args \+= " --no-open";')
-Assert-True "no hardcoded version gate for no-open" ($cs -notmatch 'CompareDshVersion\(version, "0\.1\.0-rc\.8"\)')
-Assert-True "SupportsNoOpen failure is conservative (false)" ($cs -match 'supported = false;')
-Assert-True "rc.8 fallback forces no-open even if probe fails" ($cs -match 'String\.Equals\(version, "0\.1\.0-rc\.8"')
+Assert-True "probe timeout uses bounded process-tree cleanup" ($cs -match 'KillProcessTree\(p\)' -and $cs -match 'taskkill\.exe' -and $cs -match 'WaitForExit\(5000\)')
+Assert-True "no process-name based kill" ($cs -notmatch 'taskkill /IM')
 
 # ---- 3. COMPATIBILITY.json 默认版本自洽 ----
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json

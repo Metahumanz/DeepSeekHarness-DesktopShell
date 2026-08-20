@@ -19,7 +19,7 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> 当前基线：DesktopShell v1.0.2 · DSH 0.1.0-rc.7（默认，因上游 rc.8 npm 依赖发布暂不完整）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
+> 当前基线：DesktopShell v1.0.3 · DSH 0.1.0-rc.7（默认，因 fresh npx 安装可靠性；rc.8 已实测 CLI/Web 兼容）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
 
 ## 安装
 
@@ -39,8 +39,8 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.2/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.2
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.3/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.3
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
@@ -52,7 +52,7 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.2 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.3 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -111,7 +111,7 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Remote SSH | 远程 SSH 工作区 | |
 | Video Preview | 视频预览 | |
 
-内置推荐当前继续 pin 到已审核版本 / commit；逐项验证普通升级不破坏 DesktopShell 后才会取消 pin。
+内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。
 需要追新版本可在向导的"额外插件"步骤粘贴自定义 spec。
 **新 Profile 的默认选项是 0（纯 DSH，不安装社区插件）**——按一路 Enter 不会执行第三方代码；
 需要插件时输入 1（核心推荐）或更高选项。
@@ -164,7 +164,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 - **安装目录所有权**：`.dsh-desktop-shell-root` 标记；非空且非本产品目录拒绝安装；**程序目录** Preflight→Stage→Initialize→Commit 事务式提交（升级保留旧 exe 回滚，失败可恢复旧安装；首次向导对 DSH_HOME 的初始化不在回滚范围）；卸载前再次验证
 - **卸载守卫**：DSH_HOME 危险路径双向检查；完整卸载先确认并停止外部 DSH，停止失败降级为仅卸载壳；延迟自删除脚本执行前第三次验证标记
 - **端口/进程**：只信任回环 DSH 源；端口占用先查 PID+命令行，非 DSH 进程拒绝附着/强杀；Job Object 回收自家后端；运行方式（自动/现有 dsh/仅 npx）持久化双端一致
-- **发布链**：一键安装对 Release 资产做 SHA256 完整性校验（防下载损坏/资产错配）；插件推荐继续 pin 已审核版本
+- **发布链**：一键安装对 Release 资产做 SHA256 完整性校验（防下载损坏/资产错配）；插件推荐采用选择性 pin
 - **页面边界**：主导航回环白名单；外链 http/https 白名单，其余协议弹确认；DevTools 默认关闭
 
 ## 从源码构建
@@ -183,7 +183,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.2`，必须与根目录
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.3`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
 1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（19 项，PowerShell 7 + 5.1）

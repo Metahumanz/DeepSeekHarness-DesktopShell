@@ -1,7 +1,7 @@
 # 功能审计与边界检查报告
 
-- 审计日期：2026-08-19
-- 审计范围：仓库全部源码与脚本（v1.0.0）
+- 审计日期：2026-08-20
+- 审计范围：仓库全部源码与脚本（当前 v1.0.2 发布代码）
 - 审计方法：静态代码审查 + PowerShell 语言解析器校验 + `csc.exe` 实际编译验证
 
 ## 1. 模块功能清单
@@ -35,15 +35,18 @@
 
 - `COMPATIBILITY.json` 使用 schemaVersion 2：
   `defaultDshVersion=0.1.0-rc.7`、`minimumCompatibleDshVersion=0.1.0-rc.7`、
-  `testedDshVersions=[0.1.0-rc.7, 0.1.0-rc.8]`；默认暂回退 rc.7，因上游 rc.8 npm 依赖发布不完整
+  `testedDshVersions=[0.1.0-rc.7, 0.1.0-rc.8]`；默认暂回退 rc.7。rc.8 已在 Windows 11 +
+  Node 24.14 完成实际 CLI/Web 验证；fresh npx 深层 dependency/peer resolution 可能长时间
+  卡住（dsh-agent-loop 包存在，不是上游缺包），因此默认 rc.7 是安装可靠性决策而非运行时
+  不兼容
 - `defaultDshVersion` 只用于新设置/缺失/无效值；已有用户配置的 `dshVersion=rc.7` 不会被重写
 - `minimumCompatibleDshVersion` 是“过旧不应继续尝试”的下限：rc.6 及以下走安全处理
 - `testedDshVersions` 只用于日志/提示，不是未来版本硬白名单；rc.9/后续正式版只要不低于
   最低版本就允许尝试，按实际 CLI 能力适配
 - CLI 能力检测：启动前对当前 runner 执行 `--profile <profile> --help`，探测是否支持 `--no-open`；
   支持才加入，失败保守不加；npx 与 command 共用 `BuildWebLaunchArguments`
-- 推荐插件保持保守 pin：当前未完成逐项真实安装/升级验证，因此不批量取消 pin、不批量跟随
-  GitHub `main`；Dream Skin 等有兼容依赖的插件继续 pin 到已验证 commit，后续逐项确认后再取消 pin
+- 推荐插件选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；对 DesktopShell
+  有兼容修复依赖的插件保持已审核版本；未验证新版不升级
 
 ### 2.2 路径边界
 
@@ -312,14 +315,14 @@ PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:w
 | 2 | 旧子进程未退出路径 | `ownedListenerPid` 首次就绪时记录（`CaptureOwnedListenerPid`，含身份验证）；停止链：Job 关闭 → Kill wrapper → `WaitForExit(3000)` → `TryStopListenerFallback`（PID 与记录一致 **或** 命令行复验 DSH+profile+port 才 Kill）→ `WaitForPortClosedTwice`（连续两次确认）→ 最后才 `OwnsBackend=false` |
 | 3 | 重启/健康检查竞态 | `backendGeneration`：重启开始 `healthTimer.Stop()` + 代数递增；健康检查完成后 `generation != backendGeneration` 直接丢弃结果；finally 统一 `healthFailures=0` + `healthTimer.Start()` |
 | 4 | 失败分流 | `HandleRestartError` 按真实状态分 A（原后端仍健康）/ B（旧后端已停止）/ C（新后端已监听但页面失败），`webViewReady = IsDshHealthy(...)` 重算，不再笼统"重启失败" |
-| 5 | Dream Skin 固定 commit | 目录 `dsh-dream-skin@0.3.0` → `https://github.com/RevolutionLA/dsh-dream-skin/archive/28497f52...tar.gz`（已验证含 sticky restore + host-backed 持久化 marker；不用 main.tar.gz） |
+| 5 | Dream Skin 能力版本 | 目录 `dsh-dream-skin@0.3.0` → npm `dsh-dream-skin@^0.4.1`（已确认含 sticky restore + host-backed 持久化 marker；不再固定 commit） |
 | 6 | marker 检测 | `Test-DreamSkinPersistenceFix`：`profiles\<profile>\node_modules\dsh-dream-skin\lib\client.js` 需同时含 `dsh-dream-skin: sticky skin restore` 与 `/dream-skin/api`；诊断菜单显示已修/旧实现 |
-| 7 | 非破坏升级 | `Install-Plugins` 选中 dream-skin 且旧实现时：说明 → 确认 → 走固定 commit `plugin add`（同名包替换）；不删 webview2-data / `~\.dsh` / Profile，不改 ThemeRuntime，不注入 JS |
+| 7 | 非破坏升级 | `Install-Plugins` 选中 dream-skin 且旧实现时：说明 → 确认 → 走 npm `dsh-dream-skin@^0.4.1`（同名包替换）；不删 webview2-data / `~\.dsh` / Profile，不改 ThemeRuntime，不注入 JS |
 | 8 | 验收覆盖 | docs/DREAM_SKIN_ACCEPTANCE.md：午夜 ×（Reload 5 + 重启后端 10 + 退出重开 5 + 设置开关 5）；「默认」不被 sticky 拉回；`$DSH_HOME\dream-skin.json` 持久化检查 |
 | 9 | WebView 真重建 | `ReplaceWebViewControlAsync`：Remove+Dispose 旧控件 → 新建 → 初始化/配置/权限/导航；失败不碰健康后端 |
 | 10 | Release 真冻结 | publish job 发布前 `gh release view "v$version"` 已存在直接失败（"禁止覆盖，请增加版本号"）；不进入 softprops |
 | 11 | 最后硬编码 | `AppSettings.Load` 缺省 `dshVersion = DshProcessManager.VerifiedDshVersion`（src 中 rc.7 仅剩 VerifiedDshVersion 的合法回退 1 处） |
-| 12 | 门禁 11 → 15 | 新增 `test-restart-state`（ownedListenerPid/WaitForExit/身份兜底/generation/十阶段日志/A·B·C 分流）、`test-dream-skin-pin`（无 @0.3.0、40 位 commit、marker 检测 + 行为矩阵）、`test-release-immutable`（gh view 门禁、无删除步骤、v1.0.0/v1.0.1 tag 仍在且为祖先）、`test-version-source`（C#/PS 硬编码清零、VERSION=1.0.2 与 release.yml 默认一致） |
+| 12 | 门禁 11 → 15 | 新增 `test-restart-state`（ownedListenerPid/WaitForExit/身份兜底/generation/十阶段日志/A·B·C 分流）、`test-dream-skin-pin`（npm ^0.4.1、能力 marker 检测 + 行为矩阵）、`test-release-immutable`（gh view 门禁、无删除步骤、v1.0.0/v1.0.1/v1.0.2 tag 仍在且为祖先）、`test-version-source`（C#/PS 硬编码清零、VERSION=1.0.2 与 release.yml 默认一致） |
 
 ### 14.1 追加：启动身份状态机（用户本机暴露的"重启失败/半失败"根因）
 
@@ -343,7 +346,7 @@ PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:w
 - 16 项回归测试 PowerShell 7 先行全绿（csc 编译无警告）；双宿主全量在提交前跑；
 - `test-startup-identity.ps1` 实测：晚就绪 DSH 1387ms 成功（无 NonDsh 抛错）、真 Foreign
   稳定 4 次后拒绝（日志 stableCount=4）、未验证身份进程不被误杀；
-- Dream Skin 固定 commit 已实测：`client.js` 含两个 marker，package.json 版本仍为 0.3.0
-  （印证不能靠版本号判断）；
-- 托盘、WebView2、连续重启、Dream Skin 真实恢复：保留人工 Windows 验收（不发布
-  v1.0.2，直到用户本机压力测试通过）。
+- Dream Skin npm 0.4.1 已实测：`client.js` 含两个 marker（sticky restore 与 host-backed
+  持久化）；旧 0.3.0 与新版版本号不同，但能力判定仍以 marker 为准；
+- 托盘、WebView2、连续重启、Dream Skin 真实恢复：发布后的人工回归检查表见
+  docs/DREAM_SKIN_ACCEPTANCE.md；未取得用户明确验收记录前不得声称已通过。

@@ -2040,7 +2040,8 @@ namespace DeepSeekHarnessDesktop
 
         /// <summary>
         /// 探测当前 runner 的 DSH CLI 是否支持 --no-open。
-        /// 优先实际 --help 输出；探测失败保守返回 false（不加参数）。
+        /// rc.8 是已真实确认支持 --no-open 的版本，直接命中已知能力并缓存，不再启动 --help 探测。
+        /// rc.7 与未来未知版本继续按实际 --help 输出探测；探测失败保守返回 false（不加参数）。
         /// 同一 key 在本次 DesktopShell 生命周期内只探测一次。
         /// </summary>
         private bool SupportsNoOpen(string command, bool usingNpx, string version, string profile)
@@ -2050,6 +2051,14 @@ namespace DeepSeekHarnessDesktop
             string key = (usingNpx ? "npx:" : "cmd:") + command + ":" + version + ":" + profile;
             if (supportsNoOpenCache.HasValue && cliCapabilityKey == key)
                 return supportsNoOpenCache.Value;
+
+            // 已知能力短路：rc.8 已确认支持 --no-open，不需要为探测再启动一次 npx/dsh。
+            if (String.Equals(version, "0.1.0-rc.8", StringComparison.OrdinalIgnoreCase))
+            {
+                cliCapabilityKey = key;
+                supportsNoOpenCache = true;
+                return true;
+            }
 
             bool supported = false;
             try
@@ -2072,14 +2081,16 @@ namespace DeepSeekHarnessDesktop
                     {
                         if (!p.WaitForExit(15000))
                         {
-                            try { p.Kill(); } catch { }
+                            // 超时：回收本次探测的完整进程树（按 PID，不按进程名），
+                            // 避免只 Kill cmd/npx wrapper 后留下 node 子进程。
+                            KillProcessTree(p);
                             supported = false;
                         }
                         else
                         {
                             string output = p.StandardOutput.ReadToEnd();
                             string error = p.StandardError.ReadToEnd();
-                            supported = (output + "\n" + error).IndexOf("--no-open", StringComparison.OrdinalIgnoreCase) >= 0;
+                            supported = (output + System.Environment.NewLine + error).IndexOf("--no-open", StringComparison.OrdinalIgnoreCase) >= 0;
                         }
                     }
                 }
@@ -2089,15 +2100,30 @@ namespace DeepSeekHarnessDesktop
                 supported = false;
             }
 
-            // rc.8 是已确认支持 --no-open 的测试版本：即使 --help 探测因上游 npm 发布不完整
-            // 或帮助文本未列出该隐藏参数而失败，也强制加入 --no-open，避免自动打开浏览器。
-            // rc.7 不启用；未来未测试版本仍以实际探测结果为准（失败保守不加）。
-            if (!supported && String.Equals(version, "0.1.0-rc.8", StringComparison.OrdinalIgnoreCase))
-                supported = true;
-
             cliCapabilityKey = key;
             supportsNoOpenCache = supported;
             return supported;
+        }
+
+        /// <summary>
+        /// 按 PID 终止探测进程及其子进程树（taskkill /T /F），有界等待，绝不按进程名误杀。
+        /// </summary>
+        private static void KillProcessTree(Process p)
+        {
+            if (p == null) return;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe");
+                psi.Arguments = "/PID " + p.Id.ToString() + " /T /F";
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                using (Process k = Process.Start(psi))
+                {
+                    if (k != null) k.WaitForExit(5000);
+                }
+            }
+            catch { }
         }
 
         /// <summary>统一构造 Web 启动参数：npx 与 command 共用同一套 CLI 兼容规则。</summary>
