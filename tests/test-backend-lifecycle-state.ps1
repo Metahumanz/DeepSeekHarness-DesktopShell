@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $source = Join-Path $repo 'src\DeepSeekHarness.cs'
 $cs = [System.IO.File]::ReadAllText($source)
