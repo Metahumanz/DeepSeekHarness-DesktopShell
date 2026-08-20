@@ -183,161 +183,6 @@ function Test-PortOpen([int]$port) {
     } catch { return $false } finally { $client.Dispose() }
 }
 
-function Get-FreeTcpPort {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    try {
-        $listener.Start()
-        return ([int]$listener.LocalEndpoint.Port)
-    } finally {
-        $listener.Stop()
-    }
-}
-
-function Test-Http200([int]$port) {
-    $request = $null
-    try {
-        $request = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$port/")
-        $request.Method = 'GET'
-        $request.AllowAutoRedirect = $false
-        $request.KeepAlive = $false
-        $request.Timeout = 700
-        $request.ReadWriteTimeout = 700
-        $response = $request.GetResponse()
-        try { return ([int]$response.StatusCode -eq 200) } finally { $response.Dispose() }
-    } catch { return $false }
-}
-
-function Stop-PluginBootProbe([System.Diagnostics.Process]$process) {
-    if (-not $process) { return }
-    $exited = $false
-    try { $exited = $process.HasExited } catch { $exited = $true }
-    if ($exited) { return }
-
-    # 只按本次 Start-Process 返回的 PID 清理整棵树；绝不按 node/cmd/powershell 名称全局杀进程。
-    $taskkill = Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe'
-    if (Test-Path -LiteralPath $taskkill -PathType Leaf) {
-        & $taskkill /PID $process.Id /T /F 2>$null | Out-Null
-        try { $process.WaitForExit(3000) } catch {}
-    } else {
-        try { $process.Kill() } catch {}
-        try { $process.WaitForExit(3000) } catch {}
-    }
-}
-
-function New-PluginBootProbeCommand([object]$current, [string]$profile, [int]$port) {
-    $command = Resolve-DshCommandForOps $current.RunnerMode $current.DshPath
-    $profileArg = ' --profile "' + $profile + '" --port ' + $port.ToString()
-    if ([string]$current.Version -eq '0.1.0-rc.8') { $profileArg += ' --no-open' }
-
-    if ($command) {
-        $extension = [IO.Path]::GetExtension($command).ToLowerInvariant()
-        if ($extension -in @('.cmd', '.bat')) {
-            return [pscustomobject]@{
-                FileName = (Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe')
-                Arguments = '/d /s /c ""' + $command + '"' + $profileArg + '"'
-            }
-        }
-        return [pscustomobject]@{ FileName = $command; Arguments = $profileArg.Trim() }
-    }
-
-    $npx = Get-Npx
-    $npxArgs = '-y "@deepseek-ai/dsh@' + [string]$current.Version + '"' + $profileArg
-    $extension = [IO.Path]::GetExtension($npx).ToLowerInvariant()
-    if ($extension -in @('.cmd', '.bat')) {
-        return [pscustomobject]@{
-            FileName = (Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe')
-            Arguments = '/d /s /c ""' + $npx + '" ' + $npxArgs + '"'
-        }
-    }
-    return [pscustomobject]@{ FileName = $npx; Arguments = $npxArgs }
-}
-
-function Test-PluginProfileBootCompatibility([string]$profile) {
-    $result = [pscustomobject]@{
-        Passed = $false
-        Skipped = $false
-        Port = 0
-        StableSeconds = 0
-        Reason = ''
-    }
-    $current = Get-CurrentSettings
-
-    # 当前配置端口可能是用户正在使用的正常 DSH（通常为 3080）。只要它已监听，
-    # 本次管理器动作就不启动第二个同 Profile 实例；安装成功不因此伪装成兼容通过。
-    if (Test-PortOpen $current.Port) {
-        $result.Skipped = $true
-        $result.Reason = "当前配置端口 $($current.Port) 正在使用，为避免触碰现有 backend，未执行独立 BootReady 验收。"
-        Warn $result.Reason
-        return $result
-    }
-
-    $probeRoot = Join-Path $env:TEMP ('dsh-plugin-boot-' + [guid]::NewGuid().ToString('N'))
-    $stdoutPath = Join-Path $probeRoot 'stdout.log'
-    $stderrPath = Join-Path $probeRoot 'stderr.log'
-    $probe = $null
-    $result.Port = Get-FreeTcpPort
-    New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
-
-    try {
-        $launch = New-PluginBootProbeCommand $current $profile $result.Port
-        $work = if ($current.Work -and (Test-Path -LiteralPath $current.Work -PathType Container)) { $current.Work } else { $homeDir }
-        Say "插件兼容验收：Profile=$profile，临时随机端口=$($result.Port)（不使用当前端口 $($current.Port)）"
-        $probe = Start-Process -FilePath $launch.FileName -ArgumentList $launch.Arguments -WorkingDirectory $work `
-            -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
-
-        $deadline = [DateTime]::UtcNow.AddSeconds(120)
-        $bannerSeen = $false
-        while ([DateTime]::UtcNow -lt $deadline) {
-            if ($probe.HasExited) {
-                $result.Reason = "Profile 在 BootReady 前退出，exitCode=$($probe.ExitCode)。"
-                break
-            }
-
-            $stdout = if (Test-Path -LiteralPath $stdoutPath) { (Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue) } else { '' }
-            $stderr = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue) } else { '' }
-            $combined = "$stdout`r`n$stderr"
-            if ($combined -match '(?i)dsh\s+web:\s+http://(?:127\.0\.0\.1|localhost):' + $result.Port.ToString()) {
-                $bannerSeen = $true
-            }
-
-            if ($bannerSeen -and (Test-Http200 $result.Port)) {
-                $stableStart = [DateTime]::UtcNow
-                $stable = $true
-                while (([DateTime]::UtcNow - $stableStart).TotalSeconds -lt 10) {
-                    if ($probe.HasExited -or -not (Test-Http200 $result.Port)) {
-                        $stable = $false
-                        $result.Reason = 'Profile 已出现 ready banner/HTTP 200，但未稳定运行满 10 秒。'
-                        break
-                    }
-                    Start-Sleep -Milliseconds 250
-                }
-                if ($stable -and -not $probe.HasExited -and (Test-Http200 $result.Port)) {
-                    $result.Passed = $true
-                    $result.StableSeconds = 10
-                    $result.Reason = 'Profile BootReady、HTTP 200、稳定 10 秒且进程仍存活。'
-                }
-                break
-            }
-            Start-Sleep -Milliseconds 250
-        }
-
-        if (-not $result.Passed -and [string]::IsNullOrWhiteSpace($result.Reason)) {
-            $result.Reason = '等待 Profile BootReady 超时（需要 ready banner、HTTP 200、稳定 10 秒）。'
-        }
-    } catch {
-        $result.Reason = "BootReady 验收执行失败：$($_.Exception.Message)"
-    } finally {
-        Stop-PluginBootProbe $probe
-        Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
-
-    if (Test-PortOpen $result.Port) {
-        $result.Passed = $false
-        $result.Reason = 'BootReady 验收结束后临时端口仍在监听；未把该插件标记为兼容。'
-    }
-    return $result
-}
-
 function Get-Npx {
     $npx = Get-Command npx.cmd -ErrorAction SilentlyContinue
     if (-not $npx) { $npx = Get-Command npx.exe -ErrorAction SilentlyContinue }
@@ -969,16 +814,10 @@ function Install-Plugins([string]$profile, [object[]]$selected) {
     }
 
     if ($selected.Count -gt 0) {
-        if ($failures.Count -eq 0) {
-            $bootCheck = Test-PluginProfileBootCompatibility $profile
-            if ($bootCheck.Passed) {
-                Ok 'Profile 已完成真实 BootReady/HTTP 200/稳定 10 秒验收；本轮插件集合通过运行兼容门槛。'
-            } else {
-                Warn "安装成功 ≠ 运行兼容：$($bootCheck.Reason)"
-            }
-        } else {
-            Warn '存在安装失败项，跳过 Profile 运行兼容验收；安装成功不等于运行兼容。'
+        if ($failures.Count -gt 0) {
+            Warn '存在安装失败项；安装成功不等于运行兼容。'
         }
+        Warn '日常插件安装只确认 package 安装成功，不启动用户真实 Profile，也不标记运行兼容 PASS。完整 BootReady 验收请使用独立 release preflight（临时 DSH_HOME/Profile/随机端口）。'
         Write-Host ''
         Say '插件安装/更新完成。新插件与更新默认在 DSH 后端重启后生效：托盘图标 → 重启 DSH 后端。'
     }
@@ -1177,12 +1016,7 @@ function Interactive-Menu {
                     if ($code -ne 0) { Warn "安装失败：$s（退出码 $code）" }
                     else { Ok "已安装：$s（仅安装成功，尚未证明运行兼容）" }
                 }
-                $bootCheck = Test-PluginProfileBootCompatibility $current.Profile
-                if ($bootCheck.Passed) {
-                    Ok 'Profile 已完成真实 BootReady/HTTP 200/稳定 10 秒验收；本轮自定义插件通过运行兼容门槛。'
-                } else {
-                    Warn "安装成功 ≠ 运行兼容：$($bootCheck.Reason)"
-                }
+                Warn '安装成功 ≠ 运行兼容：日常安装不会启动用户真实 Profile。完整 BootReady 验收请使用独立 release preflight（临时 DSH_HOME/Profile/随机端口）。'
                 Say '插件安装/更新完成。新插件与更新默认在 DSH 后端重启后生效：托盘图标 → 重启 DSH 后端。'
             }
             '0' { return }

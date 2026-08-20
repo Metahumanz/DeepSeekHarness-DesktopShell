@@ -35,12 +35,16 @@ dsh-remote，Dream Skin 仍为 npm `^0.4.1`。
 - DesktopShell 自己启动 DSH 时，listener 身份确认不再等于 ready：必须依次看到 `dsh web`
   ready banner、HTTP 200 和短暂稳定确认后才允许 Navigate WebView；BootReady 前退出归为启动失败，
   BootReady 后退出才归为运行期中断。
-- `DshProcessManager` 记录 `BACKEND process-exited` 的 wrapper PID、exitCode、expectedStop、
-  Starting/Running 状态，并保存最近 stdout/stderr；启动错误覆盖层优先显示 fatal/plugin/loader 摘要。
-- 插件管理器把“安装成功”与“运行兼容”分离：完整兼容必须通过真实 Profile BootReady、HTTP 200、
-  稳定运行 10 秒且进程仍存活；dsh-remote 当前从 v1.0.4 活动推荐目录暂停。
+- `DshProcessManager` 记录 `BACKEND process-exited` 的 generation、wrapper PID、exitCode、
+  expectedStop、Starting/Running 状态，并为每个 backend run 保存独立 stdout/stderr drain 与最近输出；
+  旧代延迟 Exited 只写自己的日志并标记 ignored，不得改变新代状态。启动错误覆盖层优先显示
+  fatal/plugin/loader 摘要。
+- 插件管理器把“安装成功”与“运行兼容”分离：日常 `Manage-Dsh.ps1` 不启动用户真实 Profile；
+  完整兼容必须由 `scripts/Test-PluginBootPreflight.ps1` 在临时 `DSH_HOME`、临时 Profile、随机端口中
+  完成 BootReady、HTTP 200、稳定运行 10 秒且进程仍存活的验收。隔离条件不能确认时不得返回兼容 PASS；
+  dsh-remote 当前从 v1.0.4 活动推荐目录暂停。
 
-`tests/verify.ps1` 当前列出 33 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
+`tests/verify.ps1` 当前列出 34 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
 双宿主执行；托盘/WebView2/连续重启/DPI/Dream Skin 仍需真实 Windows 验收。发布包文件清单不在
 文档中重复维护：唯一权威来源是 `scripts/Build-Release.ps1` 内的 authoritative expected-file
 自校验。
@@ -59,7 +63,8 @@ dsh-remote，Dream Skin 仍为 npm `^0.4.1`。
 | `MainForm` | `src/DeepSeekHarness.cs` / `MainForm` | WebView2 承载、导航守卫、权限、右键菜单、快捷键守卫、健康检查、托盘、窗口位置恢复 |
 | `Program` | `src/DeepSeekHarness.cs` / `Program` | 单实例互斥体 + 激活已有窗口 |
 | `Install-Desktop.ps1` | `scripts/` | 安装：文件分发、WebView2 SDK 获取、csc 编译、开始菜单、旧版清理 |
-| `Manage-Dsh.ps1` | `scripts/` | 初始化向导 + 交互管理：Node 检查、dsh/npx 解析、插件安装、Profile BootReady 兼容验收、pnpm 版本匹配、诊断 |
+| `Manage-Dsh.ps1` | `scripts/` | 初始化向导 + 交互管理：Node 检查、dsh/npx 解析、插件安装（不启动用户 Profile 做兼容假设）、pnpm 版本匹配、诊断 |
+| `Test-PluginBootPreflight.ps1` | `scripts/` | 发布前隔离插件验收：临时 DSH_HOME/Profile、随机端口、BootReady/HTTP 200/稳定 10 秒与进程存活 |
 | `Uninstall-DesktopShell.ps1` | `scripts/` | 卸载模式选择（完整/仅壳）、预装 DSH_HOME 警告、延迟自删除 |
 
 ## 2. 边界检查结论
@@ -160,7 +165,7 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 
 ## 5. 遗留观察项（未修改，文档化）
 
-1. `Manage-Dsh.ps1` 插件目录为静态 18 项活动清单（dsh-remote 暂停推荐），版本规格硬编码（如 `@michengai/dsh-skills-manager@0.1.23`），上游发版需人工更新；安装后的完整 Profile BootReady 验收仍需真实环境。
+1. `Manage-Dsh.ps1` 插件目录为静态 18 项活动清单（dsh-remote 暂停推荐），版本规格硬编码（如 `@michengai/dsh-skills-manager@0.1.23`），上游发版需人工更新；日常安装只确认安装结果，完整 Profile BootReady 验收必须运行独立隔离 release preflight。
 2. `PluginCompat` 直接改写 `node_modules` 内的插件文件——已用标记 + 幂等 + 原子写 + 备份清理降低风险，但仍依赖插件内部结构字符串特征（上游改动可能导致"无法识别，跳过"，不会误改）。
 3. `FindListeningPid` 优先使用 `NativeTcpTable`，仅原生 API 不可用时才走有界 netstat fallback；IPv6 `[::1]` 行已兼容，极端本地化系统差异未覆盖。
 4. 卸载器 GUI 依赖 Windows Forms，在 PowerShell 5.1 下同样可用（未做强制 PS7 校验，属有意兼容）。
