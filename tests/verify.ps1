@@ -33,6 +33,7 @@ $tests = @(
     'test-bounded-process-probe.ps1',
     'test-settings-runtime-snapshot.ps1',
     'test-dialog-owner.ps1',
+    'test-webview-unresponsive.ps1',
     'test-web-context-menu-lifecycle.ps1',
     'test-dream-skin-pin.ps1',
     'test-release-immutable.ps1',

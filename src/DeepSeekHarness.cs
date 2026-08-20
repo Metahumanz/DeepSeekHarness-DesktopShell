@@ -2884,6 +2884,8 @@ namespace DeepSeekHarnessDesktop
         private bool currentDark;
         private bool chromeApplied;
         private bool webViewReady;
+        private int unresponsiveCount;
+        private DateTime unresponsiveFirstUtc = DateTime.MinValue;
         private bool healthCheckBusy;
         private bool restartBusy;
         private bool recoveryBusy;
@@ -3500,6 +3502,7 @@ namespace DeepSeekHarnessDesktop
                 HostLog.Enter("START phase=Navigate");
                 token.ThrowIfCancellationRequested();
                 webViewReady = true;
+                ClearUnresponsiveState();
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
@@ -3674,6 +3677,7 @@ namespace DeepSeekHarnessDesktop
                 currentPhase = StartupPhase.Navigate;
                 token.ThrowIfCancellationRequested();
                 webViewReady = true;
+                ClearUnresponsiveState();
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
@@ -3718,6 +3722,7 @@ namespace DeepSeekHarnessDesktop
                 currentPhase = StartupPhase.Navigate;
                 token.ThrowIfCancellationRequested();
                 webViewReady = true;
+                ClearUnresponsiveState();
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
@@ -3837,9 +3842,15 @@ namespace DeepSeekHarnessDesktop
                     "重启 DSH 后端",
                     OnOverlayRestartBackend);
             }
-            else if (overlayReason == "navigation" || overlayReason == "backend")
+            else if (overlayReason == "navigation" || overlayReason == "backend" ||
+                overlayReason == "webview-unresponsive")
             {
+                ClearUnresponsiveState();
                 HideOverlay();
+            }
+            else
+            {
+                ClearUnresponsiveState();
             }
         }
 
@@ -4042,7 +4053,33 @@ namespace DeepSeekHarnessDesktop
         private void OnWebViewProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)
         {
             string kind = e.ProcessFailedKind.ToString();
-            if (kind.IndexOf("Unresponsive", StringComparison.OrdinalIgnoreCase) >= 0) return;
+            if (kind.IndexOf("Unresponsive", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                DateTime now = DateTime.UtcNow;
+                if (unresponsiveFirstUtc == DateTime.MinValue ||
+                    now - unresponsiveFirstUtc > TimeSpan.FromSeconds(15))
+                {
+                    unresponsiveFirstUtc = now;
+                    unresponsiveCount = 1;
+                }
+                else
+                {
+                    unresponsiveCount++;
+                }
+
+                HostLog.Line("WEBVIEW unresponsive count=" + unresponsiveCount.ToString() +
+                    " windowSeconds=" + ((int)(now - unresponsiveFirstUtc).TotalSeconds).ToString());
+                if (unresponsiveCount < 2) return;
+
+                ShowOverlay(
+                    "webview-unresponsive",
+                    "WebView2 未响应",
+                    "重建 WebView2",
+                    OnOverlayRetryWebView,
+                    "稍后",
+                    OnOverlayDismiss);
+                return;
+            }
 
             ShowOverlay(
                 "webview-failed",
@@ -4051,6 +4088,12 @@ namespace DeepSeekHarnessDesktop
                 OnOverlayReloadPage,
                 "重启桌面壳",
                 OnOverlayRestartApp);
+        }
+
+        private void ClearUnresponsiveState()
+        {
+            unresponsiveCount = 0;
+            unresponsiveFirstUtc = DateTime.MinValue;
         }
 
         private async Task GrantDshNotificationPermissionAsync()
@@ -4387,6 +4430,7 @@ namespace DeepSeekHarnessDesktop
                 healthFailures = 0;
                 compatPendingAtStartup = 0;
                 webViewReady = true;
+                ClearUnresponsiveState();
                 ReloadDshPage();
                 HideOverlay();
                 HostLog.Ok("RESTART phase=restart.navigate");
