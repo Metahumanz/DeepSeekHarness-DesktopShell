@@ -2879,6 +2879,85 @@ namespace DeepSeekHarnessDesktop
         Navigate
     }
 
+    /// <summary>
+    /// 重启事务的两个运行时快照：停止旧 backend 前绝不把 active runtime 改成 target。
+    /// 这个小对象同时把阶段与端口的关系固定下来，避免后续重构又把 target port
+    /// 带进旧 backend 的 stop/fallback/wait 链。
+    /// </summary>
+    internal sealed class RestartRuntimeTransaction
+    {
+        public AppSettings OldRuntime { get; private set; }
+        public AppSettings TargetRuntime { get; private set; }
+        public bool TargetBackendReady { get; private set; }
+        public bool TargetCommitted { get; private set; }
+
+        public RestartRuntimeTransaction(AppSettings oldRuntime, AppSettings targetRuntime)
+        {
+            if (oldRuntime == null) throw new ArgumentNullException("oldRuntime");
+            if (targetRuntime == null) throw new ArgumentNullException("targetRuntime");
+            OldRuntime = oldRuntime.Clone();
+            TargetRuntime = targetRuntime.Clone();
+        }
+
+        public AppSettings RuntimeForPhase(string phase)
+        {
+            switch (phase)
+            {
+                case "restart.preflight":
+                case "restart.snapshot":
+                case "restart.stop-wrapper":
+                case "restart.stop-listener-fallback":
+                case "restart.wait-port-close":
+                    return OldRuntime;
+                case "restart.compat":
+                case "restart.start":
+                case "restart.wait-ready":
+                case "restart.navigate":
+                case "restart.complete":
+                    return TargetRuntime;
+                default:
+                    throw new ArgumentOutOfRangeException("phase", phase, "未知重启事务阶段");
+            }
+        }
+
+        public void MarkTargetBackendReady()
+        {
+            TargetBackendReady = true;
+        }
+
+        public void CommitTarget(AppSettings activeRuntime)
+        {
+            if (!TargetBackendReady)
+                throw new InvalidOperationException("target backend 尚未 ready，不能提交 active runtime。");
+            if (activeRuntime == null)
+                throw new ArgumentNullException("activeRuntime");
+            activeRuntime.CopyFrom(TargetRuntime);
+            TargetCommitted = true;
+        }
+    }
+
+    internal static class SystemAnimationPreferences
+    {
+        private const uint SPI_GETCLIENTAREAANIMATION = 0x1042;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SystemParametersInfo(
+            uint action, uint parameter, ref int value, uint winIni);
+
+        public static bool AreClientAreaAnimationsEnabled()
+        {
+            int enabled = 1;
+            try
+            {
+                if (SystemParametersInfo(SPI_GETCLIENTAREAANIMATION, 0, ref enabled, 0))
+                    return enabled != 0;
+            }
+            catch { }
+            // 查询失败时保守地保留现有视觉行为；失败不会阻塞显示/恢复。
+            return true;
+        }
+    }
+
     internal sealed class MainForm : Form
     {
         private readonly string baseDirectory;
@@ -3408,7 +3487,7 @@ namespace DeepSeekHarnessDesktop
                 // 阶段一：命令验证 —— 每次启动前重新验证现有 dsh 命令的版本
                 //（command/auto 模式）：与上次 accepted 的版本比对，变化/无法读取时询问用户。
                 HostLog.Enter("START phase=" + currentPhase.ToString());
-                ConfirmCommandVersionBeforeStart();
+                ConfirmCommandVersionBeforeStart(activeRuntimeSettings);
                 HostLog.Ok("START phase=CommandVerify");
 
                 DshProcessManager.ExternalBackendInfo probe = null;
@@ -4225,6 +4304,22 @@ namespace DeepSeekHarnessDesktop
             }
         }
 
+        private async Task RestartPhaseAsync(string phase, Func<Task> action)
+        {
+            activeRestartPhase = phase;
+            HostLog.Enter("RESTART phase=" + phase);
+            try
+            {
+                await action();
+                HostLog.Ok("RESTART phase=" + phase);
+            }
+            catch (Exception ex)
+            {
+                HostLog.Fail("RESTART phase=" + phase, ex);
+                throw;
+            }
+        }
+
         /// <summary>
         /// 每次真正启动 command/auto 模式的现有 dsh 前，重新读取 dsh --version 并与上次
         /// accepted 的版本比对（保存的 dshPath 可能在安装后被升级成新版本）。变化或无法
@@ -4243,18 +4338,19 @@ namespace DeepSeekHarnessDesktop
         ///   actualVersion < minimumCompatibleDshVersion → 直接取消启动
         ///   无法读取版本 → 交互询问
         /// </summary>
-        private void ConfirmCommandVersionBeforeStart()
+        private void ConfirmCommandVersionBeforeStart(AppSettings runtime)
         {
-            if (activeRuntimeSettings.dshRunnerMode == "npx") return;
+            if (runtime == null) throw new ArgumentNullException("runtime");
+            if (runtime.dshRunnerMode == "npx") return;
 
-            string command = activeRuntimeSettings.dshPath;
+            string command = runtime.dshPath;
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
                 command = DshProcessManager.FindCommand("dsh");
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
                 return;   // 没有 dsh：交给 EnsureStarted 走 npx 或报错
 
-            string acceptedPath = activeRuntimeSettings.acceptedDshCommandPath ?? "";
-            string accepted = activeRuntimeSettings.acceptedDshCommandVersion ?? "";
+            string acceptedPath = runtime.acceptedDshCommandPath ?? "";
+            string accepted = runtime.acceptedDshCommandVersion ?? "";
             string actual = DshProcessManager.GetCommandVersion(command);
 
             bool pathChanged =
@@ -4272,8 +4368,8 @@ namespace DeepSeekHarnessDesktop
             // 已知版本低于最低兼容版本 → 直接取消启动，不允许继续使用过旧 DSH。
             if (!String.IsNullOrEmpty(actual) && DshProcessManager.IsCompatibleDshVersion(actual))
             {
-                activeRuntimeSettings.acceptedDshCommandPath = command;
-                activeRuntimeSettings.acceptedDshCommandVersion = actual;
+                runtime.acceptedDshCommandPath = command;
+                runtime.acceptedDshCommandVersion = actual;
                 persistedSettings.acceptedDshCommandPath = command;
                 persistedSettings.acceptedDshCommandVersion = actual;
                 persistedSettings.Save(settingsPath);
@@ -4305,14 +4401,21 @@ namespace DeepSeekHarnessDesktop
                 throw new InvalidOperationException(
                     "已取消启动：现有 dsh 版本未确认。请确认后重试，或在设置中把运行方式改为 npx。");
 
-            activeRuntimeSettings.acceptedDshCommandPath = command;
-            activeRuntimeSettings.acceptedDshCommandVersion = actual ?? "";
+            runtime.acceptedDshCommandPath = command;
+            runtime.acceptedDshCommandVersion = actual ?? "";
             persistedSettings.acceptedDshCommandPath = command;
             persistedSettings.acceptedDshCommandVersion = actual ?? "";
             persistedSettings.Save(settingsPath);
         }
 
         private async Task RestartBackendAsync()
+        {
+            AppSettings oldRuntime = activeRuntimeSettings.Clone();
+            AppSettings targetRuntime = persistedSettings.Clone();
+            await RestartBackendAsync(oldRuntime, targetRuntime);
+        }
+
+        private async Task RestartBackendAsync(AppSettings oldRuntime, AppSettings targetRuntime)
         {
             if (!TryBeginRecoveryOperation("backend-restart")) return;
             CancellationToken token = lifetimeCts.Token;
@@ -4325,25 +4428,27 @@ namespace DeepSeekHarnessDesktop
             healthTimer.Stop();
             backendGeneration++;
 
+            RestartRuntimeTransaction transaction = new RestartRuntimeTransaction(oldRuntime, targetRuntime);
+            bool oldStopCompleted = false;
+
             try
             {
                 token.ThrowIfCancellationRequested();
                 bool allowExternal = false;
+                AppSettings preflightRuntime = transaction.RuntimeForPhase("restart.preflight");
 
-                // 重启同样先重新验证现有 dsh 命令版本（command/auto 模式）
-                ConfirmCommandVersionBeforeStart();
-                token.ThrowIfCancellationRequested();
-
-                if (!dsh.OwnsBackend && dsh.IsReady(activeRuntimeSettings.port, 300))
+                // preflight 只确认并准备停止当前真实运行中的 oldRuntime；
+                // targetRuntime 的命令版本检查留到旧 backend 完全停止之后。
+                if (!dsh.OwnsBackend && dsh.IsReady(preflightRuntime.port, 300))
                 {
-                    int externalPid = dsh.FindListeningPid(activeRuntimeSettings.port);
+                    int externalPid = dsh.FindListeningPid(preflightRuntime.port);
                     if (externalPid <= 0)
                         throw new InvalidOperationException("端口正在监听，但无法读取监听进程 PID。");
 
                     string commandLine;
-                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine, activeRuntimeSettings.port))
+                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine, preflightRuntime.port))
                         throw new InvalidOperationException(
-                            "端口 " + activeRuntimeSettings.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
+                            "端口 " + preflightRuntime.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
                             (String.IsNullOrWhiteSpace(commandLine) ? "无法读取命令行。" : commandLine));
 
                     DialogResult confirm = ThemedMessageBox.Show(EffectiveDialogOwner(),
@@ -4365,113 +4470,149 @@ namespace DeepSeekHarnessDesktop
                     try
                     {
                         token.ThrowIfCancellationRequested();
-                    // restart.snapshot：旧进程还活着、命令行还可读时冻结 listener 身份
-                    //（写入 ownedListenerPid），记录旧 wrapper/listener PID、ownsBackend、port
-                    RestartPhase("restart.snapshot", delegate
-                    {
-                        dsh.FreezeOwnedListener(activeRuntimeSettings.port);
-                        int oldWrapperPid = dsh.WrapperPid;
-                        int oldListenerPid = dsh.OwnedListenerPid > 0
-                            ? dsh.OwnedListenerPid
-                            : dsh.FindListeningPid(activeRuntimeSettings.port);
-                        HostLog.Line("SNAPSHOT oldWrapperPid=" + oldWrapperPid.ToString() +
-                            " oldListenerPid=" + oldListenerPid.ToString() +
-                            " ownsBackend=" + dsh.OwnsBackend.ToString() +
-                            " port=" + activeRuntimeSettings.port.ToString());
-                    });
+                        AppSettings stopRuntime = transaction.RuntimeForPhase("restart.snapshot");
 
-                    token.ThrowIfCancellationRequested();
-                    if (dsh.OwnsBackend)
-                    {
-                        // restart.stop-wrapper：Job 关闭 → Kill wrapper → WaitForExit(3s)
-                        RestartPhase("restart.stop-wrapper", delegate { dsh.StopOwnedWrapper(); });
-                        // restart.stop-listener-fallback：端口仍开时，身份验证后才结束真正 listener
-                        RestartPhase("restart.stop-listener-fallback", delegate { dsh.TryStopListenerFallback(activeRuntimeSettings.port); });
-                    }
-                    else if (allowExternal)
-                    {
-                        RestartPhase("restart.stop-wrapper", delegate { dsh.StopExternalBackend(activeRuntimeSettings.port); });
-                        RestartPhase("restart.stop-listener-fallback", delegate { });
-                    }
-                    else
-                    {
-                        HostLog.Ok("RESTART phase=restart.stop-wrapper (nothing to stop)");
-                        HostLog.Ok("RESTART phase=restart.stop-listener-fallback (nothing to stop)");
-                    }
-
-                    token.ThrowIfCancellationRequested();
-                    // restart.wait-port-close：端口连续两次确认关闭，10 秒门禁
-                    RestartPhase("restart.wait-port-close", delegate
-                    {
-                        if (!dsh.WaitForPortClosedTwice(activeRuntimeSettings.port, 10000, token))
-                            throw new InvalidOperationException(
-                                "旧的 DSH Web 在 10 秒内没有释放端口 " + activeRuntimeSettings.port.ToString() + "。");
-                    });
-
-                    token.ThrowIfCancellationRequested();
-                    // restart.compat：兼容修复在「停止旧后端之后、启动新后端之前」执行——
-                    // 升级插件后点“重启 DSH 后端”也能吃到兼容补丁
-                    //（账本清理也不会被旧后端关停写回覆盖）。
-                    RestartPhase("restart.compat", delegate
-                    {
-                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, activeRuntimeSettings.profileName, true);
-                    });
-
-                    token.ThrowIfCancellationRequested();
-                    // restart.start：启动（或附着）新后端——EnsureStarted 成功即已确认
-                    // listener 归属并写入 ownedListenerPid，直接返回结果
-                    DshProcessManager.BackendStartResult startResult = null;
-                    RestartPhase("restart.start", delegate
-                    {
-                        startResult = dsh.EnsureStarted(
-                            activeRuntimeSettings.port,
-                            activeRuntimeSettings.workingDirectory,
-                            logsDirectory,
-                            activeRuntimeSettings.dshVersion,
-                            activeRuntimeSettings.profileName,
-                            activeRuntimeSettings.dshPath,
-                            activeRuntimeSettings.dshRunnerMode,
-                            false,
-                            token);
-                    });
-
-                    token.ThrowIfCancellationRequested();
-                    // restart.wait-ready：确认新后端就绪并记录新 wrapper/listener PID
-                    RestartPhase("restart.wait-ready", delegate
-                    {
-                        if (startResult == null || startResult.ListenerPid <= 0)
-                            throw new InvalidOperationException("重启后无法确认 DSH 监听进程。");
-                        int waited = 0;
-                        while (waited < 15000 && !dsh.IsDshReady(activeRuntimeSettings.port, 300))
+                        // restart.snapshot：旧进程还活着、命令行还可读时冻结 listener 身份
+                        //（写入 ownedListenerPid），记录旧 wrapper/listener PID、ownsBackend、old port。
+                        RestartPhase("restart.snapshot", delegate
                         {
-                            token.ThrowIfCancellationRequested();
-                            Thread.Sleep(250);
-                            waited += 250;
+                            dsh.FreezeOwnedListener(stopRuntime.port);
+                            int oldWrapperPid = dsh.WrapperPid;
+                            int oldListenerPid = dsh.OwnedListenerPid > 0
+                                ? dsh.OwnedListenerPid
+                                : dsh.FindListeningPid(stopRuntime.port);
+                            HostLog.Line("SNAPSHOT oldWrapperPid=" + oldWrapperPid.ToString() +
+                                " oldListenerPid=" + oldListenerPid.ToString() +
+                                " oldPort=" + stopRuntime.port.ToString() +
+                                " ownsBackend=" + dsh.OwnsBackend.ToString());
+                        });
+
+                        token.ThrowIfCancellationRequested();
+                        if (dsh.OwnsBackend)
+                        {
+                            // restart.stop-wrapper：Job 关闭 → Kill wrapper → WaitForExit(3s)
+                            RestartPhase("restart.stop-wrapper", delegate { dsh.StopOwnedWrapper(); });
+                            // restart.stop-listener-fallback：端口仍开时，身份验证后才结束真正 listener
+                            RestartPhase("restart.stop-listener-fallback", delegate { dsh.TryStopListenerFallback(stopRuntime.port); });
                         }
-                        if (!dsh.IsDshReady(activeRuntimeSettings.port, 300))
-                            throw new InvalidOperationException("重启后 DSH Web 未在预期时间内就绪。");
-                        HostLog.Line("SNAPSHOT-NEW newWrapperPid=" + startResult.WrapperPid.ToString() +
-                            " newListenerPid=" + startResult.ListenerPid.ToString());
-                    });
+                        else if (allowExternal)
+                        {
+                            RestartPhase("restart.stop-wrapper", delegate { dsh.StopExternalBackend(stopRuntime.port); });
+                            RestartPhase("restart.stop-listener-fallback", delegate { });
+                        }
+                        else
+                        {
+                            HostLog.Ok("RESTART phase=restart.stop-wrapper (nothing to stop)");
+                            HostLog.Ok("RESTART phase=restart.stop-listener-fallback (nothing to stop)");
+                        }
+
+                        token.ThrowIfCancellationRequested();
+                        // restart.wait-port-close：只等待 oldRuntime.port，连续两次确认关闭。
+                        RestartPhase("restart.wait-port-close", delegate
+                        {
+                            if (!dsh.WaitForPortClosedTwice(stopRuntime.port, 10000, token))
+                                throw new InvalidOperationException(
+                                    "旧的 DSH Web 在 10 秒内没有释放端口 " + stopRuntime.port.ToString() + "。");
+                        });
+                        oldStopCompleted = true;
                     }
-                    catch (OperationCanceledException)
+                    catch (Exception)
                     {
-                        if (dsh.OwnsBackend) dsh.StopOwnedBackend();
+                        // old backend 已经确认停止后，后续阶段失败必须清理本轮可能已启动的 backend。
+                        if (oldStopCompleted && dsh.OwnsBackend && !transaction.TargetBackendReady)
+                        {
+                            try { dsh.StopOwnedBackend(); } catch { }
+                        }
                         throw;
                     }
                 }, token);
 
-                // restart.navigate：页面恢复
                 token.ThrowIfCancellationRequested();
-                activeRestartPhase = "restart.navigate";
-                HostLog.Enter("RESTART phase=restart.navigate");
-                healthFailures = 0;
-                compatPendingAtStartup = 0;
-                webViewReady = true;
-                ClearUnresponsiveState();
-                ReloadDshPage();
-                HideOverlay();
-                HostLog.Ok("RESTART phase=restart.navigate");
+                AppSettings targetCompatRuntime = transaction.RuntimeForPhase("restart.compat");
+                await RestartPhaseAsync("restart.compat", async delegate
+                {
+                    // 版本确认可能需要 UI 对话框，保持在 UI 线程；实际兼容修复放到后台。
+                    ConfirmCommandVersionBeforeStart(targetCompatRuntime);
+                    token.ThrowIfCancellationRequested();
+                    await Task.Run(delegate
+                    {
+                        token.ThrowIfCancellationRequested();
+                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, targetCompatRuntime.profileName, true);
+                        token.ThrowIfCancellationRequested();
+                    }, token);
+                });
+
+                token.ThrowIfCancellationRequested();
+                DshProcessManager.BackendStartResult startResult = null;
+                await Task.Run(delegate
+                {
+                    try
+                    {
+                        AppSettings startRuntime = transaction.RuntimeForPhase("restart.start");
+                        RestartPhase("restart.start", delegate
+                        {
+                            startResult = dsh.EnsureStarted(
+                                startRuntime.port,
+                                startRuntime.workingDirectory,
+                                logsDirectory,
+                                startRuntime.dshVersion,
+                                startRuntime.profileName,
+                                startRuntime.dshPath,
+                                startRuntime.dshRunnerMode,
+                                false,
+                                token);
+                        });
+
+                        token.ThrowIfCancellationRequested();
+                        AppSettings readyRuntime = transaction.RuntimeForPhase("restart.wait-ready");
+                        // restart.wait-ready：只等待 targetRuntime.port，并记录新 wrapper/listener PID。
+                        RestartPhase("restart.wait-ready", delegate
+                        {
+                            if (startResult == null || startResult.ListenerPid <= 0)
+                                throw new InvalidOperationException("重启后无法确认 DSH 监听进程。");
+                            int waited = 0;
+                            while (waited < 15000 && !dsh.IsDshReady(readyRuntime.port, 300))
+                            {
+                                token.ThrowIfCancellationRequested();
+                                Thread.Sleep(250);
+                                waited += 250;
+                            }
+                            if (!dsh.IsDshReady(readyRuntime.port, 300))
+                                throw new InvalidOperationException("重启后 DSH Web 未在预期时间内就绪。");
+                            transaction.MarkTargetBackendReady();
+                            HostLog.Line("SNAPSHOT-NEW newWrapperPid=" + startResult.WrapperPid.ToString() +
+                                " newListenerPid=" + startResult.ListenerPid.ToString() +
+                                " targetWrapperPid=" + startResult.WrapperPid.ToString() +
+                                " targetListenerPid=" + startResult.ListenerPid.ToString() +
+                                " targetPort=" + readyRuntime.port.ToString());
+                        });
+                    }
+                    catch (Exception)
+                    {
+                        if (oldStopCompleted && dsh.OwnsBackend && !transaction.TargetBackendReady)
+                        {
+                            try { dsh.StopOwnedBackend(); } catch { }
+                        }
+                        throw;
+                    }
+                }, token);
+
+                // target backend 已确认 ready 后才提交 active runtime；停止旧 backend 的所有阶段
+                // 都已经结束，导航与健康检查从此使用 targetRuntime。
+                token.ThrowIfCancellationRequested();
+                RestartPhase("restart.navigate", delegate
+                {
+                    transaction.CommitTarget(activeRuntimeSettings);
+                    HostLog.Line("RUNTIME active commit oldPort=" + transaction.OldRuntime.port.ToString() +
+                        " targetPort=" + transaction.TargetRuntime.port.ToString());
+                    healthFailures = 0;
+                    compatPendingAtStartup = 0;
+                    webViewReady = true;
+                    ClearUnresponsiveState();
+                    if (!TryReloadDshPage())
+                        throw new InvalidOperationException("新 DSH 后端已 ready，但 WebView2 页面导航未能开始。");
+                    HideOverlay();
+                });
 
                 // restart.complete
                 activeRestartPhase = "restart.complete";
@@ -4479,13 +4620,24 @@ namespace DeepSeekHarnessDesktop
             }
             catch (OperationCanceledException)
             {
+                // 退出取消时，即使 target 已 ready 也不能遗留本轮启动的 backend。
+                if ((transaction.TargetBackendReady || oldStopCompleted) && dsh.OwnsBackend)
+                {
+                    try { dsh.StopOwnedBackend(); } catch { }
+                }
                 HostLog.Line("RESTART cancelled phase=" + activeRestartPhase);
             }
             catch (Exception ex)
             {
+                // 失败发生在 target ready 前：不要让 dsh manager 里残留半启动的 target。
+                if (oldStopCompleted && !transaction.TargetBackendReady && dsh.OwnsBackend)
+                {
+                    try { dsh.StopOwnedBackend(); } catch { }
+                }
                 if (LifetimeCancelled) return;
                 HostLog.Fail("RESTART failed phase=" + activeRestartPhase, ex);
-                HandleRestartError(ex);
+                HandleRestartError(ex, transaction.OldRuntime, transaction.TargetRuntime,
+                    transaction.TargetBackendReady);
             }
             finally
             {
@@ -4502,35 +4654,50 @@ namespace DeepSeekHarnessDesktop
         /// A. 重启失败，但原后端仍然健康；B. 重启失败，旧后端已经停止；
         /// C. 新后端已经监听，但页面恢复失败。webViewReady 按实际状态重算。
         /// </summary>
-        private void HandleRestartError(Exception ex)
+        private void HandleRestartError(
+            Exception ex,
+            AppSettings oldRuntime,
+            AppSettings targetRuntime,
+            bool targetBackendReady)
         {
-            bool portOpen = dsh.IsReady(activeRuntimeSettings.port, 800);
-            bool dshListening = false;
-            if (portOpen)
-            {
-                int pid = dsh.FindListeningPid(activeRuntimeSettings.port);
-                string cmd;
-                dshListening = pid > 0 && dsh.IsLikelyDshProcess(pid, out cmd, activeRuntimeSettings.port);
-            }
-            bool backendStillHealthy = dsh.IsDshHealthy(activeRuntimeSettings.port, 800);
-            webViewReady = backendStillHealthy;
+            // 这里必须分别探测 old/target 两个真实端口，不能读取已经可能提交过的
+            // activeRuntimeSettings 来猜测失败发生在哪一代 backend。
+            bool targetAvailable = targetBackendReady &&
+                (dsh.IsDshHealthy(targetRuntime.port, 800) || dsh.IsDshReady(targetRuntime.port, 800));
+            bool oldBackendHealthy = !targetAvailable && dsh.IsDshHealthy(oldRuntime.port, 800);
+            bool targetListening = targetBackendReady && dsh.IsReady(targetRuntime.port, 800);
 
             string title;
             string message;
-            if (backendStillHealthy)
+            if (targetAvailable)
             {
-                title = "重启未完成，原后端仍健康";
-                message = "DSH 后端重启未完成，但原有后端仍然健康，可以继续使用。\r\n\r\n" + ex.Message;
-            }
-            else if (dshListening)
-            {
+                // B：新 backend 已经 ready，只是页面恢复失败；target 才是真实 active。
+                activeRuntimeSettings.CopyFrom(targetRuntime);
+                webViewReady = false;
                 title = "新后端已就绪，页面恢复失败";
-                message = "重启已成功启动新的 DSH 后端，但页面恢复失败。\r\n\r\n" + ex.Message;
+                message = "重启已成功启动新的 DSH 后端（端口 " + targetRuntime.port.ToString() +
+                    "），但页面恢复失败。\r\n\r\n" + ex.Message;
+            }
+            else if (oldBackendHealthy)
+            {
+                // A：旧 backend 仍健康；active 必须保持 old，磁盘上的 target 不代表已应用。
+                activeRuntimeSettings.CopyFrom(oldRuntime);
+                webViewReady = true;
+                title = "重启未完成，原后端仍健康";
+                message = "DSH 后端重启未完成，但原有后端（端口 " + oldRuntime.port.ToString() +
+                    "）仍然健康，可以继续使用。\r\n\r\n" + ex.Message;
             }
             else
             {
+                // C：旧 backend 已停且 target 没有 ready；保留 old snapshot 作为“最后一次
+                // 已提交配置”，但绝不把 target 谎报为 active。
+                activeRuntimeSettings.CopyFrom(oldRuntime);
+                webViewReady = false;
                 title = "DSH 后端重启失败";
-                message = "DSH 后端重启失败，且旧后端已经停止。\r\n\r\n" + ex.Message;
+                message = "DSH 后端重启失败：旧端口 " + oldRuntime.port.ToString() +
+                    " 已停止，目标端口 " + targetRuntime.port.ToString() +
+                    " 未确认就绪。\r\n\r\n" + (targetListening ? "目标监听曾短暂出现，但未通过 ready 检查。\r\n\r\n" : "") +
+                    ex.Message;
             }
 
             ShowErrorOverlay(
@@ -4546,12 +4713,18 @@ namespace DeepSeekHarnessDesktop
 
         private void ReloadDshPage()
         {
+            TryReloadDshPage();
+        }
+
+        private bool TryReloadDshPage()
+        {
             try
             {
-                if (webView.CoreWebView2 != null)
-                    webView.CoreWebView2.Navigate(DshHomeUrl());
+                if (webView == null || webView.CoreWebView2 == null) return false;
+                webView.CoreWebView2.Navigate(DshHomeUrl());
+                return true;
             }
-            catch { }
+            catch { return false; }
         }
 
         private string DshHomeUrl()
@@ -4844,8 +5017,9 @@ namespace DeepSeekHarnessDesktop
                         MessageBoxIcon.Information);
                     if (applyNow == DialogResult.Yes && !LifetimeCancelled && !recoveryBusy)
                     {
-                        activeRuntimeSettings.CopyFrom(persistedSettings);
-                        await RestartBackendAsync();
+                        AppSettings oldRuntime = activeRuntimeSettings.Clone();
+                        AppSettings targetRuntime = persistedSettings.Clone();
+                        await RestartBackendAsync(oldRuntime, targetRuntime);
                     }
                     else
                     {

@@ -37,7 +37,7 @@ Assert-True "cleanup runs before rethrow" ($cs -match 'HostLog\.Line\("START-CLE
 
 # ---- 1d. 停止前冻结 listener 身份（P0-7） ----
 Assert-True "FreezeOwnedListener exists" ($cs -match 'public void FreezeOwnedListener\(int port\)')
-Assert-True "snapshot freezes listener before stopping" ($cs -match 'dsh\.FreezeOwnedListener\(activeRuntimeSettings\.port\);')
+Assert-True "snapshot freezes listener before stopping" ($cs -match 'dsh\.FreezeOwnedListener\(stopRuntime\.port\);')
 
 # ---- 2. 停止链：WaitForExit + 身份验证兜底 + 端口两次确认 ----
 Assert-True "stop waits for wrapper exit (3s)" ($cs -match 'process\.WaitForExit\(3000\)')
@@ -63,7 +63,7 @@ $phases = @(
 )
 foreach ($phase in $phases) {
     $literal = $cs -match ('RESTART phase=' + [regex]::Escape($phase))
-    $wrapped = $cs -match ('RestartPhase\("' + [regex]::Escape($phase) + '"')
+    $wrapped = $cs -match ('RestartPhase(?:Async)?\("' + [regex]::Escape($phase) + '"')
     Assert-True "restart phase logged: $phase" ($literal -or $wrapped)
 }
 Assert-True "snapshot logs old wrapper/listener PIDs" ($cs -match 'SNAPSHOT oldWrapperPid=' -and $cs -match 'oldListenerPid=')
@@ -71,11 +71,11 @@ Assert-True "snapshot logs new wrapper/listener PIDs" ($cs -match 'SNAPSHOT-NEW 
 Assert-True "no generic RESTART-only log remains" ($cs -notmatch 'HostLog\.Enter\("RESTART"\)')
 
 # ---- 5. 失败分流（A/B/C） ----
-Assert-True "restart error classified by real backend state" ($cs -match 'private void HandleRestartError\(Exception ex\)')
+Assert-True "restart error classified by real backend state" ($cs -match 'private void HandleRestartError\(\s*Exception ex,\s*AppSettings oldRuntime,\s*AppSettings targetRuntime,\s*bool targetBackendReady')
 Assert-True "case A: original backend still healthy" ($cs -match '重启未完成，原后端仍健康')
 Assert-True "case B: old backend stopped" ($cs -match '旧后端已经停止')
 Assert-True "case C: new backend listening, page restore failed" ($cs -match '新后端已就绪，页面恢复失败')
-Assert-True "webViewReady recomputed from actual health" ($cs -match 'webViewReady = backendStillHealthy;')
+Assert-True "webViewReady recomputed from actual health" ($cs -match 'webViewReady = false;' -and $cs -match 'webViewReady = true;')
 
 # ---- 6. 日志阶段错乱修复（P1-9）：RestartPhase 进入即更新 activeRestartPhase ----
 Assert-True "activeRestartPhase updated on every phase entry" ($cs -match 'activeRestartPhase = phase;')
