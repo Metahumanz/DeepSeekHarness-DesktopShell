@@ -3057,6 +3057,14 @@ namespace DeepSeekHarnessDesktop
             try { lifetimeCts.Cancel(); } catch (ObjectDisposedException) { }
         }
 
+        private IWin32Window EffectiveDialogOwner()
+        {
+            if (hiddenToTray) return null;
+            if (Visible && IsHandleCreated && !IsDisposed && !Disposing)
+                return this;
+            return null;
+        }
+
         private bool TryBeginRecoveryOperation(string operation)
         {
             if (LifetimeCancelled || recoveryBusy) return false;
@@ -3404,7 +3412,7 @@ namespace DeepSeekHarnessDesktop
                     string shown = String.IsNullOrWhiteSpace(probe.CommandLine)
                         ? "（无法读取命令行）" : probe.CommandLine;
                     DialogResult confirm = ThemedMessageBox.Show(
-                        this,
+                        EffectiveDialogOwner(),
                         "端口 " + activeRuntimeSettings.port.ToString() + " 上已有一个 DSH 后端在运行，版本 " + probe.Version +
                         " 未在 testedDshVersions 中，但满足最低兼容版本。\r\n\r\n" +
                         "DesktopShell 默认 npx 版本：" + DshProcessManager.DefaultDshVersion +
@@ -4205,7 +4213,7 @@ namespace DeepSeekHarnessDesktop
             if (pathChanged)
                 detail += "\r\n（命令路径也已变化，当前为：" + command + "）";
             DialogResult confirm = ThemedMessageBox.Show(
-                this,
+                EffectiveDialogOwner(),
                 "现有 dsh 命令：" + command + "\r\n\r\n" + detail +
                 "\r\nDesktopShell 每次启动前都会重新验证现有 dsh。\r\n\r\n" +
                 "选择“是”继续使用并记住新版本；选择“否”取消本次启动（可在设置中改用 npx）。",
@@ -4257,7 +4265,7 @@ namespace DeepSeekHarnessDesktop
                             "端口 " + activeRuntimeSettings.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
                             (String.IsNullOrWhiteSpace(commandLine) ? "无法读取命令行。" : commandLine));
 
-                    DialogResult confirm = ThemedMessageBox.Show(this,
+                    DialogResult confirm = ThemedMessageBox.Show(EffectiveDialogOwner(),
                         "当前 DSH Web 不是由桌面壳启动的（PID " + externalPid.ToString() + "）。\r\n\r\n" +
                         "已确认它的命令行属于 DSH Web。是否结束该进程并由桌面壳重新启动？",
                         "重启 DSH 后端",
@@ -4509,7 +4517,7 @@ namespace DeepSeekHarnessDesktop
                 {
                     string shown = uriText.Length > 240 ? uriText.Substring(0, 240) + "…" : uriText;
                     DialogResult confirm = ThemedMessageBox.Show(
-                        this,
+                        EffectiveDialogOwner(),
                         "页面请求打开一个非 http/https 的外部链接：\r\n\r\n" + shown +
                         "\r\n\r\n是否交给 Windows 用系统程序打开？",
                         "DeepSeek Harness",
@@ -4670,7 +4678,7 @@ namespace DeepSeekHarnessDesktop
             if (webView == null || webView.CoreWebView2 == null || !CanTouchControls)
             {
                 activeRuntimeSettings.developerMode = previousDeveloperMode;
-                ThemedMessageBox.Show(this,
+                ThemedMessageBox.Show(EffectiveDialogOwner(),
                     "当前 WebView2 尚未完成初始化，开发者模式将在下次启动时生效。",
                     "DeepSeek Harness",
                     MessageBoxButtons.OK,
@@ -4681,7 +4689,7 @@ namespace DeepSeekHarnessDesktop
             if (!TryBeginRecoveryOperation("settings-webview"))
             {
                 activeRuntimeSettings.developerMode = previousDeveloperMode;
-                ThemedMessageBox.Show(this,
+                ThemedMessageBox.Show(EffectiveDialogOwner(),
                     "当前正在执行另一项恢复操作，开发者模式将在下次启动时生效。",
                     "DeepSeek Harness",
                     MessageBoxButtons.OK,
@@ -4705,7 +4713,7 @@ namespace DeepSeekHarnessDesktop
                 activeRuntimeSettings.developerMode = previousDeveloperMode;
                 if (!LifetimeCancelled)
                 {
-                    ThemedMessageBox.Show(this,
+                    ThemedMessageBox.Show(EffectiveDialogOwner(),
                         "开发者模式无法在当前 WebView2 中安全重配，将在下次启动时生效。\r\n\r\n" + ex.Message,
                         "DeepSeek Harness",
                         MessageBoxButtons.OK,
@@ -4723,7 +4731,18 @@ namespace DeepSeekHarnessDesktop
             if (LifetimeCancelled) return;
             using (SettingsForm dialog = new SettingsForm(persistedSettings, currentDark))
             {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                IWin32Window owner = EffectiveDialogOwner();
+                DialogResult result;
+                if (owner == null)
+                {
+                    dialog.StartPosition = FormStartPosition.CenterScreen;
+                    result = dialog.ShowDialog();
+                }
+                else
+                {
+                    result = dialog.ShowDialog(owner);
+                }
+                if (result != DialogResult.OK) return;
 
                 AppSettings oldSnapshot = persistedSettings.Clone();
                 persistedSettings.CopyFrom(dialog.ResultSettings);
@@ -4736,7 +4755,7 @@ namespace DeepSeekHarnessDesktop
 
                 if (backendChanged)
                 {
-                    DialogResult applyNow = ThemedMessageBox.Show(this,
+                    DialogResult applyNow = ThemedMessageBox.Show(EffectiveDialogOwner(),
                         "这些设置需要重启 DSH 后端才能生效。\r\n\r\n是否立即应用并重启 DSH 后端？\r\n选择“否”会保存设置，但当前运行中的后端继续使用原配置。",
                         "DeepSeek Harness 设置",
                         MessageBoxButtons.YesNo,
@@ -4838,7 +4857,8 @@ namespace DeepSeekHarnessDesktop
 
             using (CloseChoiceDialog dialog = new CloseChoiceDialog(currentDark))
             {
-                DialogResult result = dialog.ShowDialog(this);
+                IWin32Window owner = EffectiveDialogOwner();
+                DialogResult result = owner == null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
                 if (result != DialogResult.OK)
                 {
                     e.Cancel = true;
