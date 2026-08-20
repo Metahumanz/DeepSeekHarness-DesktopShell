@@ -4,17 +4,18 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
-## v1.0.4（未发布，运行期生命周期修复，2026-08-20）
+## v1.0.4（未发布，运行期生命周期修复）
 
-- **托盘隐藏/恢复不再重建主窗口句柄**：MainForm 运行期间不再切换 `ShowInTaskbar`；关闭到托盘与恢复复用同一个 Form、WebView2 和 backend，并增加 Handle 创建/销毁诊断。托盘图标双击现在在显示/隐藏间切换，恢复时使用轻量淡入动效。
+- **托盘隐藏/恢复不再重建主窗口句柄**：MainForm 运行期间不再切换 `ShowInTaskbar`；关闭到托盘与恢复复用同一个 Form、WebView2 和 backend，并增加 Handle 创建/销毁诊断。托盘图标双击现在在显示/隐藏间切换，恢复时使用约 160ms 的 ease-out 淡入动效；普通激活、首次启动和系统关闭动画效果时不播放。
 - **退出生命周期统一取消**：真实退出、Windows 关机和重启应用会取消 lifetime；startup/restart/health/retry 在 await 后检查取消，取消后清理本轮启动的 wrapper/listener，不再操作已 Dispose 控件。关闭到托盘不取消。
 - **恢复动作串行化**：WebView2 重建、配置、backend 启动/重启共用恢复门禁，重复点击不会并发 Dispose/Create；持续 WebView2 Unresponsive 时保留页面并提供显式“重建 WebView2”入口。
+- **设置运行时事务收口**：立即应用使用 oldRuntime/targetRuntime 双快照；旧 backend 的停止链只使用旧端口，目标 backend 的启动链只使用新端口，target ready 后才提交 active runtime。
 - **探测进程有界执行**：版本、netstat/CIM fallback 和 `--help` 探测统一异步读取 stdout/stderr、超时回收进程树，不按进程名误杀。
 - **运行配置与持久设置分离**：backend 影响字段使用 active runtime snapshot；保存但稍后重启时，当前 backend 继续按旧端口/profile 运行，立即应用走既有重启事务。
 - **健康身份与对话框边界收紧**：自有 backend 健康检查校验监听 PID/Job 归属；托盘隐藏时对话框改用 ownerless + CenterScreen。
 - **保持 v1.0.3 的 DSH 默认版本和推荐插件集合不变**；DPI 本轮只增加 100%/125%/150%/200% 的人工 Windows 验收矩阵。
 
-> 本版本尚未创建 tag、Release 或推送；发布前必须完成 `tests/verify.ps1`、Release 构建和真实 Windows 验收。
+> 本版本尚未创建 tag 或 Release，当前处于预发布分支验证阶段；发布前必须完成 `tests/verify.ps1`、Release 构建和真实 Windows 验收。
 
 ## v1.0.3（仓库维护收尾，2026-08-20）
 
@@ -60,7 +61,7 @@
 - **Release 真冻结**：发布前 `gh release view` 检查，Release 已存在直接失败
   （"禁止覆盖，请增加版本号"），不再依赖 softprops 的隐式行为
 - **清掉最后一个 DSH 版本硬编码**：`AppSettings.Load` 缺省 dshVersion 改读
-  `DshProcessManager.VerifiedDshVersion`（COMPATIBILITY.json 单一来源）
+  `DshProcessManager.DefaultDshVersion`（COMPATIBILITY.json 单一来源；VerifiedDshVersion 仅为兼容别名）
 - **验证门禁 11 → 15 项**：新增 test-restart-state / test-dream-skin-pin /
   test-release-immutable / test-version-source；托盘、WebView2、连续重启、Dream Skin
   真实恢复保留人工 Windows 验收（docs/DREAM_SKIN_ACCEPTANCE.md）
@@ -192,7 +193,7 @@ v1.0.0 冻结后的第一个修复版本。
 - **读不到版本的现有 dsh 不再静默放行**：`--version` 失败/无输出与"版本串无法解析"同等对待，一律按未验证询问；非交互模式改用 npx rc.7（新增场景 E 回归）
 - **外部已运行的 DSH 同样必须过验证基线**：`EnsureStarted` 附着前从命令行提取版本（`@deepseek-ai/dsh@x.y.z`），不是 rc.7 或读不到版本一律拒绝附着；启动时弹窗让用户选择"附着（未验证）"或"结束并重启为验证版本"
 - **端口已打开时启动前兼容修复一律只读**：不再依赖第一次 PID/命令行识别成功才进 dry-run——只要端口开着绝不写插件/账本；只有端口原本为空才"补丁 → 启动自己的 DSH"
-- **健康检查缓存校验原 PID 存活**：30 秒缓存只在原 PID 仍存活时复用，PID 消失立即全量复验，不再重新打开身份 TOCTOU 窗口
+- **历史健康检查缓存校验原 PID 存活**：该版本的 30 秒缓存只在原 PID 仍存活时复用；后续版本已改为原生 TCP owner PID 身份校验
 - **PowerShell 插件管理完全遵守 runnerMode**：新增 `Resolve-DshCommandForOps` 与 C# `EnsureStarted` 同语义（npx 绝不回捡 PATH dsh；command 找不到 dsh 直接报错；auto 才回退），并有单元断言 + 端到端场景覆盖
 
 ## v1.0.0 修订（同 tag 覆盖发布，2026-08-19）
@@ -206,7 +207,7 @@ v1.0.0 冻结后的第一个修复版本。
 - 完整卸载先确认并停止外部 DSH，停止失败或身份不明时降级为仅卸载壳
 - 升级继承 install-state 首次安装事实（`dshHomeExistedBeforeInstall` 等）并记录 `firstInstalledAt`/`lastUpdatedAt`
 - Profile 名禁止 `node_modules` 与 Windows 设备保留名（PS/C# 双端）
-- 后台健康检查降频：自家后端进程存活 + TCP；外部后端 30 秒 PID 身份缓存，避免每 5 秒拉起 netstat/CIM
+- 后台健康检查降频（历史实现）：自家后端进程存活 + TCP；外部后端曾使用 30 秒 PID 身份缓存，后续版本已改为原生 TCP owner PID，避免周期性拉起 netstat/CIM
 - CI 与 Release 共用 `tests/verify.ps1` 门禁（解析 + PSScriptAnalyzer + 五项回归测试，pwsh 与 PowerShell 5.1 双跑）
 - 安装事务化：Preflight → Stage → Initialize → Commit；升级保留 `DeepSeekHarness.exe.previous` 以便回滚；源码安装器改为先编译后向导
 - 开始菜单只管理自有三个快捷方式，不再整目录删除
