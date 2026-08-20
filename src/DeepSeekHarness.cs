@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -909,13 +910,200 @@ namespace DeepSeekHarnessDesktop
         }
     }
 
+    internal sealed class BackendProcessExitedEventArgs : EventArgs
+    {
+        public readonly long Generation;
+        public readonly int WrapperPid;
+        public readonly int ExitCode;
+        public readonly bool ExpectedStop;
+        public readonly string State;
+        public readonly bool BootReadyAtExit;
+
+        public BackendProcessExitedEventArgs(int wrapperPid, int exitCode,
+            bool expectedStop, string state, bool bootReadyAtExit)
+            : this(0, wrapperPid, exitCode, expectedStop, state, bootReadyAtExit)
+        {
+        }
+
+        public BackendProcessExitedEventArgs(long generation, int wrapperPid, int exitCode,
+            bool expectedStop, string state, bool bootReadyAtExit)
+        {
+            Generation = generation;
+            WrapperPid = wrapperPid;
+            ExitCode = exitCode;
+            ExpectedStop = expectedStop;
+            State = state ?? "Unknown";
+            BootReadyAtExit = bootReadyAtExit;
+        }
+    }
+
     internal sealed class DshProcessManager : IDisposable
     {
+        /// <summary>
+        /// 一次 backend 启动就是一个不可变身份的 run。Process 的 Exited/stdout/stderr
+        /// 回调捕获它，而不是回头读取 manager 当前的 process/状态字段；这样旧代回调
+        /// 即使延迟到新代启动之后，也只能写旧 run 的诊断，不能污染新代状态机。
+        /// </summary>
+        private sealed class BackendRun : IDisposable
+        {
+            public readonly long Generation;
+            public readonly int Port;
+            public readonly string Profile;
+            public readonly string LogPath;
+            public readonly object OutputLock = new object();
+            public readonly Queue<string> RecentOutput = new Queue<string>();
+            public readonly ManualResetEvent StdoutClosed = new ManualResetEvent(true);
+            public readonly ManualResetEvent StderrClosed = new ManualResetEvent(true);
+            public Process Process;
+            public int WrapperPid = -1;
+            public bool ExpectedStop;
+            public string State = "Starting";
+            public bool BootReady;
+            public bool SawReadyBanner;
+            public string LastPortLog = "";
+            // 只有 Exited callback 已经完成自己的日志/事件派发后，旧 run 才可回收。
+            // 这样 RegisterRun 在 callback 尚未返回时不会 Dispose 正在使用的 drain 句柄。
+            public bool ExitObserved;
+            public bool OutputDrained;
+            public bool ExitCallbackCompleted;
+
+            public BackendRun(long generation, int port, string profile, string logPath)
+            {
+                Generation = generation;
+                Port = port;
+                Profile = profile ?? "";
+                LogPath = logPath ?? "";
+            }
+
+            public void Dispose()
+            {
+                try { if (Process != null) Process.Dispose(); } catch { }
+                try { StdoutClosed.Dispose(); } catch { }
+                try { StderrClosed.Dispose(); } catch { }
+            }
+        }
+
         private Process process;
         private IntPtr jobHandle = IntPtr.Zero;
         private readonly object logLock = new object();
+        private readonly object runLock = new object();
+        private readonly List<BackendRun> backendRuns = new List<BackendRun>();
+        private long backendGeneration;
+        private BackendRun currentRun;
+        private bool disposed;
         private string logPath;
         public bool OwnsBackend { get; private set; }
+        public bool BootReady { get; private set; }
+        public string BackendState { get; private set; }
+        public event EventHandler<BackendProcessExitedEventArgs> BackendProcessExited;
+        private bool expectedStop;
+        private const int RecentOutputLimit = 60;
+
+        public DshProcessManager()
+        {
+            backendGeneration = 0;
+            BackendState = "Stopped";
+        }
+
+        private BackendRun CurrentRun
+        {
+            get
+            {
+                lock (runLock) return currentRun;
+            }
+        }
+
+        private bool IsCurrentRun(BackendRun run)
+        {
+            if (run == null) return false;
+            lock (runLock) return Object.ReferenceEquals(currentRun, run);
+        }
+
+        private BackendRun RegisterRun(int port, string profile, string runLogPath)
+        {
+            BackendRun run = new BackendRun(
+                Interlocked.Increment(ref backendGeneration), port, profile, runLogPath);
+            lock (runLock)
+            {
+                backendRuns.Add(run);
+                currentRun = run;
+                // 与 currentRun 的换代一起更新这些仍为旧调用方保留的镜像字段，
+                // 让延迟旧代 stdout/Exited 回调没有“换代窗口”可以写入新代镜像。
+                process = null;
+                OwnsBackend = false;
+                expectedStop = false;
+                BackendState = "Starting";
+                BootReady = false;
+                ownedListenerPid = -1;
+                ownedWrapperPid = -1;
+                ownedPort = port;
+                ownedProfile = profile ?? "";
+                sawReadyBanner = false;
+                lastPortLog = "";
+            }
+            // 换代之后，之前已经完整结束的 run 不再是 currentRun，可以立即回收；
+            // 尚未完成 Exited callback/drain 的 run 会由 callback 返回时再回收。
+            ReclaimCompletedRuns();
+            return run;
+        }
+
+        private void ReclaimCompletedRuns()
+        {
+            List<BackendRun> reclaim = new List<BackendRun>();
+            lock (runLock)
+            {
+                for (int i = backendRuns.Count - 1; i >= 0; i--)
+                {
+                    BackendRun candidate = backendRuns[i];
+                    if (Object.ReferenceEquals(candidate, currentRun) ||
+                        !candidate.ExitObserved || !candidate.OutputDrained ||
+                        !candidate.ExitCallbackCompleted)
+                        continue;
+
+                    backendRuns.RemoveAt(i);
+                    reclaim.Add(candidate);
+                }
+            }
+
+            foreach (BackendRun candidate in reclaim)
+            {
+                HostLog.Line("BACKEND run-reclaimed generation=" + candidate.Generation.ToString());
+                try { candidate.Dispose(); } catch { }
+            }
+        }
+
+        private void ReclaimRunIfEligible(BackendRun candidate)
+        {
+            if (candidate == null) return;
+            bool reclaim = false;
+            lock (runLock)
+            {
+                if (!disposed && !Object.ReferenceEquals(candidate, currentRun) &&
+                    candidate.ExitObserved && candidate.OutputDrained &&
+                    candidate.ExitCallbackCompleted)
+                    reclaim = backendRuns.Remove(candidate);
+            }
+
+            if (reclaim)
+            {
+                HostLog.Line("BACKEND run-reclaimed generation=" + candidate.Generation.ToString());
+                try { candidate.Dispose(); } catch { }
+            }
+        }
+
+        private BackendRun FindRun(Process candidate)
+        {
+            if (candidate == null) return null;
+            lock (runLock)
+            {
+                for (int i = 0; i < backendRuns.Count; i++)
+                {
+                    if (Object.ReferenceEquals(backendRuns[i].Process, candidate))
+                        return backendRuns[i];
+                }
+            }
+            return null;
+        }
 
         // 真正监听 DSH 端口的进程（npx 经 .cmd 启动时，process 只是 cmd 包装进程，
         // 监听 3080 的 Node 是它的子进程）。首次就绪时记录；停止时身份验证后兜底结束。
@@ -1032,7 +1220,7 @@ namespace DeepSeekHarnessDesktop
         }
 
         /// <summary>
-        /// DSH 就绪判定 = TCP 可连 + 监听进程 PID 可查 + 命令行像 DSH。
+        /// DSH 就绪判定 = TCP 可连 + 监听进程 PID 可查 +（自有 Job/PID 归属或命令行像 DSH）。
         /// 只用 TCP 判定存在 TOCTOU 窗口：DSH 崩溃后端口被其它本地服务抢到，
         /// 纯 TCP 探测会误以为 DSH 正常，并继续把 127.0.0.1:port 当可信 DSH origin。
         /// </summary>
@@ -1042,6 +1230,11 @@ namespace DeepSeekHarnessDesktop
 
             int pid = FindListeningPid(port);
             if (pid <= 0) return false;
+
+            // 自有后端的 listener 已在 EnsureStarted 中用精确 PID/Job 归属确认过；
+            // 不应因为 PowerShell/CIM 暂时读不到其命令行而把自己的 listener 判成非 DSH。
+            if (OwnsBackend && ((ownedListenerPid > 0 && pid == ownedListenerPid) || IsProcessInOwnedJob(pid)))
+                return true;
 
             string commandLine;
             return IsLikelyDshProcess(pid, out commandLine, port);
@@ -1237,6 +1430,129 @@ namespace DeepSeekHarnessDesktop
             return null;
         }
 
+        /// <summary>
+        /// 运行探测子进程并在有界 deadline 内异步捕获 stdout/stderr。
+        /// 不使用 ReadToEnd，避免子进程 pipe 写满后 WaitForExit 与读取互相等待。
+        /// timeout 只按本次 Process 的 PID 清理整棵子树，不按 node/cmd/powershell 名称误杀。
+        /// </summary>
+        internal static bool RunCapturedProcessBounded(
+            ProcessStartInfo psi,
+            int timeoutMs,
+            out string stdout,
+            out string stderr)
+        {
+            stdout = "";
+            stderr = "";
+            if (psi == null || timeoutMs <= 0) return false;
+
+            StringBuilder output = new StringBuilder();
+            StringBuilder error = new StringBuilder();
+            using (ManualResetEvent outputClosed = new ManualResetEvent(false))
+            using (ManualResetEvent errorClosed = new ManualResetEvent(false))
+            using (Process processProbe = new Process())
+            {
+                IntPtr probeJobHandle = IntPtr.Zero;
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                processProbe.StartInfo = psi;
+                processProbe.EnableRaisingEvents = true;
+                processProbe.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) outputClosed.Set();
+                    else output.AppendLine(e.Data);
+                };
+                processProbe.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data == null) errorClosed.Set();
+                    else error.AppendLine(e.Data);
+                };
+
+                bool completed = false;
+                bool cleanupRequested = false;
+                try
+                {
+                    if (!processProbe.Start()) return false;
+                    probeJobHandle = TryCreateProbeKillJob(processProbe);
+                    processProbe.BeginOutputReadLine();
+                    processProbe.BeginErrorReadLine();
+
+                    if (!processProbe.WaitForExit(timeoutMs))
+                    {
+                        cleanupRequested = true;
+                        CloseProbeKillJob(ref probeJobHandle);
+                        KillProcessTree(processProbe);
+                        try { processProbe.WaitForExit(2000); } catch { }
+                        return false;
+                    }
+
+                    // Process 已退出；异步读取事件最多再排空 1 秒，绝不无限等待 child-held pipe。
+                    outputClosed.WaitOne(1000);
+                    errorClosed.WaitOne(1000);
+                    completed = true;
+                    return true;
+                }
+                catch
+                {
+                    return false;
+                }
+                finally
+                {
+                    stdout = output.ToString();
+                    stderr = error.ToString();
+                    CloseProbeKillJob(ref probeJobHandle);
+                    if (!completed && !cleanupRequested)
+                    {
+                        // 进程已启动但启动/读取路径异常时也只按 PID 做一次有界树清理。
+                        try
+                        {
+                            if (!processProbe.HasExited)
+                            {
+                                KillProcessTree(processProbe);
+                                processProbe.WaitForExit(2000);
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+        }
+
+        private static IntPtr TryCreateProbeKillJob(Process processProbe)
+        {
+            try
+            {
+                IntPtr job = CreateJobObject(IntPtr.Zero, null);
+                if (job == IntPtr.Zero) return IntPtr.Zero;
+
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                int length = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+                IntPtr ptr = Marshal.AllocHGlobal(length);
+                try
+                {
+                    Marshal.StructureToPtr(info, ptr, false);
+                    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)length) ||
+                        !AssignProcessToJobObject(job, processProbe.Handle))
+                    {
+                        CloseHandle(job);
+                        return IntPtr.Zero;
+                    }
+                }
+                finally { Marshal.FreeHGlobal(ptr); }
+                return job;
+            }
+            catch { return IntPtr.Zero; }
+        }
+
+        private static void CloseProbeKillJob(ref IntPtr job)
+        {
+            if (job == IntPtr.Zero) return;
+            try { CloseHandle(job); } catch { }
+            job = IntPtr.Zero;
+        }
+
         /// <summary>读取 dsh 命令自身的版本（运行 &lt;command&gt; --version）。读不到返回 null。</summary>
         public static string GetCommandVersion(string command)
         {
@@ -1261,23 +1577,13 @@ namespace DeepSeekHarnessDesktop
                 psi.RedirectStandardError = true;
                 psi.StandardOutputEncoding = Encoding.UTF8;
 
-                using (Process p = Process.Start(psi))
-                {
-                    if (p == null) return null;
-                    if (!p.WaitForExit(5000))
-                    {
-                        try { p.Kill(); } catch { }
-                        return null;
-                    }
-
-                    string output = p.StandardOutput.ReadToEnd();
-                    if (String.IsNullOrWhiteSpace(output)) return null;
-                    Match m = Regex.Match(output, @"\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?");
-                    if (m.Success) return m.Value;
-                    return output.Trim();
-                }
-
-
+                string output;
+                string error;
+                if (!RunCapturedProcessBounded(psi, 5000, out output, out error)) return null;
+                if (String.IsNullOrWhiteSpace(output)) return null;
+                Match m = Regex.Match(output, @"\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?");
+                if (m.Success) return m.Value;
+                return output.Trim();
             }
             catch { return null; }
         }
@@ -1315,7 +1621,8 @@ namespace DeepSeekHarnessDesktop
 
         /// <summary>
         /// 后台健康检查专用（每 5 秒一次）：
-        /// - 自家后端：进程存活 + TCP 即可（无需身份复验）
+        /// - 自家后端：wrapper 存活 + TCP + 当前 listener PID 与已记录 PID 相同，
+        ///   或当前 PID 属于本壳 Job；端口换手到 foreign process 时立即不健康
         /// - 外部后端：每次用廉价的原生 TCP 表拿「当前端口 owner PID」（GetExtendedTcpTable，
         ///   不拉 netstat 子进程）；owner PID 与上次已验证的 PID 相同 → 身份未变，直接健康；
         ///   PID 变化（端口被换手）才做昂贵的 CIM 命令行验证。不再使用 30 秒时间窗缓存。
@@ -1325,7 +1632,12 @@ namespace DeepSeekHarnessDesktop
             if (OwnsBackend)
             {
                 if (process == null || process.HasExited) return false;
-                return IsReady(port, timeoutMs);
+                if (!IsReady(port, timeoutMs)) return false;
+
+                int currentPid = FindListeningPid(port);
+                if (currentPid <= 0) return false;
+                if (ownedListenerPid > 0 && currentPid == ownedListenerPid) return true;
+                return IsProcessInOwnedJob(currentPid);
             }
 
             if (!IsReady(port, timeoutMs))
@@ -1352,17 +1664,34 @@ namespace DeepSeekHarnessDesktop
             return true;
         }
 
+        private bool IsProcessInOwnedJob(int pid)
+        {
+            if (pid <= 0 || jobHandle == IntPtr.Zero) return false;
+            try
+            {
+                using (Process processToCheck = Process.GetProcessById(pid))
+                {
+                    bool inJob;
+                    return IsProcessInJob(processToCheck.Handle, jobHandle, out inJob) && inJob;
+                }
+            }
+            catch { return false; }
+        }
+
         /// <summary>启动结果：wrapper（cmd/npx 包装进程）与真正 listener 的 PID。</summary>
         public class BackendStartResult
         {
             public int WrapperPid;
             public int ListenerPid;
+            public bool BootReady;
         }
 
-        public BackendStartResult EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowUnverifiedAttach)
+        public BackendStartResult EnsureStarted(int port, string workingDirectory, string logsDirectory, string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowUnverifiedAttach, CancellationToken cancellationToken = default(CancellationToken))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (runnerMode != "npx" && runnerMode != "command") runnerMode = "auto";
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (IsReady(port, 350))
             {
                 int existingPid = FindListeningPid(port);
@@ -1401,13 +1730,17 @@ namespace DeepSeekHarnessDesktop
                         "。已拒绝直接附着。请结束该进程后重试，或重新启动桌面壳并在提示时确认附着。");
                 }
 
+                WaitForBootReady(null, port, cancellationToken, false);
+                expectedStop = false;
+                BackendState = "Running";
                 OwnsBackend = false;
+                BootReady = true;
                 ownedWrapperPid = -1;
                 ownedListenerPid = -1;
                 ownedPort = -1;
                 ownedProfile = "";
                 lastExternalPid = existingPid;
-                return new BackendStartResult { WrapperPid = -1, ListenerPid = existingPid };
+                return new BackendStartResult { WrapperPid = -1, ListenerPid = existingPid, BootReady = true };
             }
 
             if (!Directory.Exists(logsDirectory)) Directory.CreateDirectory(logsDirectory);
@@ -1421,6 +1754,7 @@ namespace DeepSeekHarnessDesktop
 
             string version = AppSettings.NormalizeDshVersion(requestedVersion);
             string profile = AppSettings.NormalizeProfileName(profileName);
+            BackendRun run = null;
             string command = configuredDshPath == null ? "" : configuredDshPath.Trim();
             bool usingNpx = false;
 
@@ -1472,8 +1806,8 @@ namespace DeepSeekHarnessDesktop
 
             bool noOpen = SupportsNoOpen(command, usingNpx, effectiveVersion, profile);
             string arguments = BuildWebLaunchArguments(usingNpx, version, profile, port, noOpen);
-            AppendLog("CLI capabilities noOpen=" + noOpen.ToString() + " effectiveVersion=" + effectiveVersion);
 
+            cancellationToken.ThrowIfCancellationRequested();
             ProcessStartInfo psi = BuildStartInfo(command, arguments, workingDirectory);
             string oldPath = psi.EnvironmentVariables["PATH"] ?? Environment.GetEnvironmentVariable("PATH") ?? "";
             string commandDir = Path.GetDirectoryName(command) ?? "";
@@ -1483,29 +1817,52 @@ namespace DeepSeekHarnessDesktop
             // 那会污染整个 DSH 进程树（Agent/终端/子进程执行 git@github.com:... 时被
             // 强制改成 https，破坏本应正常的 SSH 私有仓库认证）。
             // git+ssh→https 降级只保留在 PowerShell 管理器“插件安装事务”的进程内作用域。
-            process = new Process();
-            process.StartInfo = psi;
-            process.EnableRaisingEvents = true;
-            process.OutputDataReceived += OnOutput;
-            process.ErrorDataReceived += OnOutput;
-
-            AppendLog("Launching: " + psi.FileName + " " + psi.Arguments);
-            if (!process.Start())
-                throw new InvalidOperationException("无法启动 DeepSeek Harness。");
-
-            OwnsBackend = true;
-            ownedWrapperPid = process.Id;
-            ownedPort = port;
-            ownedProfile = profile;
-            ownedListenerPid = -1;
-            sawReadyBanner = false;
-            lastPortLog = "";
-            TryAttachJob(process);
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-
+            run = RegisterRun(port, profile, logPath);
+            // 新 run 接管“当前代”身份；旧代回调仍然持有自己的 BackendRun，不能再通过
+            // manager 的这些镜像字段影响它。
+            AppendLog(run, "CLI capabilities noOpen=" + noOpen.ToString() + " effectiveVersion=" + effectiveVersion);
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                run.ExpectedStop = false;
+                run.State = "Starting";
+                run.BootReady = false;
+                run.Process = new Process();
+                process = run.Process;
+                process.StartInfo = psi;
+                process.EnableRaisingEvents = true;
+                BackendRun capturedRun = run;
+                process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    OnOutput(capturedRun, e);
+                };
+                process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    OnError(capturedRun, e);
+                };
+                process.Exited += delegate(object sender, EventArgs e)
+                {
+                    OnProcessExited(capturedRun);
+                };
+
+                AppendLog(run, "Launching: " + psi.FileName + " " + psi.Arguments);
+                run.StdoutClosed.Reset();
+                run.StderrClosed.Reset();
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!process.Start())
+                    throw new InvalidOperationException("无法启动 DeepSeek Harness。");
+
+                OwnsBackend = true;
+                run.WrapperPid = process.Id;
+                ownedWrapperPid = run.WrapperPid;
+                ownedPort = run.Port;
+                ownedProfile = run.Profile;
+                ownedListenerPid = -1;
+                TryAttachJob(process);
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                cancellationToken.ThrowIfCancellationRequested();
+
                 // 身份状态机（四态）：端口刚打开时 PID/命令行可能滞后数百毫秒（Pending），
                 // 绝不把 Pending 当 Foreign 立即报错；Foreign 需要 PID 稳定 + 命令行可读 +
                 // 连续 3~4 次确认。Job 归属证明（OwnedJob）优先于命令行字符串。
@@ -1514,11 +1871,13 @@ namespace DeepSeekHarnessDesktop
                 int foreignStable = 0;
                 while (waited < 120000)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (!IsReady(port, 100))
                     {
                         foreignPid = -1;
                         foreignStable = 0;
                         LogPortState(port, -1, ListenerIdentity.None, 0);
+                        cancellationToken.ThrowIfCancellationRequested();
                         Thread.Sleep(120);
                         waited += 120;
                         continue;
@@ -1530,14 +1889,25 @@ namespace DeepSeekHarnessDesktop
 
                     if (identity == ListenerIdentity.OwnedJob || identity == ListenerIdentity.VerifiedDsh)
                     {
-                        // 归属已确认（Job 证明优先，命令行证明次之）：记录 listener PID 即成功
+                        // 归属已确认（Job 证明优先，命令行证明次之）：这仍不是 BootReady。
                         if (pid > 0) ownedListenerPid = pid;
                         LogPortState(port, pid, identity, 0);
-                        HostLog.Line("BACKEND ready wrapper=" + ownedWrapperPid.ToString() +
+                        WaitForBootReady(run, port, cancellationToken, true);
+                        run.BootReady = true;
+                        run.State = "Running";
+                        if (IsCurrentRun(run))
+                        {
+                            BootReady = true;
+                            BackendState = "Running";
+                            sawReadyBanner = run.SawReadyBanner;
+                        }
+                        HostLog.Line("BACKEND ready generation=" + run.Generation.ToString() +
+                            " wrapper=" + run.WrapperPid.ToString() +
                             " listener=" + pid.ToString() + " identity=" + identity.ToString() +
-                            " sawReadyBanner=" + sawReadyBanner.ToString());
-                        AppendLog("Listener PID: " + pid.ToString() + " identity=" + identity.ToString());
-                        return new BackendStartResult { WrapperPid = ownedWrapperPid, ListenerPid = pid };
+                            " sawReadyBanner=" + run.SawReadyBanner.ToString());
+                        AppendLog(run, "Listener PID: " + pid.ToString() + " identity=" + identity.ToString());
+                        cancellationToken.ThrowIfCancellationRequested();
+                        return new BackendStartResult { WrapperPid = run.WrapperPid, ListenerPid = pid, BootReady = true };
                     }
 
                     if (identity == ListenerIdentity.Foreign)
@@ -1558,10 +1928,11 @@ namespace DeepSeekHarnessDesktop
                         foreignStable = 0;
                     }
 
-                    if (process.HasExited)
+                    if (run.Process.HasExited)
                         throw new InvalidOperationException("DSH 在 Web 服务就绪前退出，退出码 " +
-                            process.ExitCode.ToString() + "。请查看日志：" + logPath);
+                            run.Process.ExitCode.ToString() + "。请查看日志：" + run.LogPath);
 
+                    cancellationToken.ThrowIfCancellationRequested();
                     Thread.Sleep(120);
                     waited += 120;
                 }
@@ -1573,18 +1944,132 @@ namespace DeepSeekHarnessDesktop
                 // 半失败清理：UI 会报失败，绝不能留下“OwnsBackend=true 但 DSH 还在后台跑”；
                 // 只清理本次刚创建的 Job/process（未验证身份的监听者绝不动）。
                 HostLog.Line("START-CLEANUP begin (failed backend start, port=" + port.ToString() + ")");
-                StopOwnedWrapper();
-                TryStopListenerFallback(port);
-                OwnsBackend = false;
-                ownedListenerPid = -1;
-                ownedWrapperPid = -1;
-                ownedPort = -1;
-                ownedProfile = "";
-                sawReadyBanner = false;
-                try { if (process != null) process.Dispose(); } catch { }
-                process = null;
+                WaitForOutputDrain(run);
+                if (OwnsBackend && IsCurrentRun(run))
+                {
+                    StopOwnedWrapper(run);
+                    TryStopListenerFallback(port);
+                    WaitForPortClosedTwice(port, 5000);
+                }
+                run.BootReady = false;
+                run.State = "Stopped";
+                if (IsCurrentRun(run))
+                {
+                    OwnsBackend = false;
+                    BootReady = false;
+                    BackendState = "Stopped";
+                    ownedListenerPid = -1;
+                    ownedWrapperPid = -1;
+                    ownedPort = -1;
+                    ownedProfile = "";
+                    sawReadyBanner = false;
+                    process = null;
+                }
                 HostLog.Line("START-CLEANUP done");
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// listener 身份确认只是进程归属，不是 DSH 已完成引导。
+        /// 自有后端必须先输出官方 dsh web banner，再连续收到 HTTP 200，且进程仍然存活，
+        /// 才返回 BootReady。外部附着没有本次启动的 banner，因此只要求 HTTP 200 稳定确认。
+        /// </summary>
+        private void WaitForBootReady(BackendRun run, int port, CancellationToken cancellationToken, bool requireReadyBanner)
+        {
+            const int timeoutMs = 120000;
+            const int stableSamples = 3;
+            int waited = 0;
+            int stable = 0;
+            string bootLogPath = run == null ? logPath : run.LogPath;
+
+            while (waited < timeoutMs)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (run != null && run.Process != null && run.Process.HasExited)
+                {
+                    int exitCode = -1;
+                    try { exitCode = run.Process.ExitCode; } catch { }
+                    throw new InvalidOperationException(
+                        "DSH 在 BootReady 前退出，退出码 " + exitCode.ToString() +
+                        "。请查看日志：" + bootLogPath);
+                }
+
+                bool readyBannerSeen = run == null ? sawReadyBanner : run.SawReadyBanner;
+                if (requireReadyBanner && !readyBannerSeen)
+                {
+                    Thread.Sleep(120);
+                    waited += 120;
+                    continue;
+                }
+
+                bool http200 = IsHttp200(port, 500, cancellationToken);
+                if (http200)
+                {
+                    stable++;
+                    HostLog.Line("BOOT HTTP200 port=" + port.ToString() +
+                        " generation=" + (run == null ? "external" : run.Generation.ToString()) +
+                        " stableCount=" + stable.ToString());
+                    if (stable >= stableSamples)
+                    {
+                        if (run != null && run.Process != null && run.Process.HasExited)
+                        {
+                            int exitCode = -1;
+                            try { exitCode = run.Process.ExitCode; } catch { }
+                            throw new InvalidOperationException(
+                                "DSH 在 BootReady 确认完成前退出，退出码 " + exitCode.ToString() +
+                                "。请查看日志：" + bootLogPath);
+                        }
+                        HostLog.Line("BOOTREADY port=" + port.ToString() +
+                            " generation=" + (run == null ? "external" : run.Generation.ToString()) +
+                            " banner=" + readyBannerSeen.ToString() +
+                            " http200=true stableCount=" + stable.ToString());
+                        return;
+                    }
+                }
+                else
+                {
+                    if (stable > 0)
+                        HostLog.Line("BOOT HTTP200 lost port=" + port.ToString());
+                    stable = 0;
+                }
+
+                Thread.Sleep(200);
+                waited += 200;
+            }
+
+            throw new TimeoutException(
+                "等待 DSH 完成引导超时（需要 ready banner、HTTP 200 和稳定确认）。请查看日志：" +
+                bootLogPath);
+        }
+
+        private bool IsHttp200(int port, int timeoutMs, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            HttpWebRequest request = null;
+            try
+            {
+                request = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port.ToString() + "/");
+                request.Method = "GET";
+                request.AllowAutoRedirect = false;
+                request.KeepAlive = false;
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                    return response.StatusCode == HttpStatusCode.OK;
+                }
+            }
+            catch (WebException ex)
+            {
+                HttpWebResponse response = ex.Response as HttpWebResponse;
+                if (response != null) response.Dispose();
+                return false;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -1692,25 +2177,22 @@ namespace DeepSeekHarnessDesktop
                 psi.RedirectStandardOutput = true;
                 psi.RedirectStandardError = true;
 
-                using (Process probe = Process.Start(psi))
+                string output;
+                string error;
+                if (!RunCapturedProcessBounded(psi, 5000, out output, out error)) return -1;
+                string suffix = ":" + port.ToString();
+
+                foreach (string raw in output.Split(new string[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
                 {
-                    if (probe == null) return -1;
-                    string output = probe.StandardOutput.ReadToEnd();
-                    probe.WaitForExit(5000);
-                    string suffix = ":" + port.ToString();
+                    string line = raw.Trim();
+                    if (!line.StartsWith("TCP", StringComparison.OrdinalIgnoreCase)) continue;
+                    string[] parts = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 5) continue;
+                    if (!parts[1].EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!parts[3].Equals("LISTENING", StringComparison.OrdinalIgnoreCase)) continue;
 
-                    foreach (string raw in output.Split(new string[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        string line = raw.Trim();
-                        if (!line.StartsWith("TCP", StringComparison.OrdinalIgnoreCase)) continue;
-                        string[] parts = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length < 5) continue;
-                        if (!parts[1].EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!parts[3].Equals("LISTENING", StringComparison.OrdinalIgnoreCase)) continue;
-
-                        int foundPid;
-                        if (Int32.TryParse(parts[4], out foundPid)) return foundPid;
-                    }
+                    int foundPid;
+                    if (Int32.TryParse(parts[4], out foundPid)) return foundPid;
                 }
             }
             catch { }
@@ -1764,6 +2246,11 @@ namespace DeepSeekHarnessDesktop
         {
             try
             {
+                // 受限 Windows 环境可能拒绝 CIM 读取当前宿主自身的命令行；
+                // 当前进程的 Environment.CommandLine 等价且不涉及外部进程权限。
+                if (pid == Process.GetCurrentProcess().Id)
+                    return Environment.CommandLine;
+
                 string powershell = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.System),
                     @"WindowsPowerShell\v1.0\powershell.exe");
@@ -1781,13 +2268,10 @@ namespace DeepSeekHarnessDesktop
                 psi.RedirectStandardError = true;
                 psi.StandardOutputEncoding = Encoding.UTF8;
 
-                using (Process probe = Process.Start(psi))
-                {
-                    if (probe == null) return null;
-                    string output = probe.StandardOutput.ReadToEnd();
-                    probe.WaitForExit(5000);
-                    return output == null ? null : output.Trim();
-                }
+                string output;
+                string error;
+                if (!RunCapturedProcessBounded(psi, 5000, out output, out error)) return null;
+                return output == null ? null : output.Trim();
             }
             catch
             {
@@ -1810,12 +2294,19 @@ namespace DeepSeekHarnessDesktop
         /// <summary>等端口连续两次确认关闭（每次间隔 250ms），避免单次探测抖动误判。</summary>
         public bool WaitForPortClosedTwice(int port, int timeoutMs)
         {
+            return WaitForPortClosedTwice(port, timeoutMs, CancellationToken.None);
+        }
+
+        public bool WaitForPortClosedTwice(int port, int timeoutMs, CancellationToken cancellationToken)
+        {
             int closedCount = 0;
             int waited = 0;
             while (waited < timeoutMs && closedCount < 2)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!IsReady(port, 150)) closedCount++;
                 else closedCount = 0;
+                cancellationToken.ThrowIfCancellationRequested();
                 Thread.Sleep(250);
                 waited += 250;
             }
@@ -1828,7 +2319,26 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         public void StopOwnedWrapper()
         {
-            if (!OwnsBackend) return;
+            StopOwnedWrapper(CurrentRun);
+        }
+
+        private void StopOwnedWrapper(BackendRun run)
+        {
+            if (run == null || !IsCurrentRun(run) || !OwnsBackend) return;
+
+            Process ownedProcess = run.Process;
+
+            bool alreadyExited = false;
+            try { alreadyExited = ownedProcess == null || ownedProcess.HasExited; } catch { }
+            run.ExpectedStop = true;
+            expectedStop = true;
+            if (!alreadyExited)
+            {
+                run.State = "Stopping";
+                BackendState = "Stopping";
+            }
+            run.BootReady = false;
+            BootReady = false;
 
             if (jobHandle != IntPtr.Zero)
             {
@@ -1836,11 +2346,13 @@ namespace DeepSeekHarnessDesktop
                 jobHandle = IntPtr.Zero;
             }
 
-            try { if (process != null && !process.HasExited) process.Kill(); } catch { }
-            try { if (process != null) process.WaitForExit(3000); } catch { }
+            try { if (ownedProcess != null && !ownedProcess.HasExited) ownedProcess.Kill(); } catch { }
+            try { if (ownedProcess != null) ownedProcess.WaitForExit(3000); } catch { }
 
-            HostLog.Line("STOP-WRAPPER done wrapperPid=" + ownedWrapperPid.ToString() +
-                " exited=" + (process == null || process.HasExited).ToString());
+            bool exited = false;
+            try { exited = ownedProcess == null || ownedProcess.HasExited; } catch { }
+            HostLog.Line("STOP-WRAPPER done generation=" + run.Generation.ToString() +
+                " wrapperPid=" + run.WrapperPid.ToString() + " exited=" + exited.ToString());
         }
 
         /// <summary>
@@ -1900,18 +2412,29 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         public void StopOwnedBackend()
         {
-            if (!OwnsBackend) return;
+            BackendRun run = CurrentRun;
+            if (!OwnsBackend || run == null) return;
 
-            int port = ownedPort;
-            HostLog.Line("STOP-OWNED begin port=" + port.ToString() +
-                " oldWrapperPid=" + ownedWrapperPid.ToString() +
+            int port = run.Port;
+            HostLog.Line("STOP-OWNED begin generation=" + run.Generation.ToString() +
+                " port=" + port.ToString() +
+                " oldWrapperPid=" + run.WrapperPid.ToString() +
                 " oldListenerPid=" + ownedListenerPid.ToString());
 
-            StopOwnedWrapper();
+            StopOwnedWrapper(run);
             TryStopListenerFallback(port);
             WaitForPortClosedTwice(port, 5000);
 
-            OwnsBackend = false;
+            run.BootReady = false;
+            run.State = "Stopped";
+            run.ExpectedStop = true;
+            if (IsCurrentRun(run))
+            {
+                OwnsBackend = false;
+                BootReady = false;
+                BackendState = "Stopped";
+                expectedStop = true;
+            }
             HostLog.Line("STOP-OWNED complete port=" + port.ToString() + " ownsBackend=false");
         }
 
@@ -1972,10 +2495,13 @@ namespace DeepSeekHarnessDesktop
         }
 
         public void RestartBackend(int port, string workingDirectory, string logsDirectory,
-            string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowExternalStop)
+            string requestedVersion, string profileName, string configuredDshPath, string runnerMode, bool allowExternalStop,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             StopBackend(port, allowExternalStop);
-            EnsureStarted(port, workingDirectory, logsDirectory, requestedVersion, profileName, configuredDshPath, runnerMode, false);
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureStarted(port, workingDirectory, logsDirectory, requestedVersion, profileName, configuredDshPath, runnerMode, false, cancellationToken);
         }
 
         private static void CleanupOldLogs(string directory)
@@ -2002,33 +2528,252 @@ namespace DeepSeekHarnessDesktop
 
         private void OnOutput(object sender, DataReceivedEventArgs e)
         {
-            if (e.Data != null)
+            OnOutput(FindRun(sender as Process), e);
+        }
+
+        private void OnOutput(BackendRun run, DataReceivedEventArgs e)
+        {
+            if (run == null || e == null) return;
+            if (e.Data == null)
             {
-                AppendLog(e.Data);
-                // DSH 官方 ready banner（如 "dsh web: http://127.0.0.1:3080"）来自本次自己
-                // 启动的进程树时是额外强信号；只记录标志作辅助，不取代 Job/PID 归属检查。
-                if (!sawReadyBanner && ownedPort > 0 &&
-                    e.Data.IndexOf("dsh web", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    e.Data.IndexOf("127.0.0.1:" + ownedPort.ToString(), StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    sawReadyBanner = true;
-                    HostLog.Line("READY-BANNER seen port=" + ownedPort.ToString());
-                }
+                try { run.StdoutClosed.Set(); } catch { }
+                return;
             }
+
+            CaptureOutput(run, "stdout", e.Data);
+            // DSH 官方 ready banner（如 "dsh web: http://127.0.0.1:3080"）来自本次自己
+            // 启动的进程树时是额外强信号；只记录到本 run，不取代 Job/PID 归属检查。
+            if (!run.SawReadyBanner && run.Port > 0 &&
+                e.Data.IndexOf("dsh web", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                (e.Data.IndexOf("127.0.0.1:" + run.Port.ToString(), StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 e.Data.IndexOf("localhost:" + run.Port.ToString(), StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                run.SawReadyBanner = true;
+                lock (runLock)
+                {
+                    if (Object.ReferenceEquals(currentRun, run)) sawReadyBanner = true;
+                }
+                HostLog.Line("READY-BANNER seen generation=" + run.Generation.ToString() +
+                    " port=" + run.Port.ToString());
+            }
+        }
+
+        private void OnError(object sender, DataReceivedEventArgs e)
+        {
+            OnError(FindRun(sender as Process), e);
+        }
+
+        private void OnError(BackendRun run, DataReceivedEventArgs e)
+        {
+            if (run == null || e == null) return;
+            if (e.Data == null)
+            {
+                try { run.StderrClosed.Set(); } catch { }
+                return;
+            }
+            CaptureOutput(run, "stderr", e.Data);
+        }
+
+        private void WaitForOutputDrain()
+        {
+            WaitForOutputDrain(CurrentRun);
+        }
+
+        private void WaitForOutputDrain(BackendRun run)
+        {
+            if (run == null) return;
+            try
+            {
+                if (run.Process != null && !run.Process.HasExited) return;
+            }
+            catch { }
+            try { run.StdoutClosed.WaitOne(1000); } catch { }
+            try { run.StderrClosed.WaitOne(1000); } catch { }
+        }
+
+        private void CaptureOutput(BackendRun run, string stream, string text)
+        {
+            if (run == null || text == null) return;
+            AppendLog(run, "[" + stream + "] " + text);
         }
 
         private void AppendLog(string text)
         {
+            AppendLog(CurrentRun, text);
+        }
+
+        private void AppendLog(BackendRun run, string text)
+        {
             try
             {
-                lock (logLock)
+                if (run != null && !String.IsNullOrEmpty(text))
                 {
-                    if (String.IsNullOrEmpty(logPath)) return;
-                    File.AppendAllText(logPath, "[" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " +
-                        text + "\r\n", Encoding.UTF8);
+                    lock (run.OutputLock)
+                    {
+                        run.RecentOutput.Enqueue(text);
+                        while (run.RecentOutput.Count > RecentOutputLimit)
+                            run.RecentOutput.Dequeue();
+                    }
+                }
+
+                string targetLogPath = run == null ? logPath : run.LogPath;
+                if (!String.IsNullOrEmpty(targetLogPath))
+                {
+                    lock (logLock)
+                    {
+                        File.AppendAllText(targetLogPath, "[" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " +
+                            text + "\r\n", Encoding.UTF8);
+                    }
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 返回启动失败最有用的最近 stdout/stderr 行：优先 fatal/failed/error/plugin/loader，
+        /// 没有明确 fatal 关键字时退回最近几行，供错误覆盖层显示。
+        /// </summary>
+        public string GetRecentFailureSummary()
+        {
+            BackendRun run = CurrentRun;
+            List<string> lines;
+            if (run == null)
+            {
+                lines = new List<string>();
+            }
+            else
+            {
+                lock (run.OutputLock)
+                {
+                    lines = new List<string>(run.RecentOutput);
+                }
+            }
+
+            List<string> selected = new List<string>();
+            string[] markers = new string[]
+            {
+                "fatal", "failed", "error", "exception", "plugin tree", "loader entry"
+            };
+
+            for (int i = lines.Count - 1; i >= 0 && selected.Count < 8; i--)
+            {
+                string line = lines[i] ?? "";
+                string lower = line.ToLowerInvariant();
+                bool match = false;
+                foreach (string marker in markers)
+                {
+                    if (lower.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        match = true;
+                        break;
+                    }
+                }
+                if (match) selected.Insert(0, line);
+            }
+
+            if (selected.Count == 0)
+            {
+                for (int i = Math.Max(0, lines.Count - 8); i < lines.Count; i++)
+                    selected.Add(lines[i]);
+            }
+
+            if (selected.Count == 0)
+                return "（没有捕获到后端 stdout/stderr。）";
+            return String.Join(Environment.NewLine, selected.ToArray());
+        }
+
+        private void OnProcessExited(object sender, EventArgs e)
+        {
+            OnProcessExited(FindRun(sender as Process));
+        }
+
+        private void OnProcessExited(BackendRun run)
+        {
+            if (run == null || disposed) return;
+            try
+            {
+                WaitForOutputDrain(run);
+                lock (runLock)
+                {
+                    // Exited callback 已经等待过本 run 的两个 drain 结束信号；只有到这里
+                    // 才允许 RegisterRun/本 callback finally 回收它。
+                    run.ExitObserved = true;
+                    run.OutputDrained = true;
+                }
+
+                Process exitedProcess = run.Process;
+                int wrapperPid = -1;
+                int exitCode = -1;
+                try { wrapperPid = run.WrapperPid; } catch { }
+                if (wrapperPid <= 0)
+                {
+                    try { if (exitedProcess != null) wrapperPid = exitedProcess.Id; } catch { }
+                }
+                try
+                {
+                    if (exitedProcess != null) exitCode = exitedProcess.ExitCode;
+                }
+                catch { }
+
+                bool wasExpected = run.ExpectedStop;
+                string state = run.State ?? "Unknown";
+                bool wasBootReady = run.BootReady;
+                bool current = false;
+                lock (runLock)
+                {
+                    current = Object.ReferenceEquals(currentRun, run);
+                    if (current)
+                    {
+                        run.BootReady = false;
+                        if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
+                            run.State = "Stopped";
+                        BootReady = false;
+                        if (!String.Equals(state, "Stopping", StringComparison.OrdinalIgnoreCase))
+                            BackendState = "Stopped";
+                        expectedStop = run.ExpectedStop;
+                    }
+                }
+                string line = "BACKEND process-exited wrapperPid=" + wrapperPid.ToString() +
+                    " generation=" + run.Generation.ToString() +
+                    " exitCode=" + exitCode.ToString() +
+                    " expectedStop=" + wasExpected.ToString().ToLowerInvariant() +
+                    " state=" + state +
+                    (current ? "" : " ignored=true");
+                HostLog.Line(line);
+                AppendLog(run, line);
+
+                if (!current)
+                {
+                    // 旧代 Exited 可能在新代已经启动后才到达。它只保留在自己的
+                    // recent output/log 中；绝不改新代 BootReady/BackendState/expectedStop，
+                    // 也不向 MainForm 发送“后端中断”事件。
+                    return;
+                }
+                // 换代可能发生在日志写入期间；在向 MainForm 派发前再确认一次，
+                // 避免旧代 callback 变成新代的“后端中断”事件。
+                if (!IsCurrentRun(run)) return;
+
+                EventHandler<BackendProcessExitedEventArgs> handler = BackendProcessExited;
+                if (handler != null)
+                {
+                    try
+                    {
+                        handler(this, new BackendProcessExitedEventArgs(
+                            run.Generation, wrapperPid, exitCode, wasExpected, state, wasBootReady));
+                    }
+                    catch (Exception handlerError)
+                    {
+                        HostLog.Fail("BACKEND process-exited handler", handlerError);
+                    }
+                }
+            }
+            finally
+            {
+                lock (runLock) run.ExitCallbackCompleted = true;
+                // 如果 handler 中同步启动了下一代，此时 run 已不是 currentRun；如果下一代
+                // 异步稍后才启动，则 RegisterRun 会通过 ReclaimCompletedRuns 补回收。
+                ReclaimRunIfEligible(run);
+            }
         }
 
         private static string QuoteArg(string value)
@@ -2075,25 +2820,11 @@ namespace DeepSeekHarnessDesktop
                 psi.StandardOutputEncoding = Encoding.UTF8;
                 psi.StandardErrorEncoding = Encoding.UTF8;
 
-                using (Process p = Process.Start(psi))
-                {
-                    if (p != null)
-                    {
-                        if (!p.WaitForExit(15000))
-                        {
-                            // 超时：回收本次探测的完整进程树（按 PID，不按进程名），
-                            // 避免只 Kill cmd/npx wrapper 后留下 node 子进程。
-                            KillProcessTree(p);
-                            supported = false;
-                        }
-                        else
-                        {
-                            string output = p.StandardOutput.ReadToEnd();
-                            string error = p.StandardError.ReadToEnd();
-                            supported = (output + System.Environment.NewLine + error).IndexOf("--no-open", StringComparison.OrdinalIgnoreCase) >= 0;
-                        }
-                    }
-                }
+                string output;
+                string error;
+                bool completed = RunCapturedProcessBounded(psi, 15000, out output, out error);
+                supported = completed &&
+                    (output + System.Environment.NewLine + error).IndexOf("--no-open", StringComparison.OrdinalIgnoreCase) >= 0;
             }
             catch
             {
@@ -2113,15 +2844,29 @@ namespace DeepSeekHarnessDesktop
             if (p == null) return;
             try
             {
+                int pid = p.Id;
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe");
-                psi.Arguments = "/PID " + p.Id.ToString() + " /T /F";
+                psi.Arguments = "/PID " + pid.ToString() + " /T /F";
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 using (Process k = Process.Start(psi))
                 {
-                    if (k != null) k.WaitForExit(5000);
+                    if (k != null && !k.WaitForExit(1000))
+                    {
+                        try { k.Kill(); } catch { }
+                        try { k.WaitForExit(1000); } catch { }
+                    }
                 }
+            }
+            catch { }
+
+            // taskkill 是树清理的主路径；若它本身不可用或超时，至少按同一 PID
+            // 结束探测 wrapper，绝不退化为按 node/cmd/powershell 名称全局杀进程。
+            try
+            {
+                if (!p.HasExited) p.Kill();
+                try { p.WaitForExit(1000); } catch { }
             }
             catch { }
         }
@@ -2240,8 +2985,21 @@ namespace DeepSeekHarnessDesktop
 
         public void Dispose()
         {
+            if (disposed) return;
             StopOwnedBackend();
-            try { if (process != null) process.Dispose(); } catch { }
+            List<BackendRun> runs;
+            lock (runLock)
+            {
+                disposed = true;
+                runs = new List<BackendRun>(backendRuns);
+                backendRuns.Clear();
+                currentRun = null;
+            }
+            foreach (BackendRun run in runs)
+            {
+                try { run.Dispose(); } catch { }
+            }
+            process = null;
         }
     }
 
@@ -2622,7 +3380,7 @@ namespace DeepSeekHarnessDesktop
             Controls.Add(developerCheck);
 
             Label hint = new Label();
-            hint.Text = "工作目录、端口、Profile、运行方式和开发者模式在下次启动时生效；npx 版本在管理器中调整。";
+            hint.Text = "后端相关设置保存后可选择立即重启；选择稍后时当前运行配置保持不变。npx 版本在管理器中调整。";
             hint.AutoSize = true;
             hint.Left = leftControl;
             hint.Top = 530;
@@ -2718,14 +3476,99 @@ namespace DeepSeekHarnessDesktop
         Navigate
     }
 
+    /// <summary>
+    /// 重启事务的两个运行时快照：停止旧 backend 前绝不把 active runtime 改成 target。
+    /// 这个小对象同时把阶段与端口的关系固定下来，避免后续重构又把 target port
+    /// 带进旧 backend 的 stop/fallback/wait 链。
+    /// </summary>
+    internal sealed class RestartRuntimeTransaction
+    {
+        public AppSettings OldRuntime { get; private set; }
+        public AppSettings TargetRuntime { get; private set; }
+        public bool TargetBackendReady { get; private set; }
+        public bool TargetCommitted { get; private set; }
+
+        public RestartRuntimeTransaction(AppSettings oldRuntime, AppSettings targetRuntime)
+        {
+            if (oldRuntime == null) throw new ArgumentNullException("oldRuntime");
+            if (targetRuntime == null) throw new ArgumentNullException("targetRuntime");
+            OldRuntime = oldRuntime.Clone();
+            TargetRuntime = targetRuntime.Clone();
+        }
+
+        public AppSettings RuntimeForPhase(string phase)
+        {
+            switch (phase)
+            {
+                case "restart.preflight":
+                case "restart.snapshot":
+                case "restart.stop-wrapper":
+                case "restart.stop-listener-fallback":
+                case "restart.wait-port-close":
+                    return OldRuntime;
+                case "restart.compat":
+                case "restart.start":
+                case "restart.wait-ready":
+                case "restart.navigate":
+                case "restart.complete":
+                    return TargetRuntime;
+                default:
+                    throw new ArgumentOutOfRangeException("phase", phase, "未知重启事务阶段");
+            }
+        }
+
+        public void MarkTargetBackendReady()
+        {
+            TargetBackendReady = true;
+        }
+
+        public void CommitTarget(AppSettings activeRuntime)
+        {
+            if (!TargetBackendReady)
+                throw new InvalidOperationException("target backend 尚未 ready，不能提交 active runtime。");
+            if (activeRuntime == null)
+                throw new ArgumentNullException("activeRuntime");
+            activeRuntime.CopyFrom(TargetRuntime);
+            TargetCommitted = true;
+        }
+    }
+
+    internal static class SystemAnimationPreferences
+    {
+        private const uint SPI_GETCLIENTAREAANIMATION = 0x1042;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SystemParametersInfo(
+            uint action, uint parameter, ref int value, uint winIni);
+
+        public static bool AreClientAreaAnimationsEnabled()
+        {
+            int enabled = 1;
+            try
+            {
+                if (SystemParametersInfo(SPI_GETCLIENTAREAANIMATION, 0, ref enabled, 0))
+                    return enabled != 0;
+            }
+            catch { }
+            // 查询失败时保守地保留现有视觉行为；失败不会阻塞显示/恢复。
+            return true;
+        }
+    }
+
     internal sealed class MainForm : Form
     {
         private readonly string baseDirectory;
         private readonly string settingsPath;
         private readonly string logsDirectory;
         private readonly string webViewDataDirectory;
-        private readonly AppSettings settings;
+        // persistedSettings 是磁盘上供下次运行/设置 UI 使用的值；
+        // activeRuntimeSettings 是当前已启动 backend/WebView 实际采用的快照。
+        // 保留 settings 属性作为本类旧 UI 代码的持久设置入口，避免把两套字段散落复制。
+        private readonly AppSettings persistedSettings;
+        private readonly AppSettings activeRuntimeSettings;
+        private AppSettings settings { get { return persistedSettings; } }
         private readonly DshProcessManager dsh;
+        private readonly CancellationTokenSource lifetimeCts;
         private WebView2 webView;
         private readonly Panel loadingPanel;
         private readonly Label loadingLabel;
@@ -2738,19 +3581,32 @@ namespace DeepSeekHarnessDesktop
         private readonly ContextMenuStrip trayMenu;
         private readonly System.Windows.Forms.Timer themeTimer;
         private readonly System.Windows.Forms.Timer healthTimer;
+        private readonly System.Windows.Forms.Timer trayShowAnimationTimer;
         private readonly Guid mainFormInstanceId = Guid.NewGuid();
 
         private EventHandler overlayPrimaryHandler;
         private EventHandler overlaySecondaryHandler;
         private bool allowExit;
+        private bool closing;
         private bool currentDark;
         private bool chromeApplied;
         private bool webViewReady;
+        private bool backendBootReady;
+        private bool bootReadyReached;
+        private bool startOperationActive;
+        private bool startupFailureShown;
+        private bool backendInterruptionShown;
+        private int unresponsiveCount;
+        private DateTime unresponsiveFirstUtc = DateTime.MinValue;
         private bool healthCheckBusy;
         private bool restartBusy;
-        private bool startBusy;
+        private bool recoveryBusy;
         private bool hiddenToTray;
         private bool trayTransition;
+        private bool trayShowAnimationActive;
+        private int trayShowAnimationStep;
+        private double trayShowAnimationTargetOpacity = 1.0;
+        private const int TrayShowAnimationSteps = 10;
         // 后端“代”：每次重启/停止递增；已飞出的健康检查完成时对比代数，旧代结果直接丢弃，
         // 避免重启期间健康检查把“后端被主动停掉”误报成“后端中断”。
         private long backendGeneration;
@@ -2784,8 +3640,11 @@ namespace DeepSeekHarnessDesktop
             settingsPath = Path.Combine(baseDirectory, "settings.json");
             logsDirectory = Path.Combine(baseDirectory, "logs");
             webViewDataDirectory = Path.Combine(baseDirectory, "webview2-data");
-            settings = AppSettings.Load(settingsPath);
+            persistedSettings = AppSettings.Load(settingsPath);
+            activeRuntimeSettings = persistedSettings.Clone();
             dsh = new DshProcessManager();
+            dsh.BackendProcessExited += OnBackendProcessExited;
+            lifetimeCts = new CancellationTokenSource();
 
             HostLog.Initialize(logsDirectory, mainFormInstanceId.ToString("N"));
             HostLog.Line("FORM created instance=" + mainFormInstanceId.ToString("N"));
@@ -2871,12 +3730,16 @@ namespace DeepSeekHarnessDesktop
             trayIcon.Text = "DeepSeek Harness";
             trayIcon.Visible = true;
             trayIcon.ContextMenuStrip = trayMenu;
-            trayIcon.DoubleClick += delegate { RestoreFromTray(); };
+            trayIcon.DoubleClick += delegate { ToggleTrayWindow(); };
 
             themeTimer = new System.Windows.Forms.Timer();
             themeTimer.Interval = 1000;
             themeTimer.Tick += delegate { ApplyThemeIfChanged(); };
             themeTimer.Start();
+
+            trayShowAnimationTimer = new System.Windows.Forms.Timer();
+            trayShowAnimationTimer.Interval = 16;
+            trayShowAnimationTimer.Tick += delegate { AdvanceTrayShowAnimation(); };
 
             healthTimer = new System.Windows.Forms.Timer();
             healthTimer.Interval = 5000;
@@ -2884,15 +3747,128 @@ namespace DeepSeekHarnessDesktop
             healthTimer.Start();
 
             Shown += async delegate { await StartAsync(); };
-            HandleCreated += delegate
-            {
-                HostLog.Line("HANDLE created");
-                chromeApplied = false;
-                ApplyThemeIfChanged(true);
-            };
             FormClosing += OnFormClosing;
 
             ApplyThemeIfChanged(true);
+        }
+
+        private bool LifetimeCancelled
+        {
+            get { return closing || lifetimeCts.IsCancellationRequested; }
+        }
+
+        private bool CanTouchControls
+        {
+            get { return !LifetimeCancelled && !IsDisposed && !Disposing; }
+        }
+
+        private void ThrowIfLifetimeCancelled()
+        {
+            if (LifetimeCancelled)
+                throw new OperationCanceledException(lifetimeCts.Token);
+        }
+
+        private void OnBackendProcessExited(object sender, BackendProcessExitedEventArgs e)
+        {
+            if (e == null || e.ExpectedStop || LifetimeCancelled) return;
+
+            // BootReady 前的自然退出由 StartAsync 的异常路径统一显示启动失败，
+            // 避免“进程退出事件”和启动任务各弹一次覆盖层。
+            if (!e.BootReadyAtExit && startOperationActive) return;
+
+            if (e.BootReadyAtExit)
+            {
+                // 先更新跨线程可见的分类状态，确保 StartAsync 随后恢复时也走运行中断路径。
+                bootReadyReached = true;
+                backendBootReady = false;
+            }
+
+            try
+            {
+                if (!IsHandleCreated || IsDisposed || Disposing) return;
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!CanTouchControls || restartBusy) return;
+                    if (e.BootReadyAtExit)
+                    {
+                        ShowBackendInterruption(new InvalidOperationException(
+                            "DSH 后端进程意外退出，退出码 " + e.ExitCode.ToString() + "。"));
+                    }
+                    else if (!bootReadyReached)
+                    {
+                        HandleStartupError(new InvalidOperationException(
+                            "DSH 在 BootReady 前退出，退出码 " + e.ExitCode.ToString() + "。"));
+                    }
+                });
+            }
+            catch (InvalidOperationException) { }
+        }
+
+        private void CancelLifetime(string reason)
+        {
+            bool wasClosing = closing;
+            closing = true;
+            StopTrayShowAnimation(true, "lifetime-" + reason);
+            if (!wasClosing)
+            {
+                backendGeneration++;
+                HostLog.Line("LIFETIME closing reason=" + reason);
+            }
+            try { lifetimeCts.Cancel(); } catch (ObjectDisposedException) { }
+        }
+
+        private IWin32Window EffectiveDialogOwner()
+        {
+            if (hiddenToTray) return null;
+            if (Visible && IsHandleCreated && !IsDisposed && !Disposing)
+                return this;
+            return null;
+        }
+
+        private bool TryBeginRecoveryOperation(string operation)
+        {
+            if (LifetimeCancelled || recoveryBusy) return false;
+            recoveryBusy = true;
+            HostLog.Line("RECOVERY begin operation=" + operation);
+            if (CanTouchControls)
+            {
+                overlayPrimaryButton.Enabled = false;
+                overlaySecondaryButton.Enabled = false;
+            }
+            return true;
+        }
+
+        private void EndRecoveryOperation(string operation)
+        {
+            recoveryBusy = false;
+            if (CanTouchControls)
+            {
+                overlayPrimaryButton.Enabled = true;
+                overlaySecondaryButton.Enabled = true;
+            }
+            HostLog.Line("RECOVERY end operation=" + operation +
+                " closing=" + LifetimeCancelled.ToString());
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            HostLog.Line("HANDLE created instance=" + mainFormInstanceId.ToString("N") +
+                " hwnd=" + Handle.ToInt64().ToString("X"));
+            chromeApplied = false;
+            ApplyThemeIfChanged(true);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            IntPtr hwnd = IntPtr.Zero;
+            try { hwnd = Handle; } catch { }
+            bool recreating = false;
+            try { recreating = RecreatingHandle; } catch { }
+            HostLog.Line("HANDLE destroyed instance=" + mainFormInstanceId.ToString("N") +
+                " hwnd=" + hwnd.ToInt64().ToString("X") +
+                " recreating=" + recreating.ToString().ToLowerInvariant());
+            base.OnHandleDestroyed(e);
         }
 
         private string ReadVersionText()
@@ -3006,6 +3982,7 @@ namespace DeepSeekHarnessDesktop
             string primaryText, EventHandler primaryHandler,
             string secondaryText, EventHandler secondaryHandler)
         {
+            if (!CanTouchControls) return;
             overlayReason = reason;
             bool errorMode = detailsText != null;
 
@@ -3032,10 +4009,12 @@ namespace DeepSeekHarnessDesktop
 
             overlayPrimaryButton.Visible = !String.IsNullOrEmpty(primaryText) && primaryHandler != null;
             overlayPrimaryButton.Text = primaryText ?? "";
+            overlayPrimaryButton.Enabled = !recoveryBusy;
             if (overlayPrimaryButton.Visible) overlayPrimaryButton.Click += overlayPrimaryHandler;
 
             overlaySecondaryButton.Visible = !String.IsNullOrEmpty(secondaryText) && secondaryHandler != null;
             overlaySecondaryButton.Text = secondaryText ?? "";
+            overlaySecondaryButton.Enabled = !recoveryBusy;
             if (overlaySecondaryButton.Visible) overlaySecondaryButton.Click += overlaySecondaryHandler;
 
             loadingPanel.Visible = true;
@@ -3061,7 +4040,7 @@ namespace DeepSeekHarnessDesktop
             menu.Items.Add(show);
 
             ToolStripMenuItem prefs = new ToolStripMenuItem("设置...");
-            prefs.Click += delegate { ShowSettings(); };
+            prefs.Click += async delegate { await ShowSettingsAsync(); };
             menu.Items.Add(prefs);
 
             menu.Items.Add(new ToolStripSeparator());
@@ -3138,17 +4117,23 @@ namespace DeepSeekHarnessDesktop
 
         private async Task StartAsync()
         {
-            if (startBusy) return;
-            startBusy = true;
+            if (!TryBeginRecoveryOperation("start")) return;
+            CancellationToken token = lifetimeCts.Token;
+            startOperationActive = true;
+            startupFailureShown = false;
+            backendInterruptionShown = false;
+            backendBootReady = dsh.BootReady;
+            bootReadyReached = dsh.BootReady;
             currentPhase = StartupPhase.CommandVerify;
             ShowOverlay("startup", "正在启动 DeepSeek Harness...", null, null, null, null);
 
             try
             {
+                token.ThrowIfCancellationRequested();
                 // 阶段一：命令验证 —— 每次启动前重新验证现有 dsh 命令的版本
                 //（command/auto 模式）：与上次 accepted 的版本比对，变化/无法读取时询问用户。
                 HostLog.Enter("START phase=" + currentPhase.ToString());
-                ConfirmCommandVersionBeforeStart();
+                ConfirmCommandVersionBeforeStart(activeRuntimeSettings);
                 HostLog.Ok("START phase=CommandVerify");
 
                 DshProcessManager.ExternalBackendInfo probe = null;
@@ -3162,10 +4147,14 @@ namespace DeepSeekHarnessDesktop
                 HostLog.Enter("START phase=BackendProbe");
                 await Task.Run(delegate
                 {
-                    probe = dsh.ProbeExternalDsh(settings.port);
+                    token.ThrowIfCancellationRequested();
+                    probe = dsh.ProbeExternalDsh(activeRuntimeSettings.port);
+                    token.ThrowIfCancellationRequested();
                     compatPendingAtStartup = PluginCompat.ApplyAll(
-                        baseDirectory, logsDirectory, settings.profileName, !probe.PortOpen);
-                });
+                        baseDirectory, logsDirectory, activeRuntimeSettings.profileName, !probe.PortOpen);
+                    token.ThrowIfCancellationRequested();
+                }, token);
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("START phase=BackendProbe portOpen=" + (probe != null && probe.PortOpen).ToString());
 
                 // 外部 backend 必须符合兼容策略（runnerMode 只管启动方式）。
@@ -3173,7 +4162,7 @@ namespace DeepSeekHarnessDesktop
                 if (probe != null && probe.PortOpen && probe.IsDsh && !probe.IsCompatible)
                 {
                     throw new InvalidOperationException(
-                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过最低兼容版本检查：\r\n" +
+                        "端口 " + activeRuntimeSettings.port.ToString() + " 上已有一个 DSH 后端在运行，但它未通过最低兼容版本检查：\r\n" +
                         (String.IsNullOrEmpty(probe.Version)
                             ? "无法从命令行读取其版本。"
                             : "其版本为 " + probe.Version + "。") +
@@ -3184,11 +4173,12 @@ namespace DeepSeekHarnessDesktop
                 // 满足最低版本但不在 testedDshVersions（例如未来 rc.9）→ 询问是否附着。
                 if (probe != null && probe.PortOpen && probe.IsDsh && !probe.IsVerified)
                 {
+                    token.ThrowIfCancellationRequested();
                     string shown = String.IsNullOrWhiteSpace(probe.CommandLine)
                         ? "（无法读取命令行）" : probe.CommandLine;
                     DialogResult confirm = ThemedMessageBox.Show(
-                        this,
-                        "端口 " + settings.port.ToString() + " 上已有一个 DSH 后端在运行，版本 " + probe.Version +
+                        EffectiveDialogOwner(),
+                        "端口 " + activeRuntimeSettings.port.ToString() + " 上已有一个 DSH 后端在运行，版本 " + probe.Version +
                         " 未在 testedDshVersions 中，但满足最低兼容版本。\r\n\r\n" +
                         "DesktopShell 默认 npx 版本：" + DshProcessManager.DefaultDshVersion +
                         "。\r\n\r\n命令行：\r\n" + shown +
@@ -3202,64 +4192,89 @@ namespace DeepSeekHarnessDesktop
                         attachUnverified = true;   // 是 / 取消都按非破坏性处理：附着
                 }
 
+                token.ThrowIfCancellationRequested();
+
                 // 阶段三：启动（或附着）后端 —— 仅当本窗体不拥有、或拥有的后端已不在运行时
                 // 才真正执行；已在运行的 owned 后端绝不再启动第二次，避免“重试启动”误伤健康后端。
                 currentPhase = StartupPhase.Backend;
                 HostLog.Enter("START phase=Backend");
                 await Task.Run(delegate
                 {
+                    token.ThrowIfCancellationRequested();
                     if (restartExternal)
                     {
                         // 用户已确认结束外部后端：停止 → 补丁 → 启动自己的 DSH
-                        dsh.StopBackend(settings.port, true);
-                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
+                        token.ThrowIfCancellationRequested();
+                        dsh.StopBackend(activeRuntimeSettings.port, true);
+                        token.ThrowIfCancellationRequested();
+                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, activeRuntimeSettings.profileName, true);
                         compatPendingAtStartup = 0;
                     }
                     if (!dsh.BackendRunning)
                     {
+                        token.ThrowIfCancellationRequested();
                         dsh.EnsureStarted(
-                            settings.port,
-                            settings.workingDirectory,
+                            activeRuntimeSettings.port,
+                            activeRuntimeSettings.workingDirectory,
                             logsDirectory,
-                            settings.dshVersion,
-                            settings.profileName,
-                            settings.dshPath,
-                            settings.dshRunnerMode,
-                            attachUnverified);
+                            activeRuntimeSettings.dshVersion,
+                            activeRuntimeSettings.profileName,
+                            activeRuntimeSettings.dshPath,
+                            activeRuntimeSettings.dshRunnerMode,
+                            attachUnverified,
+                            token);
                     }
-                });
-                HostLog.Ok("START phase=Backend");
+                    token.ThrowIfCancellationRequested();
+                }, token);
+                token.ThrowIfCancellationRequested();
+                if (!dsh.BootReady || (dsh.OwnsBackend && !dsh.BackendRunning))
+                    throw new InvalidOperationException(
+                        "DSH listener 已确认，但尚未完成 BootReady（ready banner + HTTP 200 稳定确认）。");
+                backendBootReady = true;
+                bootReadyReached = true;
+                HostLog.Ok("START phase=Backend bootReady=true");
 
                 // 阶段四：WebView2 环境
                 currentPhase = StartupPhase.WebViewEnvironment;
                 HostLog.Enter("START phase=WebViewEnvironment");
+                token.ThrowIfCancellationRequested();
                 loadingLabel.Text = "正在初始化 WebView2...";
                 Directory.CreateDirectory(webViewDataDirectory);
                 CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, webViewDataDirectory);
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("START phase=WebViewEnvironment");
 
                 // 阶段五：WebView2 初始化
                 currentPhase = StartupPhase.WebViewInitialize;
                 HostLog.Enter("START phase=WebViewInitialize");
                 await webView.EnsureCoreWebView2Async(env);
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("START phase=WebViewInitialize");
 
                 // 阶段六：WebView2 配置
                 currentPhase = StartupPhase.WebViewConfigure;
                 HostLog.Enter("START phase=WebViewConfigure");
                 await ConfigureWebViewAsync();
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("START phase=WebViewConfigure");
 
                 // 阶段七：通知权限
                 currentPhase = StartupPhase.Permission;
                 HostLog.Enter("START phase=Permission");
                 await GrantDshNotificationPermissionAsync();
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("START phase=Permission");
 
                 // 阶段八：导航
                 currentPhase = StartupPhase.Navigate;
                 HostLog.Enter("START phase=Navigate");
+                token.ThrowIfCancellationRequested();
+                if (!backendBootReady || !dsh.BootReady || (dsh.OwnsBackend && !dsh.BackendRunning))
+                    throw new InvalidOperationException(
+                        "DSH 在 WebView 导航前已退出；后端已完成过 BootReady，但当前连接已中断。\r\n\r\n" +
+                        "请查看 DesktopShell 日志。");
                 webViewReady = true;
+                ClearUnresponsiveState();
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
@@ -3278,16 +4293,40 @@ namespace DeepSeekHarnessDesktop
                         OnOverlayDismiss);
                 }
             }
+            catch (OperationCanceledException)
+            {
+                HostLog.Line("START cancelled phase=" + currentPhase.ToString());
+            }
             catch (Exception ex)
             {
+                if (LifetimeCancelled) return;
                 HostLog.Fail("START failed phase=" + currentPhase.ToString(), ex);
                 webViewReady = false;
-                HandleStartupError(ex);
+                if (startOperationActive && bootReadyReached && !backendBootReady)
+                    ShowBackendInterruption(ex);
+                else
+                    HandleStartupError(ex);
             }
             finally
             {
-                startBusy = false;
+                startOperationActive = false;
+                EndRecoveryOperation("start");
             }
+        }
+
+        private void ShowBackendInterruption(Exception ex)
+        {
+            if (backendInterruptionShown || LifetimeCancelled || restartBusy) return;
+            backendInterruptionShown = true;
+            webViewReady = false;
+            backendBootReady = false;
+            ShowOverlay(
+                "backend",
+                "DSH 后端连接已中断。",
+                "重启 DSH 后端",
+                OnOverlayRestartBackend,
+                "重新检查",
+                OnOverlayRetryHealth);
         }
 
         /// <summary>
@@ -3296,6 +4335,8 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private void HandleStartupError(Exception ex)
         {
+            if (startupFailureShown) return;
+            startupFailureShown = true;
             webViewReady = false;
 
             // 缺少 WebView2 Runtime 是普通用户最常见的启动失败原因：
@@ -3346,16 +4387,30 @@ namespace DeepSeekHarnessDesktop
                         retryHandler = OnOverlayRetryStart;
                         break;
                 }
-                message = "启动失败（" + phaseName + "阶段）。\r\n\r\n" + ex.Message;
-                primaryText = "重试";
+                message = "DSH 启动失败。\r\n插件或 Profile 未能完成加载。\r\n\r\n" +
+                    "启动阶段：" + phaseName + "。\r\n\r\n" + ex.Message;
+                primaryText = "重新尝试";
                 primaryHandler = retryHandler;
+            }
+
+            string details = ex.ToString();
+            if (!missingWebView2)
+            {
+                string recentSummary = "";
+                try { recentSummary = dsh.GetRecentFailureSummary(); } catch { }
+                if (!String.IsNullOrWhiteSpace(recentSummary) &&
+                    recentSummary != "（没有捕获到后端 stdout/stderr。）")
+                {
+                    message += "\r\n\r\n后端最后错误摘要：\r\n" + recentSummary;
+                    details += "\r\n\r\n后端最近 stdout/stderr：\r\n" + recentSummary;
+                }
             }
 
             ShowErrorOverlay(
                 "startup-error",
-                "启动失败",
+                "DSH 启动失败",
                 message,
-                ex.ToString(),
+                details,
                 primaryText,
                 primaryHandler,
                 "打开日志目录",
@@ -3368,7 +4423,16 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private async Task RetryWebViewAsync()
         {
-            await ReplaceWebViewControlAsync();
+            if (!TryBeginRecoveryOperation("webview-replace")) return;
+            try
+            {
+                ThrowIfLifetimeCancelled();
+                await ReplaceWebViewControlAsync();
+            }
+            finally
+            {
+                EndRecoveryOperation("webview-replace");
+            }
         }
 
         /// <summary>
@@ -3380,6 +4444,8 @@ namespace DeepSeekHarnessDesktop
         {
             try
             {
+                CancellationToken token = lifetimeCts.Token;
+                token.ThrowIfCancellationRequested();
                 currentPhase = StartupPhase.WebViewEnvironment;
                 HostLog.Enter("RETRY-WEBVIEW phase=replace-control");
                 ShowOverlay("startup", "正在重建 WebView2...", null, null, null, null);
@@ -3398,28 +4464,39 @@ namespace DeepSeekHarnessDesktop
 
                 Directory.CreateDirectory(webViewDataDirectory);
                 CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, webViewDataDirectory);
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("RETRY-WEBVIEW phase=replace-control");
 
                 currentPhase = StartupPhase.WebViewInitialize;
                 HostLog.Enter("RETRY-WEBVIEW phase=initialize");
                 await webView.EnsureCoreWebView2Async(env);
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("RETRY-WEBVIEW phase=initialize");
 
                 currentPhase = StartupPhase.WebViewConfigure;
                 await ConfigureWebViewAsync();
+                token.ThrowIfCancellationRequested();
 
                 currentPhase = StartupPhase.Permission;
                 await GrantDshNotificationPermissionAsync();
+                token.ThrowIfCancellationRequested();
 
                 currentPhase = StartupPhase.Navigate;
+                token.ThrowIfCancellationRequested();
                 webViewReady = true;
+                ClearUnresponsiveState();
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
                 HostLog.Ok("RETRY-WEBVIEW complete");
             }
+            catch (OperationCanceledException)
+            {
+                HostLog.Line("RETRY-WEBVIEW cancelled phase=" + currentPhase.ToString());
+            }
             catch (Exception ex)
             {
+                if (LifetimeCancelled) return;
                 HostLog.Fail("RETRY-WEBVIEW failed phase=" + currentPhase.ToString(), ex);
                 webViewReady = false;
                 HandleStartupError(ex);
@@ -3432,35 +4509,52 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         private async Task RetryConfigureAsync()
         {
+            if (!TryBeginRecoveryOperation("webview-configure")) return;
             try
             {
+                CancellationToken token = lifetimeCts.Token;
+                token.ThrowIfCancellationRequested();
                 currentPhase = StartupPhase.WebViewConfigure;
                 HostLog.Enter("RETRY-CONFIGURE");
                 ShowOverlay("startup", "正在重新配置 WebView2...", null, null, null, null);
 
                 await ConfigureWebViewAsync();
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("RETRY-CONFIGURE phase=WebViewConfigure");
 
                 currentPhase = StartupPhase.Permission;
                 await GrantDshNotificationPermissionAsync();
+                token.ThrowIfCancellationRequested();
 
                 currentPhase = StartupPhase.Navigate;
+                token.ThrowIfCancellationRequested();
                 webViewReady = true;
+                ClearUnresponsiveState();
                 healthFailures = 0;
                 webView.CoreWebView2.Navigate(DshHomeUrl());
                 HideOverlay();
                 HostLog.Ok("RETRY-CONFIGURE complete");
             }
+            catch (OperationCanceledException)
+            {
+                HostLog.Line("RETRY-CONFIGURE cancelled phase=" + currentPhase.ToString());
+            }
             catch (Exception ex)
             {
+                if (LifetimeCancelled) return;
                 HostLog.Fail("RETRY-CONFIGURE failed phase=" + currentPhase.ToString(), ex);
                 webViewReady = false;
                 HandleStartupError(ex);
+            }
+            finally
+            {
+                EndRecoveryOperation("webview-configure");
             }
         }
 
         private async Task ConfigureWebViewAsync()
         {
+            ThrowIfLifetimeCancelled();
             if (webView.CoreWebView2 == null) return;
 
             CoreWebView2 core = webView.CoreWebView2;
@@ -3481,7 +4575,7 @@ namespace DeepSeekHarnessDesktop
             core.ProcessFailed += OnWebViewProcessFailed;
 
             CoreWebView2Settings viewSettings = core.Settings;
-            viewSettings.AreDevToolsEnabled = settings.developerMode;
+            viewSettings.AreDevToolsEnabled = activeRuntimeSettings.developerMode;
 
             // Keep ContextMenuRequested alive, then always mark the event handled and
             // draw our own native menu.  Setting this false would suppress the event too.
@@ -3504,7 +4598,7 @@ namespace DeepSeekHarnessDesktop
             string shortcutGuard = @"(() => {
   if (window.__dshDesktopShortcutGuardInstalled) return;
   window.__dshDesktopShortcutGuardInstalled = true;
-  const developerMode = " + (settings.developerMode ? "true" : "false") + @";
+  const developerMode = " + (activeRuntimeSettings.developerMode ? "true" : "false") + @";
   window.addEventListener('keydown', (event) => {
     const key = String(event.key || '').toLowerCase();
     const ctrl = event.ctrlKey || event.metaKey;
@@ -3523,8 +4617,9 @@ namespace DeepSeekHarnessDesktop
       event.stopImmediatePropagation();
     }
   }, true);
-})();";
+            })();";
             await core.AddScriptToExecuteOnDocumentCreatedAsync(shortcutGuard);
+            ThrowIfLifetimeCancelled();
         }
 
         private void OnWebViewNewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -3554,9 +4649,15 @@ namespace DeepSeekHarnessDesktop
                     "重启 DSH 后端",
                     OnOverlayRestartBackend);
             }
-            else if (overlayReason == "navigation" || overlayReason == "backend")
+            else if (overlayReason == "navigation" || overlayReason == "backend" ||
+                overlayReason == "webview-unresponsive")
             {
+                ClearUnresponsiveState();
                 HideOverlay();
+            }
+            else
+            {
+                ClearUnresponsiveState();
             }
         }
 
@@ -3655,7 +4756,7 @@ namespace DeepSeekHarnessDesktop
                     any = true;
                 }
 
-                if (settings.developerMode)
+                if (activeRuntimeSettings.developerMode)
                 {
                     if (any) AddContextSeparator(menu);
                     ToolStripMenuItem devTools = new ToolStripMenuItem("打开开发者工具");
@@ -3759,7 +4860,33 @@ namespace DeepSeekHarnessDesktop
         private void OnWebViewProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)
         {
             string kind = e.ProcessFailedKind.ToString();
-            if (kind.IndexOf("Unresponsive", StringComparison.OrdinalIgnoreCase) >= 0) return;
+            if (kind.IndexOf("Unresponsive", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                DateTime now = DateTime.UtcNow;
+                if (unresponsiveFirstUtc == DateTime.MinValue ||
+                    now - unresponsiveFirstUtc > TimeSpan.FromSeconds(15))
+                {
+                    unresponsiveFirstUtc = now;
+                    unresponsiveCount = 1;
+                }
+                else
+                {
+                    unresponsiveCount++;
+                }
+
+                HostLog.Line("WEBVIEW unresponsive count=" + unresponsiveCount.ToString() +
+                    " windowSeconds=" + ((int)(now - unresponsiveFirstUtc).TotalSeconds).ToString());
+                if (unresponsiveCount < 2) return;
+
+                ShowOverlay(
+                    "webview-unresponsive",
+                    "WebView2 未响应",
+                    "重建 WebView2",
+                    OnOverlayRetryWebView,
+                    "稍后",
+                    OnOverlayDismiss);
+                return;
+            }
 
             ShowOverlay(
                 "webview-failed",
@@ -3770,11 +4897,17 @@ namespace DeepSeekHarnessDesktop
                 OnOverlayRestartApp);
         }
 
+        private void ClearUnresponsiveState()
+        {
+            unresponsiveCount = 0;
+            unresponsiveFirstUtc = DateTime.MinValue;
+        }
+
         private async Task GrantDshNotificationPermissionAsync()
         {
             if (webView.CoreWebView2 == null) return;
 
-            string port = settings.port.ToString();
+            string port = activeRuntimeSettings.port.ToString();
             string[] origins = new string[]
             {
                 "http://127.0.0.1:" + port,
@@ -3783,12 +4916,14 @@ namespace DeepSeekHarnessDesktop
 
             foreach (string origin in origins)
             {
+                ThrowIfLifetimeCancelled();
                 try
                 {
                     await webView.CoreWebView2.Profile.SetPermissionStateAsync(
                         CoreWebView2PermissionKind.Notifications,
                         origin,
                         CoreWebView2PermissionState.Allow);
+                    ThrowIfLifetimeCancelled();
                 }
                 catch { }
             }
@@ -3796,12 +4931,20 @@ namespace DeepSeekHarnessDesktop
 
         private async Task CheckBackendHealthAsync()
         {
-            if (!webViewReady || restartBusy || healthCheckBusy) return;
+            if (LifetimeCancelled || !webViewReady || restartBusy || healthCheckBusy) return;
+            CancellationToken token = lifetimeCts.Token;
             healthCheckBusy = true;
             long generation = backendGeneration;   // 记录本次检查所属代
             try
             {
-                bool ready = await Task.Run(delegate { return dsh.IsDshHealthy(settings.port, 350); });
+                bool ready = await Task.Run(delegate
+                {
+                    token.ThrowIfCancellationRequested();
+                    bool result = dsh.IsDshHealthy(activeRuntimeSettings.port, 350);
+                    token.ThrowIfCancellationRequested();
+                    return result;
+                }, token);
+                token.ThrowIfCancellationRequested();
                 // 检查期间发生了重启/停止：旧代结果不可信，直接丢弃（不得改 healthFailures / 覆盖 Overlay）
                 if (generation != backendGeneration) return;
                 if (ready)
@@ -3823,6 +4966,10 @@ namespace DeepSeekHarnessDesktop
                         OnOverlayRetryHealth);
                 }
             }
+            catch (OperationCanceledException)
+            {
+                HostLog.Line("HEALTH cancelled");
+            }
             finally
             {
                 healthCheckBusy = false;
@@ -3838,6 +4985,22 @@ namespace DeepSeekHarnessDesktop
             try
             {
                 action();
+                HostLog.Ok("RESTART phase=" + phase);
+            }
+            catch (Exception ex)
+            {
+                HostLog.Fail("RESTART phase=" + phase, ex);
+                throw;
+            }
+        }
+
+        private async Task RestartPhaseAsync(string phase, Func<Task> action)
+        {
+            activeRestartPhase = phase;
+            HostLog.Enter("RESTART phase=" + phase);
+            try
+            {
+                await action();
                 HostLog.Ok("RESTART phase=" + phase);
             }
             catch (Exception ex)
@@ -3865,18 +5028,19 @@ namespace DeepSeekHarnessDesktop
         ///   actualVersion < minimumCompatibleDshVersion → 直接取消启动
         ///   无法读取版本 → 交互询问
         /// </summary>
-        private void ConfirmCommandVersionBeforeStart()
+        private void ConfirmCommandVersionBeforeStart(AppSettings runtime)
         {
-            if (settings.dshRunnerMode == "npx") return;
+            if (runtime == null) throw new ArgumentNullException("runtime");
+            if (runtime.dshRunnerMode == "npx") return;
 
-            string command = settings.dshPath;
+            string command = runtime.dshPath;
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
                 command = DshProcessManager.FindCommand("dsh");
             if (String.IsNullOrWhiteSpace(command) || !File.Exists(command))
                 return;   // 没有 dsh：交给 EnsureStarted 走 npx 或报错
 
-            string acceptedPath = settings.acceptedDshCommandPath ?? "";
-            string accepted = settings.acceptedDshCommandVersion ?? "";
+            string acceptedPath = runtime.acceptedDshCommandPath ?? "";
+            string accepted = runtime.acceptedDshCommandVersion ?? "";
             string actual = DshProcessManager.GetCommandVersion(command);
 
             bool pathChanged =
@@ -3894,9 +5058,11 @@ namespace DeepSeekHarnessDesktop
             // 已知版本低于最低兼容版本 → 直接取消启动，不允许继续使用过旧 DSH。
             if (!String.IsNullOrEmpty(actual) && DshProcessManager.IsCompatibleDshVersion(actual))
             {
-                settings.acceptedDshCommandPath = command;
-                settings.acceptedDshCommandVersion = actual;
-                settings.Save(settingsPath);
+                runtime.acceptedDshCommandPath = command;
+                runtime.acceptedDshCommandVersion = actual;
+                persistedSettings.acceptedDshCommandPath = command;
+                persistedSettings.acceptedDshCommandVersion = actual;
+                persistedSettings.Save(settingsPath);
                 return;
             }
             if (!String.IsNullOrEmpty(actual))
@@ -3914,7 +5080,7 @@ namespace DeepSeekHarnessDesktop
             if (pathChanged)
                 detail += "\r\n（命令路径也已变化，当前为：" + command + "）";
             DialogResult confirm = ThemedMessageBox.Show(
-                this,
+                EffectiveDialogOwner(),
                 "现有 dsh 命令：" + command + "\r\n\r\n" + detail +
                 "\r\nDesktopShell 每次启动前都会重新验证现有 dsh。\r\n\r\n" +
                 "选择“是”继续使用并记住新版本；选择“否”取消本次启动（可在设置中改用 npx）。",
@@ -3925,14 +5091,24 @@ namespace DeepSeekHarnessDesktop
                 throw new InvalidOperationException(
                     "已取消启动：现有 dsh 版本未确认。请确认后重试，或在设置中把运行方式改为 npx。");
 
-            settings.acceptedDshCommandPath = command;
-            settings.acceptedDshCommandVersion = actual ?? "";
-            settings.Save(settingsPath);
+            runtime.acceptedDshCommandPath = command;
+            runtime.acceptedDshCommandVersion = actual ?? "";
+            persistedSettings.acceptedDshCommandPath = command;
+            persistedSettings.acceptedDshCommandVersion = actual ?? "";
+            persistedSettings.Save(settingsPath);
         }
 
         private async Task RestartBackendAsync()
         {
-            if (restartBusy) return;
+            AppSettings oldRuntime = activeRuntimeSettings.Clone();
+            AppSettings targetRuntime = persistedSettings.Clone();
+            await RestartBackendAsync(oldRuntime, targetRuntime);
+        }
+
+        private async Task RestartBackendAsync(AppSettings oldRuntime, AppSettings targetRuntime)
+        {
+            if (!TryBeginRecoveryOperation("backend-restart")) return;
+            CancellationToken token = lifetimeCts.Token;
             restartBusy = true;
             activeRestartPhase = "restart.preflight";
             HostLog.Enter("RESTART phase=restart.preflight");
@@ -3942,26 +5118,30 @@ namespace DeepSeekHarnessDesktop
             healthTimer.Stop();
             backendGeneration++;
 
+            RestartRuntimeTransaction transaction = new RestartRuntimeTransaction(oldRuntime, targetRuntime);
+            bool oldStopCompleted = false;
+
             try
             {
+                token.ThrowIfCancellationRequested();
                 bool allowExternal = false;
+                AppSettings preflightRuntime = transaction.RuntimeForPhase("restart.preflight");
 
-                // 重启同样先重新验证现有 dsh 命令版本（command/auto 模式）
-                ConfirmCommandVersionBeforeStart();
-
-                if (!dsh.OwnsBackend && dsh.IsReady(settings.port, 300))
+                // preflight 只确认并准备停止当前真实运行中的 oldRuntime；
+                // targetRuntime 的命令版本检查留到旧 backend 完全停止之后。
+                if (!dsh.OwnsBackend && dsh.IsReady(preflightRuntime.port, 300))
                 {
-                    int externalPid = dsh.FindListeningPid(settings.port);
+                    int externalPid = dsh.FindListeningPid(preflightRuntime.port);
                     if (externalPid <= 0)
                         throw new InvalidOperationException("端口正在监听，但无法读取监听进程 PID。");
 
                     string commandLine;
-                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine, settings.port))
+                    if (!dsh.IsLikelyDshProcess(externalPid, out commandLine, preflightRuntime.port))
                         throw new InvalidOperationException(
-                            "端口 " + settings.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
+                            "端口 " + preflightRuntime.port.ToString() + " 的监听进程不像 DSH，桌面壳拒绝结束它。\r\n\r\n" +
                             (String.IsNullOrWhiteSpace(commandLine) ? "无法读取命令行。" : commandLine));
 
-                    DialogResult confirm = ThemedMessageBox.Show(this,
+                    DialogResult confirm = ThemedMessageBox.Show(EffectiveDialogOwner(),
                         "当前 DSH Web 不是由桌面壳启动的（PID " + externalPid.ToString() + "）。\r\n\r\n" +
                         "已确认它的命令行属于 DSH Web。是否结束该进程并由桌面壳重新启动？",
                         "重启 DSH 后端",
@@ -3970,119 +5150,192 @@ namespace DeepSeekHarnessDesktop
                     if (confirm != DialogResult.Yes) return;
                     allowExternal = true;
                 }
+                token.ThrowIfCancellationRequested();
                 HostLog.Ok("RESTART phase=restart.preflight");
 
                 ShowOverlay("restart", "正在重启 DSH 后端...", null, null, null, null);
 
                 await Task.Run(delegate
                 {
-                    // restart.snapshot：旧进程还活着、命令行还可读时冻结 listener 身份
-                    //（写入 ownedListenerPid），记录旧 wrapper/listener PID、ownsBackend、port
-                    RestartPhase("restart.snapshot", delegate
+                    try
                     {
-                        dsh.FreezeOwnedListener(settings.port);
-                        int oldWrapperPid = dsh.WrapperPid;
-                        int oldListenerPid = dsh.OwnedListenerPid > 0
-                            ? dsh.OwnedListenerPid
-                            : dsh.FindListeningPid(settings.port);
-                        HostLog.Line("SNAPSHOT oldWrapperPid=" + oldWrapperPid.ToString() +
-                            " oldListenerPid=" + oldListenerPid.ToString() +
-                            " ownsBackend=" + dsh.OwnsBackend.ToString() +
-                            " port=" + settings.port.ToString());
-                    });
+                        token.ThrowIfCancellationRequested();
+                        AppSettings stopRuntime = transaction.RuntimeForPhase("restart.snapshot");
 
-                    if (dsh.OwnsBackend)
-                    {
-                        // restart.stop-wrapper：Job 关闭 → Kill wrapper → WaitForExit(3s)
-                        RestartPhase("restart.stop-wrapper", delegate { dsh.StopOwnedWrapper(); });
-                        // restart.stop-listener-fallback：端口仍开时，身份验证后才结束真正 listener
-                        RestartPhase("restart.stop-listener-fallback", delegate { dsh.TryStopListenerFallback(settings.port); });
-                    }
-                    else if (allowExternal)
-                    {
-                        RestartPhase("restart.stop-wrapper", delegate { dsh.StopExternalBackend(settings.port); });
-                        RestartPhase("restart.stop-listener-fallback", delegate { });
-                    }
-                    else
-                    {
-                        HostLog.Ok("RESTART phase=restart.stop-wrapper (nothing to stop)");
-                        HostLog.Ok("RESTART phase=restart.stop-listener-fallback (nothing to stop)");
-                    }
-
-                    // restart.wait-port-close：端口连续两次确认关闭，10 秒门禁
-                    RestartPhase("restart.wait-port-close", delegate
-                    {
-                        if (!dsh.WaitForPortClosedTwice(settings.port, 10000))
-                            throw new InvalidOperationException(
-                                "旧的 DSH Web 在 10 秒内没有释放端口 " + settings.port.ToString() + "。");
-                    });
-
-                    // restart.compat：兼容修复在「停止旧后端之后、启动新后端之前」执行——
-                    // 升级插件后点“重启 DSH 后端”也能吃到兼容补丁
-                    //（账本清理也不会被旧后端关停写回覆盖）。
-                    RestartPhase("restart.compat", delegate
-                    {
-                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, settings.profileName, true);
-                    });
-
-                    // restart.start：启动（或附着）新后端——EnsureStarted 成功即已确认
-                    // listener 归属并写入 ownedListenerPid，直接返回结果
-                    DshProcessManager.BackendStartResult startResult = null;
-                    RestartPhase("restart.start", delegate
-                    {
-                        startResult = dsh.EnsureStarted(
-                            settings.port,
-                            settings.workingDirectory,
-                            logsDirectory,
-                            settings.dshVersion,
-                            settings.profileName,
-                            settings.dshPath,
-                            settings.dshRunnerMode,
-                            false);
-                    });
-
-                    // restart.wait-ready：确认新后端就绪并记录新 wrapper/listener PID
-                    RestartPhase("restart.wait-ready", delegate
-                    {
-                        if (startResult == null || startResult.ListenerPid <= 0)
-                            throw new InvalidOperationException("重启后无法确认 DSH 监听进程。");
-                        int waited = 0;
-                        while (waited < 15000 && !dsh.IsDshReady(settings.port, 300))
+                        // restart.snapshot：旧进程还活着、命令行还可读时冻结 listener 身份
+                        //（写入 ownedListenerPid），记录旧 wrapper/listener PID、ownsBackend、old port。
+                        RestartPhase("restart.snapshot", delegate
                         {
-                            Thread.Sleep(250);
-                            waited += 250;
+                            dsh.FreezeOwnedListener(stopRuntime.port);
+                            int oldWrapperPid = dsh.WrapperPid;
+                            int oldListenerPid = dsh.OwnedListenerPid > 0
+                                ? dsh.OwnedListenerPid
+                                : dsh.FindListeningPid(stopRuntime.port);
+                            HostLog.Line("SNAPSHOT oldWrapperPid=" + oldWrapperPid.ToString() +
+                                " oldListenerPid=" + oldListenerPid.ToString() +
+                                " oldPort=" + stopRuntime.port.ToString() +
+                                " ownsBackend=" + dsh.OwnsBackend.ToString());
+                        });
+
+                        token.ThrowIfCancellationRequested();
+                        if (dsh.OwnsBackend)
+                        {
+                            // restart.stop-wrapper：Job 关闭 → Kill wrapper → WaitForExit(3s)
+                            RestartPhase("restart.stop-wrapper", delegate { dsh.StopOwnedWrapper(); });
+                            // restart.stop-listener-fallback：端口仍开时，身份验证后才结束真正 listener
+                            RestartPhase("restart.stop-listener-fallback", delegate { dsh.TryStopListenerFallback(stopRuntime.port); });
                         }
-                        if (!dsh.IsDshReady(settings.port, 300))
-                            throw new InvalidOperationException("重启后 DSH Web 未在预期时间内就绪。");
-                        HostLog.Line("SNAPSHOT-NEW newWrapperPid=" + startResult.WrapperPid.ToString() +
-                            " newListenerPid=" + startResult.ListenerPid.ToString());
-                    });
+                        else if (allowExternal)
+                        {
+                            RestartPhase("restart.stop-wrapper", delegate { dsh.StopExternalBackend(stopRuntime.port); });
+                            RestartPhase("restart.stop-listener-fallback", delegate { });
+                        }
+                        else
+                        {
+                            HostLog.Ok("RESTART phase=restart.stop-wrapper (nothing to stop)");
+                            HostLog.Ok("RESTART phase=restart.stop-listener-fallback (nothing to stop)");
+                        }
+
+                        token.ThrowIfCancellationRequested();
+                        // restart.wait-port-close：只等待 oldRuntime.port，连续两次确认关闭。
+                        RestartPhase("restart.wait-port-close", delegate
+                        {
+                            if (!dsh.WaitForPortClosedTwice(stopRuntime.port, 10000, token))
+                                throw new InvalidOperationException(
+                                    "旧的 DSH Web 在 10 秒内没有释放端口 " + stopRuntime.port.ToString() + "。");
+                        });
+                        oldStopCompleted = true;
+                    }
+                    catch (Exception)
+                    {
+                        // old backend 已经确认停止后，后续阶段失败必须清理本轮可能已启动的 backend。
+                        if (oldStopCompleted && dsh.OwnsBackend && !transaction.TargetBackendReady)
+                        {
+                            try { dsh.StopOwnedBackend(); } catch { }
+                        }
+                        throw;
+                    }
+                }, token);
+
+                token.ThrowIfCancellationRequested();
+                AppSettings targetCompatRuntime = transaction.RuntimeForPhase("restart.compat");
+                await RestartPhaseAsync("restart.compat", async delegate
+                {
+                    // 版本确认可能需要 UI 对话框，保持在 UI 线程；实际兼容修复放到后台。
+                    ConfirmCommandVersionBeforeStart(targetCompatRuntime);
+                    token.ThrowIfCancellationRequested();
+                    await Task.Run(delegate
+                    {
+                        token.ThrowIfCancellationRequested();
+                        PluginCompat.ApplyAll(baseDirectory, logsDirectory, targetCompatRuntime.profileName, true);
+                        token.ThrowIfCancellationRequested();
+                    }, token);
                 });
 
-                // restart.navigate：页面恢复
-                activeRestartPhase = "restart.navigate";
-                HostLog.Enter("RESTART phase=restart.navigate");
-                healthFailures = 0;
-                compatPendingAtStartup = 0;
-                webViewReady = true;
-                ReloadDshPage();
-                HideOverlay();
-                HostLog.Ok("RESTART phase=restart.navigate");
+                token.ThrowIfCancellationRequested();
+                DshProcessManager.BackendStartResult startResult = null;
+                await Task.Run(delegate
+                {
+                    try
+                    {
+                        AppSettings startRuntime = transaction.RuntimeForPhase("restart.start");
+                        RestartPhase("restart.start", delegate
+                        {
+                            startResult = dsh.EnsureStarted(
+                                startRuntime.port,
+                                startRuntime.workingDirectory,
+                                logsDirectory,
+                                startRuntime.dshVersion,
+                                startRuntime.profileName,
+                                startRuntime.dshPath,
+                                startRuntime.dshRunnerMode,
+                                false,
+                                token);
+                        });
+
+                        token.ThrowIfCancellationRequested();
+                        AppSettings readyRuntime = transaction.RuntimeForPhase("restart.wait-ready");
+                        // restart.wait-ready：只等待 targetRuntime.port，并记录新 wrapper/listener PID。
+                        RestartPhase("restart.wait-ready", delegate
+                        {
+                            if (startResult == null || startResult.ListenerPid <= 0)
+                                throw new InvalidOperationException("重启后无法确认 DSH 监听进程。");
+                            int waited = 0;
+                            while (waited < 15000 && !dsh.IsDshReady(readyRuntime.port, 300))
+                            {
+                                token.ThrowIfCancellationRequested();
+                                Thread.Sleep(250);
+                                waited += 250;
+                            }
+                            if (!dsh.IsDshReady(readyRuntime.port, 300))
+                                throw new InvalidOperationException("重启后 DSH Web 未在预期时间内就绪。");
+                            transaction.MarkTargetBackendReady();
+                            HostLog.Line("SNAPSHOT-NEW newWrapperPid=" + startResult.WrapperPid.ToString() +
+                                " newListenerPid=" + startResult.ListenerPid.ToString() +
+                                " targetWrapperPid=" + startResult.WrapperPid.ToString() +
+                                " targetListenerPid=" + startResult.ListenerPid.ToString() +
+                                " targetPort=" + readyRuntime.port.ToString());
+                        });
+                    }
+                    catch (Exception)
+                    {
+                        if (oldStopCompleted && dsh.OwnsBackend && !transaction.TargetBackendReady)
+                        {
+                            try { dsh.StopOwnedBackend(); } catch { }
+                        }
+                        throw;
+                    }
+                }, token);
+
+                // target backend 已确认 ready 后才提交 active runtime；停止旧 backend 的所有阶段
+                // 都已经结束，导航与健康检查从此使用 targetRuntime。
+                token.ThrowIfCancellationRequested();
+                RestartPhase("restart.navigate", delegate
+                {
+                    transaction.CommitTarget(activeRuntimeSettings);
+                    HostLog.Line("RUNTIME active commit oldPort=" + transaction.OldRuntime.port.ToString() +
+                        " targetPort=" + transaction.TargetRuntime.port.ToString());
+                    healthFailures = 0;
+                    compatPendingAtStartup = 0;
+                    webViewReady = true;
+                    ClearUnresponsiveState();
+                    if (!TryReloadDshPage())
+                        throw new InvalidOperationException("新 DSH 后端已 ready，但 WebView2 页面导航未能开始。");
+                    HideOverlay();
+                });
 
                 // restart.complete
                 activeRestartPhase = "restart.complete";
                 HostLog.Ok("RESTART phase=restart.complete");
             }
+            catch (OperationCanceledException)
+            {
+                // 退出取消时，即使 target 已 ready 也不能遗留本轮启动的 backend。
+                if ((transaction.TargetBackendReady || oldStopCompleted) && dsh.OwnsBackend)
+                {
+                    try { dsh.StopOwnedBackend(); } catch { }
+                }
+                HostLog.Line("RESTART cancelled phase=" + activeRestartPhase);
+            }
             catch (Exception ex)
             {
+                // 失败发生在 target ready 前：不要让 dsh manager 里残留半启动的 target。
+                if (oldStopCompleted && !transaction.TargetBackendReady && dsh.OwnsBackend)
+                {
+                    try { dsh.StopOwnedBackend(); } catch { }
+                }
+                if (LifetimeCancelled) return;
                 HostLog.Fail("RESTART failed phase=" + activeRestartPhase, ex);
-                HandleRestartError(ex);
+                HandleRestartError(ex, transaction.OldRuntime, transaction.TargetRuntime,
+                    transaction.TargetBackendReady);
             }
             finally
             {
                 restartBusy = false;
                 healthFailures = 0;
-                healthTimer.Start();
+                if (!LifetimeCancelled && !IsDisposed && !Disposing)
+                    healthTimer.Start();
+                EndRecoveryOperation("backend-restart");
             }
         }
 
@@ -4091,35 +5344,50 @@ namespace DeepSeekHarnessDesktop
         /// A. 重启失败，但原后端仍然健康；B. 重启失败，旧后端已经停止；
         /// C. 新后端已经监听，但页面恢复失败。webViewReady 按实际状态重算。
         /// </summary>
-        private void HandleRestartError(Exception ex)
+        private void HandleRestartError(
+            Exception ex,
+            AppSettings oldRuntime,
+            AppSettings targetRuntime,
+            bool targetBackendReady)
         {
-            bool portOpen = dsh.IsReady(settings.port, 800);
-            bool dshListening = false;
-            if (portOpen)
-            {
-                int pid = dsh.FindListeningPid(settings.port);
-                string cmd;
-                dshListening = pid > 0 && dsh.IsLikelyDshProcess(pid, out cmd, settings.port);
-            }
-            bool backendStillHealthy = dsh.IsDshHealthy(settings.port, 800);
-            webViewReady = backendStillHealthy;
+            // 这里必须分别探测 old/target 两个真实端口，不能读取已经可能提交过的
+            // activeRuntimeSettings 来猜测失败发生在哪一代 backend。
+            bool targetAvailable = targetBackendReady &&
+                (dsh.IsDshHealthy(targetRuntime.port, 800) || dsh.IsDshReady(targetRuntime.port, 800));
+            bool oldBackendHealthy = !targetAvailable && dsh.IsDshHealthy(oldRuntime.port, 800);
+            bool targetListening = targetBackendReady && dsh.IsReady(targetRuntime.port, 800);
 
             string title;
             string message;
-            if (backendStillHealthy)
+            if (targetAvailable)
             {
-                title = "重启未完成，原后端仍健康";
-                message = "DSH 后端重启未完成，但原有后端仍然健康，可以继续使用。\r\n\r\n" + ex.Message;
-            }
-            else if (dshListening)
-            {
+                // B：新 backend 已经 ready，只是页面恢复失败；target 才是真实 active。
+                activeRuntimeSettings.CopyFrom(targetRuntime);
+                webViewReady = false;
                 title = "新后端已就绪，页面恢复失败";
-                message = "重启已成功启动新的 DSH 后端，但页面恢复失败。\r\n\r\n" + ex.Message;
+                message = "重启已成功启动新的 DSH 后端（端口 " + targetRuntime.port.ToString() +
+                    "），但页面恢复失败。\r\n\r\n" + ex.Message;
+            }
+            else if (oldBackendHealthy)
+            {
+                // A：旧 backend 仍健康；active 必须保持 old，磁盘上的 target 不代表已应用。
+                activeRuntimeSettings.CopyFrom(oldRuntime);
+                webViewReady = true;
+                title = "重启未完成，原后端仍健康";
+                message = "DSH 后端重启未完成，但原有后端（端口 " + oldRuntime.port.ToString() +
+                    "）仍然健康，可以继续使用。\r\n\r\n" + ex.Message;
             }
             else
             {
+                // C：旧 backend 已停且 target 没有 ready；保留 old snapshot 作为“最后一次
+                // 已提交配置”，但绝不把 target 谎报为 active。
+                activeRuntimeSettings.CopyFrom(oldRuntime);
+                webViewReady = false;
                 title = "DSH 后端重启失败";
-                message = "DSH 后端重启失败，且旧后端已经停止。\r\n\r\n" + ex.Message;
+                message = "DSH 后端重启失败：旧端口 " + oldRuntime.port.ToString() +
+                    " 已停止，目标端口 " + targetRuntime.port.ToString() +
+                    " 未确认就绪。\r\n\r\n" + (targetListening ? "目标监听曾短暂出现，但未通过 ready 检查。\r\n\r\n" : "") +
+                    ex.Message;
             }
 
             ShowErrorOverlay(
@@ -4135,17 +5403,23 @@ namespace DeepSeekHarnessDesktop
 
         private void ReloadDshPage()
         {
+            TryReloadDshPage();
+        }
+
+        private bool TryReloadDshPage()
+        {
             try
             {
-                if (webView.CoreWebView2 != null)
-                    webView.CoreWebView2.Navigate(DshHomeUrl());
+                if (webView == null || webView.CoreWebView2 == null) return false;
+                webView.CoreWebView2.Navigate(DshHomeUrl());
+                return true;
             }
-            catch { }
+            catch { return false; }
         }
 
         private string DshHomeUrl()
         {
-            return "http://127.0.0.1:" + settings.port.ToString() + "/";
+            return "http://127.0.0.1:" + activeRuntimeSettings.port.ToString() + "/";
         }
 
         private bool IsAllowedMainNavigation(string uriText)
@@ -4162,7 +5436,7 @@ namespace DeepSeekHarnessDesktop
                 Uri uri = new Uri(uriText);
                 string host = uri.Host == null ? "" : uri.Host.ToLowerInvariant();
                 bool loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
-                return uri.Scheme == Uri.UriSchemeHttp && loopback && uri.Port == settings.port;
+                return uri.Scheme == Uri.UriSchemeHttp && loopback && uri.Port == activeRuntimeSettings.port;
             }
             catch
             {
@@ -4188,7 +5462,7 @@ namespace DeepSeekHarnessDesktop
                 {
                     string shown = uriText.Length > 240 ? uriText.Substring(0, 240) + "…" : uriText;
                     DialogResult confirm = ThemedMessageBox.Show(
-                        this,
+                        EffectiveDialogOwner(),
                         "页面请求打开一个非 http/https 的外部链接：\r\n\r\n" + shown +
                         "\r\n\r\n是否交给 Windows 用系统程序打开？",
                         "DeepSeek Harness",
@@ -4268,6 +5542,7 @@ namespace DeepSeekHarnessDesktop
             try
             {
                 allowExit = true;
+                CancelLifetime("restart-app");
                 SaveWindowPosition();
                 dsh.StopOwnedBackend();
                 Application.Restart();
@@ -4330,27 +5605,254 @@ namespace DeepSeekHarnessDesktop
             settings.Save(settingsPath);
         }
 
-        private void ShowSettings()
+        private static bool BackendRuntimeSettingsChanged(AppSettings before, AppSettings after)
         {
-            using (SettingsForm dialog = new SettingsForm(settings, currentDark))
+            if (before == null || after == null) return true;
+            return before.port != after.port ||
+                !String.Equals(before.workingDirectory ?? "", after.workingDirectory ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.dshVersion ?? "", after.dshVersion ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.dshPath ?? "", after.dshPath ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.dshRunnerMode ?? "", after.dshRunnerMode ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(before.profileName ?? "", after.profileName ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task ApplyDeveloperModeChangeAsync(bool previousDeveloperMode)
+        {
+            if (previousDeveloperMode == persistedSettings.developerMode) return;
+
+            if (webView == null || webView.CoreWebView2 == null || !CanTouchControls)
             {
-                if (dialog.ShowDialog(this) == DialogResult.OK)
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+                ThemedMessageBox.Show(EffectiveDialogOwner(),
+                    "当前 WebView2 尚未完成初始化，开发者模式将在下次启动时生效。",
+                    "DeepSeek Harness",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            if (!TryBeginRecoveryOperation("settings-webview"))
+            {
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+                ThemedMessageBox.Show(EffectiveDialogOwner(),
+                    "当前正在执行另一项恢复操作，开发者模式将在下次启动时生效。",
+                    "DeepSeek Harness",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            try
+            {
+                activeRuntimeSettings.developerMode = persistedSettings.developerMode;
+                await ConfigureWebViewAsync();
+                HostLog.Line("SETTINGS developerMode applied immediately=" +
+                    activeRuntimeSettings.developerMode.ToString());
+            }
+            catch (OperationCanceledException)
+            {
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+            }
+            catch (Exception ex)
+            {
+                activeRuntimeSettings.developerMode = previousDeveloperMode;
+                if (!LifetimeCancelled)
                 {
-                    settings.CopyFrom(dialog.ResultSettings);
-                    settings.Save(settingsPath);
+                    ThemedMessageBox.Show(EffectiveDialogOwner(),
+                        "开发者模式无法在当前 WebView2 中安全重配，将在下次启动时生效。\r\n\r\n" + ex.Message,
+                        "DeepSeek Harness",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
                 }
             }
+            finally
+            {
+                EndRecoveryOperation("settings-webview");
+            }
+        }
+
+        private async Task ShowSettingsAsync()
+        {
+            if (LifetimeCancelled) return;
+            using (SettingsForm dialog = new SettingsForm(persistedSettings, currentDark))
+            {
+                IWin32Window owner = EffectiveDialogOwner();
+                DialogResult result;
+                if (owner == null)
+                {
+                    dialog.StartPosition = FormStartPosition.CenterScreen;
+                    result = dialog.ShowDialog();
+                }
+                else
+                {
+                    result = dialog.ShowDialog(owner);
+                }
+                if (result != DialogResult.OK) return;
+
+                AppSettings oldSnapshot = persistedSettings.Clone();
+                persistedSettings.CopyFrom(dialog.ResultSettings);
+                persistedSettings.Save(settingsPath);
+
+                bool backendChanged = BackendRuntimeSettingsChanged(oldSnapshot, persistedSettings);
+                bool developerChanged = oldSnapshot.developerMode != persistedSettings.developerMode;
+                HostLog.Line("SETTINGS saved backendAffectingChanged=" + backendChanged.ToString() +
+                    " developerChanged=" + developerChanged.ToString());
+
+                if (backendChanged)
+                {
+                    DialogResult applyNow = ThemedMessageBox.Show(EffectiveDialogOwner(),
+                        "这些设置需要重启 DSH 后端才能生效。\r\n\r\n是否立即应用并重启 DSH 后端？\r\n选择“否”会保存设置，但当前运行中的后端继续使用原配置。",
+                        "DeepSeek Harness 设置",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Information);
+                    if (applyNow == DialogResult.Yes && !LifetimeCancelled && !recoveryBusy)
+                    {
+                        AppSettings oldRuntime = activeRuntimeSettings.Clone();
+                        AppSettings targetRuntime = persistedSettings.Clone();
+                        await RestartBackendAsync(oldRuntime, targetRuntime);
+                    }
+                    else
+                    {
+                        HostLog.Line("SETTINGS backend changes deferred; active runtime remains port=" +
+                            activeRuntimeSettings.port.ToString() + " profile=" + activeRuntimeSettings.profileName);
+                        if (developerChanged)
+                            await ApplyDeveloperModeChangeAsync(oldSnapshot.developerMode);
+                    }
+                    return;
+                }
+
+                if (developerChanged)
+                    await ApplyDeveloperModeChangeAsync(oldSnapshot.developerMode);
+            }
+        }
+
+        private void ToggleTrayWindow()
+        {
+            if (LifetimeCancelled || trayTransition) return;
+
+            // 双击托盘图标是“显示/隐藏”切换：最小化窗口也视为当前没有打开，
+            // 先恢复到正常窗口；真正可见的窗口则沿用关闭到托盘的安全隐藏路径。
+            if (hiddenToTray || !Visible || WindowState == FormWindowState.Minimized)
+            {
+                HostLog.Line("TRAY toggle action=restore");
+                RestoreFromTray();
+                return;
+            }
+
+            HostLog.Line("TRAY toggle action=hide");
+            trayTransition = true;
+            if (!IsHandleCreated)
+            {
+                trayTransition = false;
+                return;
+            }
+
+            BeginInvoke((MethodInvoker)delegate
+            {
+                trayTransition = false;
+                if (!LifetimeCancelled && !IsDisposed && !Disposing)
+                    HideToTray();
+            });
         }
 
         private void RestoreFromTray()
         {
+            if (LifetimeCancelled) return;
+            bool wasHiddenToTray = hiddenToTray;
+            bool animate = wasHiddenToTray && SystemAnimationPreferences.AreClientAreaAnimationsEnabled();
             hiddenToTray = false;
             HostLog.Line("TRAY restore");
+            if (animate)
+            {
+                PrepareTrayShowAnimation();
+            }
+            else
+            {
+                if (wasHiddenToTray)
+                    HostLog.Line("TRAY animation cancel reason=system-preference");
+                StopTrayShowAnimation(true, "not-tray-restore");
+            }
             Show();
-            ShowInTaskbar = true;
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
             Activate();
             BringToFront();
+            if (animate) StartTrayShowAnimation();
+        }
+
+        private void PrepareTrayShowAnimation()
+        {
+            StopTrayShowAnimation(true, "restart");
+            trayShowAnimationStep = 0;
+            trayShowAnimationTargetOpacity = Opacity;
+            if (trayShowAnimationTargetOpacity <= 0.0 || trayShowAnimationTargetOpacity > 1.0)
+                trayShowAnimationTargetOpacity = 1.0;
+            try { Opacity = 0.0; } catch { }
+        }
+
+        private void StartTrayShowAnimation()
+        {
+            if (!CanTouchControls)
+            {
+                StopTrayShowAnimation(true, "lifetime");
+                return;
+            }
+            try
+            {
+                trayShowAnimationActive = true;
+                HostLog.Line("TRAY animation start");
+                trayShowAnimationTimer.Start();
+            }
+            catch
+            {
+                StopTrayShowAnimation(true, "timer-start-failed");
+            }
+        }
+
+        private void AdvanceTrayShowAnimation()
+        {
+            if (!CanTouchControls || !Visible)
+            {
+                StopTrayShowAnimation(true, !Visible ? "hidden" : "lifetime");
+                return;
+            }
+
+            trayShowAnimationStep++;
+            double progress = Math.Min(1.0,
+                (double)trayShowAnimationStep / (double)TrayShowAnimationSteps);
+            double eased = 1.0 - Math.Pow(1.0 - progress, 3.0);
+            try { Opacity = trayShowAnimationTargetOpacity * eased; }
+            catch
+            {
+                StopTrayShowAnimation(true, "opacity-failed");
+                return;
+            }
+
+            if (progress >= 1.0)
+            {
+                try { trayShowAnimationTimer.Stop(); } catch { }
+                trayShowAnimationActive = false;
+                try { Opacity = trayShowAnimationTargetOpacity; } catch { }
+                HostLog.Line("TRAY animation complete");
+            }
+        }
+
+        private void StopTrayShowAnimation(bool restoreOpacity)
+        {
+            StopTrayShowAnimation(restoreOpacity, "stopped");
+        }
+
+        private void StopTrayShowAnimation(bool restoreOpacity, string cancelReason)
+        {
+            bool wasActive = trayShowAnimationActive;
+            try { wasActive = wasActive || trayShowAnimationTimer.Enabled; } catch { }
+            try { trayShowAnimationTimer.Stop(); } catch { }
+            trayShowAnimationActive = false;
+            if (restoreOpacity && !IsDisposed && !Disposing)
+            {
+                try { Opacity = trayShowAnimationTargetOpacity; } catch { }
+            }
+            if (wasActive && !String.IsNullOrEmpty(cancelReason))
+                HostLog.Line("TRAY animation cancel reason=" + cancelReason);
         }
 
         /// <summary>
@@ -4361,8 +5863,8 @@ namespace DeepSeekHarnessDesktop
         {
             hiddenToTray = true;
             HostLog.Line("TRAY hide");
+            StopTrayShowAnimation(true);
             Hide();
-            ShowInTaskbar = false;
         }
 
         protected override void WndProc(ref Message m)
@@ -4381,6 +5883,7 @@ namespace DeepSeekHarnessDesktop
         {
             if (allowExit)
             {
+                CancelLifetime("form-closing");
                 SaveWindowPosition();
                 return;
             }
@@ -4388,6 +5891,7 @@ namespace DeepSeekHarnessDesktop
             if (e.CloseReason == CloseReason.WindowsShutDown)
             {
                 allowExit = true;
+                CancelLifetime("windows-shutdown");
                 SaveWindowPosition();
                 dsh.StopOwnedBackend();
                 return;
@@ -4411,6 +5915,7 @@ namespace DeepSeekHarnessDesktop
             if (settings.closeAction == "exit")
             {
                 allowExit = true;
+                CancelLifetime("close-action-exit");
                 SaveWindowPosition();
                 dsh.StopOwnedBackend();
                 return;
@@ -4418,7 +5923,8 @@ namespace DeepSeekHarnessDesktop
 
             using (CloseChoiceDialog dialog = new CloseChoiceDialog(currentDark))
             {
-                DialogResult result = dialog.ShowDialog(this);
+                IWin32Window owner = EffectiveDialogOwner();
+                DialogResult result = owner == null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
                 if (result != DialogResult.OK)
                 {
                     e.Cancel = true;
@@ -4447,6 +5953,7 @@ namespace DeepSeekHarnessDesktop
                 else
                 {
                     allowExit = true;
+                    CancelLifetime("close-dialog-exit");
                     SaveWindowPosition();
                     dsh.StopOwnedBackend();
                 }
@@ -4456,6 +5963,7 @@ namespace DeepSeekHarnessDesktop
         private void ShutdownAndClose()
         {
             allowExit = true;
+            CancelLifetime("shutdown-command");
             SaveWindowPosition();
             dsh.StopOwnedBackend();
             Close();
@@ -4536,12 +6044,14 @@ namespace DeepSeekHarnessDesktop
 
         protected override void Dispose(bool disposing)
         {
+            CancelLifetime("dispose");
             HostLog.Line("FORM dispose instance=" + mainFormInstanceId.ToString("N") +
                 " hiddenToTray=" + hiddenToTray.ToString());
             if (disposing)
             {
                 try { themeTimer.Stop(); themeTimer.Dispose(); } catch { }
                 try { healthTimer.Stop(); healthTimer.Dispose(); } catch { }
+                try { trayShowAnimationTimer.Stop(); trayShowAnimationTimer.Dispose(); } catch { }
                 try { trayIcon.Visible = false; trayIcon.Dispose(); } catch { }
                 try { trayMenu.Dispose(); } catch { }
                 try { if (webContextMenu != null) webContextMenu.Dispose(); } catch { }

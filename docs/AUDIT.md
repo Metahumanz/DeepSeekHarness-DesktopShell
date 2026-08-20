@@ -1,22 +1,71 @@
 # 功能审计与边界检查报告
 
-- 审计日期：2026-08-20
-- 审计范围：仓库全部源码与脚本（当前 v1.0.2 发布代码）
+- 审计日期：2026-08-21
+- 审计范围：仓库全部源码与脚本（v1.0.4 运行期生命周期修复工作树；v1.0.3 已发布并冻结）
 - 审计方法：静态代码审查 + PowerShell 语言解析器校验 + `csc.exe` 实际编译验证
+
+## 0. 当前真实状态（v1.0.4）
+
+本轮从 `main` 的 `509122e` 创建 `fix/v1.0.4-runtime-lifecycle`；当前分支已推送到 GitHub，
+v1.0.4 的发布状态以 Git tag 与 GitHub Release 为准。不移动、不删除、不覆盖
+v1.0.3 的 tag/Release。DSH 默认版本、`COMPATIBILITY.json`
+和 rc.7/rc.8 测试基线保持不变；当前活动推荐目录暂不包含尚未完成完整 BootReady 验收的
+dsh-remote，Dream Skin 仍为 npm `^0.4.1`。
+
+当前收口内容：
+
+- 托盘 hide/restore 不再运行期切换 MainForm 的 `ShowInTaskbar`；Form、WebView2、backend
+  复用同一实例，并记录 `HANDLE created/destroyed instance=<guid>` 诊断；托盘双击在显示/隐藏
+  间切换，恢复时使用轻量淡入动效。
+- 真实退出统一取消 lifetime；startup/restart/health/retry 在 await 后检查取消，取消后
+  清理本轮启动的 wrapper/listener；关闭到托盘不取消。
+- WebView2、overlay configure、backend start/restart 共用非阻塞恢复门禁；持续
+  `Unresponsive` 才显示显式重建入口，重建不触碰健康 backend。
+- 版本、netstat、CIM、CLI 能力探测统一走有界进程执行器：启动即异步读取 stdout/stderr，
+  超时按 PID 回收进程树；自有 backend 健康检查还要验证当前监听 PID 等于 owned listener
+  或属于本壳 Job。
+- `persistedSettings` 与 `activeRuntimeSettings` 分离；保存后选择稍后重启时，健康检查与
+  `DshHomeUrl` 继续使用当前运行快照；托盘状态下对话框使用 ownerless + CenterScreen。
+- 设置立即应用使用显式 oldRuntime/targetRuntime 双快照：旧端口负责 stop/fallback/wait，
+  目标端口负责 compat/start/ready，target ready 后才提交 active；失败按 old 健康、target
+  ready、两者均未 ready 三种真实状态分流。
+- 托盘恢复淡入只发生在 `hiddenToTray` 路径；使用约 160ms ease-out，尊重 Windows 客户区动画
+  偏好，普通激活、首次启动、隐藏/退出和再次切换均不产生淡出或残留透明度。
+- DPI 本轮只加入 100%/125%/150%/200% 的人工验收矩阵，不在没有实测错位前改 DPI 代码。
+- DesktopShell 自己启动 DSH 时，listener 身份确认不再等于 ready：必须依次看到 `dsh web`
+  ready banner、HTTP 200 和短暂稳定确认后才允许 Navigate WebView；BootReady 前退出归为启动失败，
+  BootReady 后退出才归为运行期中断。
+- `DshProcessManager` 记录 `BACKEND process-exited` 的 generation、wrapper PID、exitCode、
+  expectedStop、Starting/Running 状态，并为每个 backend run 保存独立 stdout/stderr drain 与最近输出；
+  旧代延迟 Exited 只写自己的日志并标记 ignored，不得改变新代状态；旧 run 在退出回调和 drain
+  完成后从历史列表移除并 Dispose。启动错误覆盖层优先显示 fatal/plugin/loader 摘要。
+- 插件管理器把“安装成功”与“运行兼容”分离：日常 `Manage-Dsh.ps1` 不启动用户真实 Profile；
+  完整兼容必须由 `scripts/Test-PluginBootPreflight.ps1` 在临时 `DSH_HOME`、临时 Profile、随机端口中
+  完成 BootReady、HTTP 200、稳定运行 10 秒且进程仍存活的验收。隔离条件不能确认时不得返回兼容 PASS；
+  结束时按随机端口找到并验证精确 listener PID，确认端口与进程均已清理；dsh-remote 当前从 v1.0.4
+  活动推荐目录暂停。
+
+`tests/verify.ps1` 当前列出 35 个回归脚本，并由 PowerShell 7 与 Windows PowerShell 5.1
+双宿主执行；托盘/WebView2/连续重启/DPI/Dream Skin 仍需真实 Windows 验收。发布包文件清单不在
+文档中重复维护：唯一权威来源是 `scripts/Build-Release.ps1` 内的 authoritative expected-file
+自校验。
 
 ## 1. 模块功能清单
 
 | 模块 | 位置 | 职责 |
 | --- | --- | --- |
-| `AppSettings` | `src/DeepSeekHarness.cs` L24-180 | 设置加载/保存；输入钳制；旧版窗口位置迁移；原子写入 |
-| `ThemeHelper` | L182-351 | 深浅色检测（注册表）、PerMonitorV2 DPI、窗口/控件主题 |
-| `PluginCompat` | L384-579 | Sentinel client-id 修复、Cost Meter×ModLens 去重；幂等 + 标记 + 原子写 |
-| `DshProcessManager` | L581-1071 | 后端进程托管：端口探测、PID 身份核验、Job Object 回收、日志轮转、重启 |
-| `SettingsForm` / `CloseChoiceDialog` / `ThemedMessageBox` | L1073-1495 | 设置对话框、关闭行为对话框、主题化消息框 |
-| `MainForm` | L1497-2550 | WebView2 承载、导航守卫、权限、右键菜单、快捷键守卫、健康检查、托盘、窗口位置恢复 |
-| `Program` | L2552-2588 | 单实例互斥体 + 激活已有窗口 |
+| `AppSettings` | `src/DeepSeekHarness.cs` / `AppSettings` | 设置加载/保存；输入钳制；旧版窗口位置迁移；原子写入 |
+| `ThemeHelper` | `src/DeepSeekHarness.cs` / `ThemeHelper` | 深浅色检测（注册表）、PerMonitorV2 DPI、窗口/控件主题 |
+| `PluginCompat` | `src/DeepSeekHarness.cs` / `PluginCompat` | Sentinel client-id 修复、Cost Meter×ModLens 去重；幂等 + 标记 + 原子写 |
+| `DshProcessManager` | `src/DeepSeekHarness.cs` / `DshProcessManager` | 后端进程托管：端口探测、PID 身份核验、Job Object 回收、日志轮转、重启 |
+| `RestartRuntimeTransaction` | `src/DeepSeekHarness.cs` / `RestartRuntimeTransaction` | oldRuntime/targetRuntime 双快照与阶段端口映射 |
+| `SystemAnimationPreferences` | `src/DeepSeekHarness.cs` / `SystemAnimationPreferences` | Windows 客户区动画偏好探测 |
+| `SettingsForm` / `CloseChoiceDialog` / `ThemedMessageBox` | `src/DeepSeekHarness.cs` / 对应类名 | 设置对话框、关闭行为对话框、主题化消息框 |
+| `MainForm` | `src/DeepSeekHarness.cs` / `MainForm` | WebView2 承载、导航守卫、权限、右键菜单、快捷键守卫、健康检查、托盘、窗口位置恢复 |
+| `Program` | `src/DeepSeekHarness.cs` / `Program` | 单实例互斥体 + 激活已有窗口 |
 | `Install-Desktop.ps1` | `scripts/` | 安装：文件分发、WebView2 SDK 获取、csc 编译、开始菜单、旧版清理 |
-| `Manage-Dsh.ps1` | `scripts/` | 初始化向导 + 交互管理：Node 检查、dsh/npx 解析、插件安装、pnpm 版本匹配、诊断 |
+| `Manage-Dsh.ps1` | `scripts/` | 初始化向导 + 交互管理：Node 检查、dsh/npx 解析、插件安装（不启动用户 Profile 做兼容假设）、pnpm 版本匹配、诊断 |
+| `Test-PluginBootPreflight.ps1` | `scripts/` | 发布前隔离插件验收：临时 DSH_HOME/Profile、随机端口、BootReady/HTTP 200/稳定 10 秒与进程存活 |
 | `Uninstall-DesktopShell.ps1` | `scripts/` | 卸载模式选择（完整/仅壳）、预装 DSH_HOME 警告、延迟自删除 |
 
 ## 2. 边界检查结论
@@ -31,7 +80,7 @@
 | 窗口尺寸 | 800–10000 × 600–10000 钳制（本次审计补上限） | ✅ |
 | 工作目录 | 空回退用户主目录；不存在时安装向导询问创建 | ✅ |
 
-### 2.1.1 DSH 兼容策略（v1.0.2 起）
+### 2.1.1 DSH 兼容策略（v1.0.2 起，v1.0.4 沿用）
 
 - `COMPATIBILITY.json` 使用 schemaVersion 2：
   `defaultDshVersion=0.1.0-rc.7`、`minimumCompatibleDshVersion=0.1.0-rc.7`、
@@ -43,10 +92,13 @@
 - `minimumCompatibleDshVersion` 是“过旧不应继续尝试”的下限：rc.6 及以下走安全处理
 - `testedDshVersions` 只用于日志/提示，不是未来版本硬白名单；rc.9/后续正式版只要不低于
   最低版本就允许尝试，按实际 CLI 能力适配
-- CLI 能力检测：启动前对当前 runner 执行 `--profile <profile> --help`，探测是否支持 `--no-open`；
-  支持才加入，失败保守不加；npx 与 command 共用 `BuildWebLaunchArguments`
+- CLI 能力检测：rc.8 已确认支持 `--no-open`，直接命中缓存；其它 runner 才对
+  `--profile <profile> --help` 做探测。探测统一使用 `RunCapturedProcessBounded`，启动后立即异步
+  读取 stdout/stderr，超时回收本次进程树，失败保守不加；npx 与 command 共用
+  `BuildWebLaunchArguments`
 - 推荐插件选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；对 DesktopShell
-  有兼容修复依赖的插件保持已审核版本；未验证新版不升级
+  有兼容修复依赖的插件保持已审核版本；未验证新版不升级。v1.0.4 活动目录暂不包含
+  dsh-remote；插件安装成功不代表 Profile 运行兼容。
 
 ### 2.2 路径边界
 
@@ -58,7 +110,8 @@
 ### 2.3 进程与端口边界
 
 - 端口被占用时先取 PID，读取命令行确认像 DSH（`@deepseek-ai`+`dsh`+`web` 特征）才附着/结束；**无法确认身份一律拒绝**，并提示用户
-- 自家启动的后端挂 Job Object（`KILL_ON_JOB_CLOSE`），桌面壳退出即回收，不留孤儿进程
+- 自家启动的后端挂 Job Object（`KILL_ON_JOB_CLOSE`），桌面壳退出即回收，不留孤儿进程；
+  启动/重启/重试均受 lifetime cancellation 约束，取消发生在 spawn 后也进入清理路径
 - 等待 Web 就绪上限 120 秒，重启释放端口上限 10 秒，超时给日志路径
 - 单实例：`Local\DeepSeekHarnessDesktop` 互斥体，重复启动 PostMessage 激活旧窗口
 
@@ -88,7 +141,7 @@
 
 | 级别 | 问题 | 修复 |
 | --- | --- | --- |
-| **P0** | `Uninstall-DesktopShell.ps1` L58 字符串内含 U+201C/U+201D 弯引号，PowerShell 解析器将其视为字符串定界符，**整个卸载脚本解析失败、无法运行** | 弯引号改为「」角引号（`scripts/Uninstall-DesktopShell.ps1`） |
+| **P0** | `scripts/Uninstall-DesktopShell.ps1` 的提示字符串内含 U+201C/U+201D 弯引号，PowerShell 解析器将其视为字符串定界符，**整个卸载脚本解析失败、无法运行** | 弯引号改为「」角引号（`scripts/Uninstall-DesktopShell.ps1`） |
 | P1 | 安装向导 `& $manager` 失败后安装器仍继续"安装完成" | 检查 `$LASTEXITCODE`，非 0 即中止；`Manage-Dsh.ps1` 成功路径显式 `exit 0`，避免残留内部命令退出码造成误判（`scripts/Install-Desktop.ps1`、`scripts/Manage-Dsh.ps1`） |
 | P1 | 完整卸载把 `DSH_HOME` 当普通路径删除，若配置异常（=主目录/盘符根）后果严重 | 增加路径安全守卫 + 弹窗降级为仅卸载壳（`scripts/Uninstall-DesktopShell.ps1`） |
 | P1 | 删除 DSH_HOME 失败时 EAP=Stop 使整个卸载器静默中止 | try/catch 弹窗警告后继续卸载桌面壳 |
@@ -109,13 +162,13 @@ csc exit: 0 → DeepSeekHarness.exe 生成成功
 
 PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前 `Uninstall-DesktopShell.ps1` 存在 P0 解析错误）。
 
-发布链实测：`Build-Release.ps1` 构建 zip（13 文件自校验 + SHA256）→ `Install-FromGitHub.ps1 -ZipPath` 端到端安装（复制校验、install-state.json、settings 迁移、向导/启动/快捷方式开关）全部通过，且未误杀任何进程。
+发布链实测：`Build-Release.ps1` 构建 zip（由脚本 authoritative expected-file 自校验 + SHA256）→ `Install-FromGitHub.ps1 -ZipPath` 端到端安装（复制校验、install-state.json、settings 迁移、向导/启动/快捷方式开关）全部通过，且未误杀任何进程。
 
 ## 5. 遗留观察项（未修改，文档化）
 
-1. `Manage-Dsh.ps1` 插件目录为静态 19 项清单，版本规格硬编码（如 `@michengai/dsh-skills-manager@0.1.23`），上游发版需人工更新。
+1. `Manage-Dsh.ps1` 插件目录为静态 18 项活动清单（dsh-remote 暂停推荐），版本规格硬编码（如 `@michengai/dsh-skills-manager@0.1.23`），上游发版需人工更新；日常安装只确认安装结果，完整 Profile BootReady 验收必须运行独立隔离 release preflight。
 2. `PluginCompat` 直接改写 `node_modules` 内的插件文件——已用标记 + 幂等 + 原子写 + 备份清理降低风险，但仍依赖插件内部结构字符串特征（上游改动可能导致"无法识别，跳过"，不会误改）。
-3. `FindListeningPid` 依赖 `netstat` 输出格式；IPv6 `[::1]` 行已兼容，极端本地化系统差异未覆盖。
+3. `FindListeningPid` 优先使用 `NativeTcpTable`，仅原生 API 不可用时才走有界 netstat fallback；IPv6 `[::1]` 行已兼容，极端本地化系统差异未覆盖。
 4. 卸载器 GUI 依赖 Windows Forms，在 PowerShell 5.1 下同样可用（未做强制 PS7 校验，属有意兼容）。
 5. 双倍计价防护依赖 cost-meter 的 `llm/stream`/`request/header` 内部结构锚点；cost-meter 或 modlens 大版本升级后需重新验证（compat 日志会记录"left untouched"）。
 6. 会话日志本身仍保留 ModLens 合成 usage 事件（属宿主记录，不影响计价）；若用户手工重置/删除账本，backfill 已不会回填合成条目，但首次启动的自动清理仍以"map 非空即跳过"为幂等前提。
@@ -152,13 +205,13 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 | 3 | P2 | "发现现有 dsh 就直接用"无 rc.7 门槛 | `Manage-Dsh.ps1` 新增 `Resolve-DshCommandWithGate`：现有 dsh 低于验证基线 0.1.0-rc.7 时询问"继续使用 / 改用 npx"，非交互模式默认改用 npx；三处解析入口（向导、菜单"检查 DSH"、Resolve-DshRunner）统一走门槛 |
 | 4 | P2 | WebView2 三件套来源/版本不一致 | `Build-Release.ps1` 固定 1.0.4078.44：`-SdkDir` 覆盖（版本不符直接失败）→ 同版本 NuGet 包目录 → NuGet 下载，同一包目录取三件套；`Install-Desktop.ps1` 复用条件改为三件套 FileVersion 全部等于固定版本，否则整套重下 |
 | 5 | P2 | `Build-Release -Version` 不改 EXE 版本 | 删除源码里写死的 AssemblyVersion/FileVersion，构建脚本生成 `VersionInfo.cs`（AssemblyVersion/FileVersion=四段版本，InformationalVersion=原始版本串）注入编译；构建后校验 EXE FileVersion 与版本一致 |
-| 6 | P2 | `Repair-CostMeterLedger.ps1` 不在发布包 | 进入 `Build-Release.ps1` 与 `Install-Desktop.ps1` 的分发清单（zip 自校验 13→14 文件）；`Install-Release.ps1` 作为可选文件复制（旧包没有不影响安装） |
+| 6 | P2 | `Repair-CostMeterLedger.ps1` 不在发布包 | 进入 `Build-Release.ps1` 与 `Install-Desktop.ps1` 的分发清单；发布包清单由 `Build-Release.ps1` 的 authoritative expected-file 自校验维护，`Install-Release.ps1` 作为可选文件复制（旧包没有不影响安装） |
 | 7 | P3 | 无 LICENSE / 第三方声明 | 新增 `LICENSE`（MIT）、`THIRD_PARTY_NOTICES.md`（DeepSeek Harness 图标 MIT 声明、WebView2 SDK 许可、运行时与社区插件说明） |
 | 8 | P3 | 无 CI / 发布工作流 | `.github/workflows/ci.yml`（PS 解析 + PSScriptAnalyzer + 三项回归测试 + Build-Release + zip 内容校验 + artifacts）；`.github/workflows/release.yml`（workflow_dispatch 输版本号或推 v* tag：回归测试 → 构建 → 打 tag → 创建 GitHub Release 并上传 zip + SHA256SUMS.txt） |
 | 9 | P3 | 回归测试未入库 | `tests/`：`test-install-ownership.ps1`（10 项）、`test-uninstall-guards.ps1`（3 项，自动备份/恢复开始菜单）、`test-repair-regex.ps1`（合成账本 DryRun） |
 
-发布提醒：README 一键安装引导命令钉在 `v1.0.0` tag，远端当前还没有任何 tag/Release；
-首次发布请用 `Release` 工作流（或手动打 tag 并上传 zip + `SHA256SUMS.txt` 两个资产）。
+发布提醒（历史记录）：README 一键安装引导命令当时钉在 `v1.0.0` tag；后续历史发布已冻结，
+v1.0.4 的 tag 与 Release 由本次发布流程创建，并遵循不可覆盖的冻结策略。
 
 ## 8. 2026-08-19 第四轮修复（第三方审计响应：发布前收口）
 
@@ -170,12 +223,12 @@ PowerShell 脚本经 `[Parser]::ParseFile` 校验：**全部通过**（修复前
 | 4 | P1 | `-NoWizard` 语义不一致：源码安装器跑非交互初始化，Release 安装器直接跳过（CI 环境会出现"Release 包装好、启动才发现缺 Node"） | 统一为两者都执行 `Manage-Dsh -FirstInstall -NonInteractive`（检查 Node、解析 DSH/npx、初始化 Profile；缺 Node 即中止）；回归测试改为隔离环境（假 node/npx shim + 临时 DSH_HOME + 受限 PATH）覆盖该路径 |
 | 5 | P2 | 缺少 WebView2 Runtime 时用户等到首次启动才看到"启动失败" | 两个安装器增加 Evergreen Runtime 注册表预检（EdgeUpdate Clients `{F3017226-…}`），缺失时给出官方下载入口；C# 启动失败检测 WebView2 异常并显示"下载 WebView2 Runtime"按钮（`OnOverlayOpenWebView2Download`） |
 | 6 | P2 | 预编译 Release 的 `WebView2Loader.dll` 跟随构建机架构，README 只笼统写 Windows 10/11 | `Build-Release.ps1` 增加 `-Arch`（x64/arm64/x86，默认 x64）；v1.0.0 首发明确 x64（README 前置条件、Release body 注明）；ARM64 上运行 x64 发布包时安装器给出提示（模拟运行或改用源码安装） |
-| 7 | P2 | 新 Profile 默认"推荐组合"一次装 13 个插件，官方/附加体验不分层；6 个可选插件仍追 `@latest`，"全部"按钮引入不可复现模式 | 插件目录改为三层：`core`（5 个默认勾选）/ `enhanced`（6 个默认展示可取消）/ `advanced`（8 个默认不装，Cost Meter 标注"统计参考，不等于官方账单"）；**全部 19 项锁定精确版本/commit**，"全部已审核插件"也只装锁定版本；追新走"额外插件"自定义 spec；安装完成后提示"托盘 → 重启 DSH 后端" |
+| 7 | P2 | 新 Profile 默认"推荐组合"一次装 13 个插件，官方/附加体验不分层；6 个可选插件仍追 `@latest`，"全部"按钮引入不可复现模式 | **历史记录（v1.0.3 目录当时为 19 项）**：插件目录改为三层并锁定精确版本/commit；v1.0.4 活动目录为 18 项，dsh-remote 在完整 BootReady 验收通过前暂不推荐；安装成功不等于运行兼容 |
 | 8 | P3 | README 结构像维护文档，安全细节前置、普通用户路径不清晰 | README 重写为：前置条件 → 一键安装（含无人值守）→ 安装器行为 → 插件分层表 → 第一次启动/日常管理/更新插件/卸载/故障排查 → 安全设计摘要 → 源码构建/Release 流程/项目结构/第三方许可（细节链接 `docs/AUDIT.md`） |
 
 验证：四项回归测试全部通过（版本门槛 15 断言、账本正则、安装所有权 10 项、卸载守卫 3 项）；
 `csc` 编译通过；全部脚本 `[Parser]::ParseFile` 通过；`Build-Release`（x64，固定 SDK 1.0.4078.44，
-EXE FileVersion 1.0.0.0）成功，zip 自校验 14 文件。
+EXE FileVersion 1.0.0.0）成功，zip 内容由构建脚本的 authoritative expected-file 清单自校验。
 
 ## 9. 2026-08-19 第五轮修复（第三方第二轮审计：首批 6 项 + 第二批 + PowerShell 5.1）
 
@@ -202,12 +255,12 @@ EXE FileVersion 1.0.0.0）成功，zip 自校验 14 文件。
 
 | # | 修复 |
 | --- | --- |
-| 健康检查 | `DshProcessManager.IsDshHealthy`：自家后端 = 进程存活 + TCP；外部后端 = TCP + 30 秒 PID 身份缓存，只有过期/端口变化才跑 netstat+CIM |
+| 健康检查 | 当前实现：自家后端 = wrapper 存活 + TCP + owned listener PID/Job 身份；外部后端优先使用 `NativeTcpTable` owner PID，PID 变化时才做命令行身份验证，不按 5 秒周期启动 netstat/PowerShell |
 | 统一门禁 | `tests/verify.ps1`（解析 + PSScriptAnalyzer + 五项回归测试，宿主自适应）；CI 与 Release 工作流共用，不再维护两份测试列表 |
 | 安装事务 | `Install-Release.ps1` 改为 Preflight（完整性/危险路径/所有权/WebView2）→ Stage（旁路目录组装+携带 settings/logs/webview2-data）→ Initialize（在 stage 上跑管理器）→ Commit（目录交换 + 保留 `DeepSeekHarness.exe.previous`，失败恢复旧目录）；`Install-Desktop.ps1` 改为先编译后向导、状态最后写 |
 | 开始菜单 | 安装/卸载只管理自有三个 .lnk，不再整目录删除 |
 | pnpm | `.modules.yaml` 未知 store 版本（v10/v11 之外）fail closed |
-| 文档 | `THIRD_PARTY_NOTICES.md`：csc 移入"源码构建依赖"；README/CHANGELOG 收敛为"SHA256 完整性校验"措辞；Release 工作流支持同 tag 覆盖发布（先 `gh release delete` 再重建） |
+| 文档 | `THIRD_PARTY_NOTICES.md`：csc 移入"源码构建依赖"；README/CHANGELOG 收敛为"SHA256 完整性校验"措辞；后续 Release 工作流改为禁止覆盖已有 Release |
 
 ### 测试安全
 
@@ -222,7 +275,7 @@ U3 卸载守卫测试一度按默认 3080 端口把宿主机真实 DSH 当外部
 | 1 | P1 | `dsh --version` 失败/无输出（读不到版本）时 `Resolve-DshCommandWithGate` 仍直接按 command 放行并假定 rc.7 | 空版本与"无法解析"同等对待：警告未验证 → 非交互改 npx rc.7 / 交互询问；`tests/test-runner-mode.ps1` 新增场景 E（`exit /b 1` 的 dsh shim → 断言 mode=npx 且 dshPath 空） |
 | 2 | P1 | 端口上已运行的外部 DSH 绕过 rc.7 门槛与 runnerMode，直接附着 | `EnsureStarted` 附着分支先 `ExtractDshVersionFromCommandLine`（`@deepseek-ai/dsh@x.y.z` 正则），非 rc.7 或读不到版本且未经用户确认 → 拒绝附着；`ProbeExternalDsh` 一次性探测；启动时弹窗"附着（未验证）/ 结束并重启为验证版本"（是=附着，否=停止外部并走 停止→补丁→启动，取消=非破坏性附着） |
 | 3 | P1 | 端口开着但 PID/命令行瞬时读取失败时 `externalDsh=false`，兼容器会写文件，随后 EnsureStarted 又拒绝附着 | 规则改为：**只要端口打开，启动前绝不写兼容补丁**（`apply = !probe.PortOpen`），不再依赖第一次 PID 识别成功 |
-| 4 | P1 | 30 秒健康缓存不校验监听 PID 是否仍是 `lastExternalPid`，重新引入身份 TOCTOU | 缓存命中前先 `GetProcessById(lastExternalPid)` 检查存活；PID 消失立即作废缓存并全量复验（netstat+CIM）。彻底方案（TCP owner PID API）留待后续 |
+| 4 | P1 | 历史健康缓存不校验监听 PID 是否仍是 `lastExternalPid`，重新引入身份 TOCTOU | 后续已由 `NativeTcpTable` owner PID 路径收口：owner 未变快速通过，PID 变化才做命令行身份验证；原生 API 失败才使用有界 fallback |
 | 5 | P2 | PowerShell `Invoke-ManagedDsh` 只看 DshPath，不遵守 runnerMode（command 模式无 dsh 时悄悄用 npx） | 新增 `Resolve-DshCommandForOps`：与 C# `EnsureStarted` 完全同语义（npx 永不回捡 PATH；command 无 dsh 直接 Fail；auto 才回退）；插件管理改用它；测试新增 6 项 AST 单元断言（含 command 无 dsh 抛 `dshRunnerMode=command`） |
 
 ### 遗留（下一轮）
@@ -266,7 +319,7 @@ U3 卸载守卫测试一度按默认 3080 端口把宿主机真实 DSH 当外部
 | 2 | P1 | DSH_HOME 两个事实来源：运行期用环境变量，卸载器用 install-state 记录值，运行期漂移会导致卸载删错"旧环境" | 卸载器检测 `state.dshHome ≠ 当前环境 DSH_HOME`：交互 YesNoCancel 列出两个路径让用户选择删除哪一个；`-Force` 拒绝猜测并降级为仅卸载壳 |
 | 3 | P1 | 常驻 DSH 的 GIT_CONFIG rewrite 污染整个进程树（SSH 私有仓库被强制改 https） | C# 启动 DSH 不再注入 GIT_CONFIG_*；git+ssh→https 仅保留在 `Invoke-ManagedDsh` 插件事务的进程内作用域 |
 | 4 | P2 | 源码安装器是第二套安装逻辑（无目录所有权/事务保护）；且 DSH_HOME 快照在向导后才计算 | `Install-Desktop.ps1` 重写：源码编译到临时 stage → 组装与 Release 完全相同的 app 目录（含 COMPATIBILITY.json）→ 调用 `Install-Release.ps1` 核心；目录保护/升级/回滚/迁移/向导一份实现。版本元数据（EXE/VersionInfo/manifest/version.txt）统一来自根目录 VERSION |
-| 5 | P2 | 30 秒健康缓存"原 PID 存活"≠"仍持有端口" | `GetExtendedTcpTable`（P/Invoke）每次廉价取端口 owner PID：owner 未变直接健康，变化才做 CIM 验证；取消时间窗；原生失败退回 netstat |
+| 5 | P2 | 历史健康缓存"原 PID 存活"≠"仍持有端口" | `GetExtendedTcpTable`（P/Invoke）每次廉价取端口 owner PID：owner 未变直接健康，变化才做命令行验证；取消时间窗；原生失败退回有界 fallback |
 | 6 | P2 | 卸载只处理设置端口的一个 DSH；DSH_HOME 删除失败仍宣称完整卸载 | 完整卸载前枚举其它 DSH Web 进程（CIM 命令行特征）并停止；删除失败结果状态改为 `partial`（明确"部分卸载完成"） |
 | 7 | P2 | 同 tag 覆盖发布使 v1.0.0 zip 可变；RC 版本被当成正式版 | 本轮之后 v1.0.0 冻结（下一次修复走 v1.0.1，另见提交 B 移除重发布删除步骤）；`softprops` 增加 `prerelease`（版本含 `-` 时 true）与 `make_latest` |
 | 8 | P2 | Release 门禁缺 PowerShell 5.1 | Release build job 增加 `powershell -NoProfile -File tests/verify.ps1 -SkipAnalyzer` |
@@ -290,7 +343,7 @@ PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:w
 | 2 | 错误覆盖层 | `ShowErrorOverlay`：大标题 + 可滚动详情 TextBox + 复制错误按钮，与普通覆盖层共用布局与主题（按钮统一走 `ThemeHelper.ApplyButtonTheme`） |
 | 3 | 分阶段启动 + 阶段感知重试 | `StartupPhase` 八阶段；`HandleStartupError` 按失败阶段路由：CommandVerify/BackendProbe/Backend → `RestartBackendAsync`；WebViewEnvironment/WebViewInitialize → `RetryWebViewAsync`（只重建 WebView2，不碰后端）；WebViewConfigure → `RetryConfigureAsync`（配置处理器先摘除再挂接，重试不叠加）；权限/导航/未知 → `StartAsync` 整体重试（`BackendRunning` 守卫保证不误杀健康 owned 后端）；缺 WebView2 Runtime 单独给官方下载入口 |
 | 4 | 托盘生命周期 | `HideToTray` + `trayTransition` + `BeginInvoke((MethodInvoker)...)` 延迟到 FormClosing 结束后隐藏；`RestoreFromTray` 复用原窗口（不重建 WebView）；Dispose 记录 hiddenToTray |
-| 5 | 统一 dsh 版本重验证（PS 端） | `Test-DshNeedsReacceptance`（与 C# `ConfirmCommandVersionBeforeStart` 完全同一规则）；`Invoke-ManagedDsh` 对 command/auto 解析出的 dsh 每次插件操作前重验证，与基线一致自动接受、其它交互询问/非交互中止；`$defaultDshVersion = $VerifiedDshVersion` 单一来源 |
+| 5 | 统一 dsh 版本重验证（PS 端） | `Test-DshNeedsReacceptance`（与 C# `ConfirmCommandVersionBeforeStart` 完全同一规则）；`Invoke-ManagedDsh` 对 command/auto 解析出的 dsh 每次插件操作前重验证，与基线一致自动接受、其它交互询问/非交互中止；`$defaultDshVersion = $DefaultDshVersion` 单一来源 |
 | 6 | 原生 TCP owner PID | `src/NativeTcpTable.cs`：dwNumEntries 表头 + 按 entryCount 行遍历 + 低 16 位字节交换 + 仅 LISTEN；`tests/test-port-owner.ps1` 编译产品同款源码做真实行为回归（owner PID == 测试进程、netstat 交叉验证、关闭端口 -1），证明原生路径真实可用而非静默退回 netstat |
 | 7 | 自定义 Profile 身份 | `IsLikelyDshCommandLine`：package/path 特征 +（web 子命令或任意合法 `--profile <name>`）+ 端口；卸载器同步同语义 |
 | 8 | VERSION/COMPATIBILITY 单一来源 | release.yml 新增"workflow 版本 == 根目录 VERSION"门禁（不满足直接失败），默认输入改 1.0.1；`test-launch-args.ps1` 探测版本改读 COMPATIBILITY.json，不再硬编码 |
@@ -304,25 +357,25 @@ PSScriptAnalyzer 钉 1.25.0；Release 拆分为只读 build job + 仅 contents:w
 - `tests/test-port-owner.ps1` 证明原生 TCP 解析返回真实 owner PID（与 netstat 一致）；
 - Release 工作流门禁：`workflowVersion != VERSION 文件` 直接失败，防止手滑发错版本。
 
-## 14. 2026-08-19 v1.0.2 修复轮（第九轮：重启事务与 Dream Skin，未发布）
+## 14. 2026-08-19 v1.0.2 修复轮（第九轮：重启事务与 Dream Skin，已发布并冻结）
 
-> 目标版本 v1.0.2；v1.0.1 tag/Release 冻结不动。**发布前必须等用户本机压力测试
-> （连续重启 20 次 + 午夜皮肤持久化）通过**，见 docs/DREAM_SKIN_ACCEPTANCE.md。
+> 历史版本 v1.0.2 已发布并冻结；以下保留当时的实现记录。当前 v1.0.4 的真实
+> Windows 验收规范见 `docs/TRAY_LIFECYCLE_ACCEPTANCE.md` 与 `docs/DREAM_SKIN_ACCEPTANCE.md`。
 
 | # | 项目 | 实现 |
 | --- | --- | --- |
 | 1 | 重启有状态事务 | `RestartBackendAsync` 十阶段（preflight/snapshot/stop-wrapper/wait-port-close/stop-listener-fallback/compat/start/wait-ready/navigate/complete），`RestartPhase` 统一 ENTER/OK/FAIL；快照记录旧/新 wrapper+listener PID、ownsBackend、port |
 | 2 | 旧子进程未退出路径 | `ownedListenerPid` 首次就绪时记录（`CaptureOwnedListenerPid`，含身份验证）；停止链：Job 关闭 → Kill wrapper → `WaitForExit(3000)` → `TryStopListenerFallback`（PID 与记录一致 **或** 命令行复验 DSH+profile+port 才 Kill）→ `WaitForPortClosedTwice`（连续两次确认）→ 最后才 `OwnsBackend=false` |
 | 3 | 重启/健康检查竞态 | `backendGeneration`：重启开始 `healthTimer.Stop()` + 代数递增；健康检查完成后 `generation != backendGeneration` 直接丢弃结果；finally 统一 `healthFailures=0` + `healthTimer.Start()` |
-| 4 | 失败分流 | `HandleRestartError` 按真实状态分 A（原后端仍健康）/ B（旧后端已停止）/ C（新后端已监听但页面失败），`webViewReady = IsDshHealthy(...)` 重算，不再笼统"重启失败" |
+| 4 | 失败分流 | 当前实现按 old/target 两个真实端口分 A（old 仍健康）/ B（target 已 ready 但页面失败）/ C（old 已停且 target 未 ready）；active runtime 不再由提前覆盖的对象推断 |
 | 5 | Dream Skin 能力版本 | 目录 `dsh-dream-skin@0.3.0` → npm `dsh-dream-skin@^0.4.1`（已确认含 sticky restore + host-backed 持久化 marker；不再固定 commit） |
 | 6 | marker 检测 | `Test-DreamSkinPersistenceFix`：`profiles\<profile>\node_modules\dsh-dream-skin\lib\client.js` 需同时含 `dsh-dream-skin: sticky skin restore` 与 `/dream-skin/api`；诊断菜单显示已修/旧实现 |
 | 7 | 非破坏升级 | `Install-Plugins` 选中 dream-skin 且旧实现时：说明 → 确认 → 走 npm `dsh-dream-skin@^0.4.1`（同名包替换）；不删 webview2-data / `~\.dsh` / Profile，不改 ThemeRuntime，不注入 JS |
 | 8 | 验收覆盖 | docs/DREAM_SKIN_ACCEPTANCE.md：午夜 ×（Reload 5 + 重启后端 10 + 退出重开 5 + 设置开关 5）；「默认」不被 sticky 拉回；`$DSH_HOME\dream-skin.json` 持久化检查 |
 | 9 | WebView 真重建 | `ReplaceWebViewControlAsync`：Remove+Dispose 旧控件 → 新建 → 初始化/配置/权限/导航；失败不碰健康后端 |
 | 10 | Release 真冻结 | publish job 发布前 `gh release view "v$version"` 已存在直接失败（"禁止覆盖，请增加版本号"）；不进入 softprops |
-| 11 | 最后硬编码 | `AppSettings.Load` 缺省 `dshVersion = DshProcessManager.VerifiedDshVersion`（src 中 rc.7 仅剩 VerifiedDshVersion 的合法回退 1 处） |
-| 12 | 门禁 11 → 15 | 新增 `test-restart-state`（ownedListenerPid/WaitForExit/身份兜底/generation/十阶段日志/A·B·C 分流）、`test-dream-skin-pin`（npm ^0.4.1、能力 marker 检测 + 行为矩阵）、`test-release-immutable`（gh view 门禁、无删除步骤、v1.0.0/v1.0.1/v1.0.2 tag 仍在且为祖先）、`test-version-source`（C#/PS 硬编码清零、VERSION=1.0.2 与 release.yml 默认一致） |
+| 11 | 最后硬编码 | `AppSettings.Load` 缺省 `dshVersion = DshProcessManager.DefaultDshVersion`；`COMPATIBILITY.json` 是默认版本单一来源，`VerifiedDshVersion` 仅保留为兼容旧调用方的等价别名 |
+| 12 | 历史门禁记录 | 当时新增 `test-restart-state`、`test-dream-skin-pin`、`test-release-immutable`、`test-version-source`；版本号与当时的 v1.0.2 发布基线一致，当前版本/门禁以本报告第 0 节为准 |
 
 ### 14.1 追加：启动身份状态机（用户本机暴露的"重启失败/半失败"根因）
 

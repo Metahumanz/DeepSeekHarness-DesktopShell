@@ -3,7 +3,7 @@
 )
 
 # 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
-# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、十九项回归测试。
+# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、35 项回归测试。
 # 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
 # 注意：托盘、WebView2、连续重启、Dream Skin 真实恢复属于人工 Windows 验收
 #（见 docs/DREAM_SKIN_ACCEPTANCE.md），源码级测试不能替代。
@@ -25,8 +25,24 @@ $tests = @(
     'test-accepted-dsh.ps1',
     'test-build-x64.ps1',
     'test-restart-state.ps1',
+    'test-startup-boot-ready.ps1',
+    'test-backend-lifecycle-state.ps1',
+    'test-backend-exit-diagnostics.ps1',
+    'test-backend-generation-race.ps1',
+    'test-plugin-boot-acceptance.ps1',
+    'test-plugin-preflight-cleanup.ps1',
     'test-startup-identity.ps1',
     'test-tray-quit-deferred.ps1',
+    'test-tray-handle-lifecycle.ps1',
+    'test-tray-toggle-animation.ps1',
+    'test-lifecycle-cancellation.ps1',
+    'test-recovery-serialization.ps1',
+    'test-bounded-process-probe.ps1',
+    'test-settings-runtime-snapshot.ps1',
+    'test-dialog-owner.ps1',
+    'test-webview-unresponsive.ps1',
+    'test-owned-health-identity.ps1',
+    'test-dpi-manifest.ps1',
     'test-web-context-menu-lifecycle.ps1',
     'test-dream-skin-pin.ps1',
     'test-release-immutable.ps1',

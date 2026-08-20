@@ -60,6 +60,26 @@ $SdkVersion = '1.0.4078.44'
 # 目标架构固定 x64（v1.0.1 起发布包只支持 x64；WebView2Loader.dll 取 win-x64 变体）
 $ArchLoader = 'win-x64'
 
+# 发布包内容的唯一期望清单。zip 自校验与 Release 工作流都以本脚本为准，
+# 不在 README/工作流中另维护一个可能漂移的旧文件数。
+$ExpectedPackageFiles = @(
+    'DeepSeekHarness.exe',
+    'Microsoft.Web.WebView2.Core.dll',
+    'Microsoft.Web.WebView2.WinForms.dll',
+    'WebView2Loader.dll',
+    'DeepSeekHarness.ico',
+    'DeepSeekHarness-Light.ico',
+    'DeepSeekHarness-Dark.ico',
+    'DeepSeekHarness.svg',
+    'Manage-Dsh.ps1',
+    'Uninstall-DesktopShell.ps1',
+    'Install-Release.ps1',
+    'Repair-CostMeterLedger.ps1',
+    'COMPATIBILITY.json',
+    'version.txt',
+    'install.bat'
+)
+
 function Resolve-Assembly([string]$root, [string]$name, [string]$archFilter = '') {
     if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) { return $null }
     $hits = @(Get-ChildItem -LiteralPath $root -Recurse -Filter $name -ErrorAction SilentlyContinue)
@@ -235,10 +255,14 @@ pause
         $verify = Join-Path $env:TEMP ("dsh-release-verify-" + [Guid]::NewGuid().ToString('N'))
         try {
             Expand-Archive -LiteralPath $zip -DestinationPath $verify -Force
-            $expected = 15
-            $actual = @(Get-ChildItem -LiteralPath (Join-Path $verify 'DeepSeek Harness DesktopShell') -File -ErrorAction SilentlyContinue).Count
-            if ($actual -ne $expected) { Fail "zip 自校验失败：期望 $expected 个文件，实际 $actual。" }
-            Ok "zip 自校验通过（$actual 个文件）。"
+            $packageRoot = Join-Path $verify 'DeepSeek Harness DesktopShell'
+            $actualNames = @(Get-ChildItem -LiteralPath $packageRoot -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+            $missing = @($ExpectedPackageFiles | Where-Object { $actualNames -notcontains $_ })
+            $unexpected = @($actualNames | Where-Object { $ExpectedPackageFiles -notcontains $_ })
+            if ($missing.Count -gt 0 -or $unexpected.Count -gt 0) {
+                Fail ("zip 自校验失败：缺少 [{0}]，多出 [{1}]。" -f ($missing -join ', '), ($unexpected -join ', '))
+            }
+            Ok "zip 自校验通过（$($actualNames.Count) 个文件，期望清单 $($ExpectedPackageFiles.Count) 个）。"
         } finally {
             Remove-Item -LiteralPath $verify -Recurse -Force -ErrorAction SilentlyContinue
         }

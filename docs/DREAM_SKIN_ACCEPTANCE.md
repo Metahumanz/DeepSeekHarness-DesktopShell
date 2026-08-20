@@ -1,14 +1,15 @@
 # Dream Skin 修复验收（人工 Windows 回归检查表）
 
-> 适用版本：DesktopShell v1.0.2（Dream Skin npm ^0.4.1，含 sticky restore 加固
-> 与 host-backed 持久化）。本检查表**必须在本机真实 Windows 桌面完成**——托盘、
+> 适用版本：DesktopShell v1.0.2+；v1.0.4 仍沿用 Dream Skin npm ^0.4.1（含
+> sticky restore 加固与 host-backed 持久化）。本检查表**必须在本机真实 Windows 桌面完成**——托盘、
 > WebView2、连续重启、皮肤恢复属于 GUI 行为，源码级测试不能替代人工验收。
-> 发布已完成；以下为发布后人工回归检查记录。未取得用户明确 25 次验收记录前，
+> 以下为 v1.0.4 发布验收使用的人工 Windows 回归检查表；结果必须以实际 Windows 记录为准，源码测试不能替代人工验收。
+> 未取得用户明确 25 次验收记录前，
 > 不得声称“验收通过”。
 
 ## 前置
 
-1. 安装 v1.0.2 发布包或从本分支源码安装；不要动 `~/.dsh`、`webview2-data`。
+1. 安装任一 v1.0.2+ 发布包，或从 v1.0.4 本分支源码安装；不要动 `~/.dsh`、`webview2-data`。
 2. 管理器 → 安装插件 → 选 **14. Dream Skin 主题**（npm ^0.4.1）。
    若 Profile 里已有旧 0.3.0 实现，应看到升级确认提示：
    `检测到 Dream Skin 0.3.0 旧实现……是否升级到 npm ^0.4.1？` → 选是。

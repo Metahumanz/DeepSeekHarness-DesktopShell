@@ -1,9 +1,10 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $buildRelease = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Build-Release.ps1'))
 $installDesktop = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Install-Desktop.ps1'))
 $installRelease = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Install-Release.ps1'))
 $releaseYml = [System.IO.File]::ReadAllText((Join-Path $repo '.github\workflows\release.yml'))
+$versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
 
 $fail = 0
 function Assert-True([string]$label, [bool]$condition) {
@@ -30,13 +31,12 @@ foreach ($pair in @(
 Assert-True "Build-Release defaults version from root VERSION" ($buildRelease -match "'VERSION'" -and $buildRelease -match '\$Version = \$raw')
 Assert-True "Install-Desktop reads root VERSION" ($installDesktop -match '\$versionFile = Join-Path \$repoRoot ''VERSION''')
 Assert-True "Install-Release ships COMPATIBILITY.json" ($installRelease -match "'COMPATIBILITY\.json'")
-Assert-True "release.yml defaults to repo version 1.0.3" ($releaseYml -match "default: '1\.0\.3'")
+Assert-True "release.yml defaults to repo version $versionText" ($releaseYml -match ("default: '" + [regex]::Escape($versionText) + "'"))
 Assert-True "release.yml gates version against VERSION file" ($releaseYml -match 'Get-Content -LiteralPath VERSION -Raw')
 Assert-True "release.yml still freezes old releases (no delete step)" ($releaseYml -notmatch 'delete_release|delete-existing')
 
 # ---- 4. 根目录版本文件与兼容基线内容自洽 ----
-$versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
-Assert-True "root VERSION is 1.0.3 (got: $versionText)" ($versionText -eq '1.0.3')
+Assert-True "root VERSION is 1.0.4 (got: $versionText)" ($versionText -eq '1.0.4')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True "COMPATIBILITY.json defaultDshVersion is a valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "COMPATIBILITY.json minimumCompatibleDshVersion is a valid semver (got: $($compat.minimumCompatibleDshVersion))" ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
