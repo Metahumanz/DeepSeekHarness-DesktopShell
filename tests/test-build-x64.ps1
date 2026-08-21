@@ -36,7 +36,7 @@ Assert-True "release.yml gates version against VERSION file" ($releaseYml -match
 Assert-True "release.yml still freezes old releases (no delete step)" ($releaseYml -notmatch 'delete_release|delete-existing')
 
 # ---- 4. 根目录版本文件与兼容基线内容自洽 ----
-Assert-True "root VERSION is 1.0.4 (got: $versionText)" ($versionText -eq '1.0.4')
+Assert-True "root VERSION is 1.0.5 (got: $versionText)" ($versionText -eq '1.0.5')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True "COMPATIBILITY.json defaultDshVersion is a valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "COMPATIBILITY.json minimumCompatibleDshVersion is a valid semver (got: $($compat.minimumCompatibleDshVersion))" ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')

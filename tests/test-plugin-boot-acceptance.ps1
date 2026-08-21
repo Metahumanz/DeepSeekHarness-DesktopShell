@@ -32,13 +32,17 @@ Assert-True 'preflight uses an isolated temporary Profile and refuses unsafe con
     $preflight -match '未返回兼容 PASS')
 Assert-True 'preflight installs plugins before booting the isolated Profile' (
     $preflight -match '\x27plugin\x27,\s+\x27--profile\x27,\s+\$profile,\s+\x27add\x27,\s+\$spec' -and
+    $preflight -match '@deepseek-ai/dsh-web-app@' -and
+    $preflight -match 'Web 基础包/插件安装后未发现临时 Profile' -and
     $preflight -match '\$webArgs = New-DshArguments @\(\x27--profile\x27,\s+\$profile,\s+\x27--port\x27' -and
     $preflight -notmatch 'New-DshArguments @\(\x27web\x27,\s+\x27--profile\x27')
 Assert-True 'preflight uses a random port and the full BootReady gate' (
     $preflight -match 'Get-FreeTcpPort' -and
     $preflight -match 'dsh\\s\+web:' -and
     $preflight -match 'Test-Http200' -and
+    $preflight -match 'Get-Content -LiteralPath \$path -Raw' -and
     $preflight -match '\$StableSeconds' -and
+    $preflight -match '\$installTimeoutMs = \[Math\]::Max' -and
     $preflight -match '\$webProcess\.HasExited')
 Assert-True 'preflight cleans only its own process tree and restores DSH_HOME' (
     $preflight -match 'Stop-ProcessTree' -and
@@ -57,7 +61,22 @@ Assert-True 'install success is explicitly not compatibility success' (
 Assert-True 'dsh-remote is absent from the active recommendation catalog' (
     $catalog -notmatch "Id='remote'" -and
     $catalog -notmatch 'dsh-remote' -and
-    $catalog -match 'No=18; Id=\x27video\x27')
+    $catalog -match 'No=23; Id=\x27thought-buddy\x27')
+Assert-True 'active catalog matches the real web Profile package set' (
+    $catalog -match "Id='market'.*dshmarket@1\.17\.1" -and
+    $catalog -match "Id='sidebar'.*dsh-better-sidebar@\^0\.14\.0" -and
+    $catalog -match "Id='rewind'.*github:XSJUSTC/dsh-rewind" -and
+    $catalog -match "Id='cost'.*dsh-cost-meter@\^1\.5\.35" -and
+    $catalog -match "Id='thought-buddy'.*@dsh-plugin/dsh-thought-buddy@\^0\.2\.0" -and
+    $catalog -notmatch "Id='model-picker'" -and
+    $catalog -notmatch "Id='modlens'" -and
+    $catalog -notmatch "Id='status'"
+)
+Assert-True 'local-only bridge-browser is documented but not offered as a portable plugin' (
+    $manage -match '本地集成依赖' -and
+    $manage -match 'bridge-browser' -and
+    $catalog -notmatch 'dsh-bridge-browser'
+)
 
 if ($fail -eq 0) { Write-Host 'PLUGIN BOOT ACCEPTANCE TESTS PASSED' }
 else { Write-Host "FAILURES: $fail" }

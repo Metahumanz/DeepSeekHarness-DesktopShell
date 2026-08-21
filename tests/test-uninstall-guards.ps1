@@ -16,6 +16,12 @@ $testDshHome = Join-Path $base 'dsh-home'
 New-Item -ItemType Directory -Force -Path $testDshHome | Out-Null
 $origPath = $env:Path
 $origDshHome = $env:DSH_HOME
+$origAppData = $env:APPDATA
+$testAppData = Join-Path $base 'appdata'
+New-Item -ItemType Directory -Force -Path $testAppData | Out-Null
+# Install-Release/Uninstall-DesktopShell 用 APPDATA 解析开始菜单；测试必须把它
+# 指向自己的临时树，不能搬动或清理用户真实 Start Menu。
+$env:APPDATA = $testAppData
 
 function Invoke-HermeticInstall([string]$target) {
     $env:Path = "$shimDir;$env:SystemRoot\System32;$env:SystemRoot"
@@ -67,9 +73,11 @@ function Set-TestAppPort([string]$appDir) {
     [System.IO.File]::WriteAllText($settings, ($cfg | ConvertTo-Json -Depth 20), [System.Text.UTF8Encoding]::new($false))
 }
 
-# 保护真实开始菜单目录：备份 -> 测试 -> 恢复
+# 保护临时开始菜单目录：备份 -> 测试 -> 恢复
 $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\DeepSeek Harness'
 $smBak = Join-Path $env:TEMP ('dsh-sm-backup-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Force -Path $sm
+Set-Content -LiteralPath (Join-Path $sm 'user-sentinel.txt') -Value 'keep me' -Encoding ascii
 $hadSm = Test-Path -LiteralPath $sm
 if ($hadSm) { Move-Item -LiteralPath $sm -Destination $smBak }
 
@@ -126,9 +134,10 @@ try {
     if (-not $u3appGone) { $fail++; 'U3 FAILED: app dir should still be deleted (shell-only)' }
 }
 finally {
-    # 恢复真实开始菜单目录
+    # 恢复临时开始菜单目录，并还原宿主环境变量
     if (Test-Path -LiteralPath $sm) { Remove-Item -LiteralPath $sm -Recurse -Force -ErrorAction SilentlyContinue }
     if ($hadSm -and (Test-Path -LiteralPath $smBak)) { Move-Item -LiteralPath $smBak -Destination $sm }
+    $env:APPDATA = $origAppData
 }
 
 Write-Host ("StartMenu-restored={0}" -f $hadSm)
