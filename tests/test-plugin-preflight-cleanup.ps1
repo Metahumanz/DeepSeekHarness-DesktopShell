@@ -39,6 +39,7 @@ exit /b 0
 set "profile=%~3"
 if not defined profile exit /b 2
 if not exist "%DSH_HOME%\profiles\%profile%\" mkdir "%DSH_HOME%\profiles\%profile%\"
+> "%DSH_HOME%\profiles\%profile%\package.json" echo {"dependencies":{"@deepseek-ai/dsh-web-app":"0.1.0-rc.7"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app"]}}}
 exit /b 0
 '@
     [IO.File]::WriteAllText($fakeDsh, $fakeDshContent)

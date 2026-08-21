@@ -19,7 +19,7 @@ if ($funcs.Count -ne $names.Count) {
 }
 $text = (@($funcs) | ForEach-Object { $_.Extent.Text }) -join "`n"
 $MinimumCompatibleDshVersion = '0.1.0-rc.7'   # 函数引用的脚本级变量，测试侧提供
-$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8')
+$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1')
 . ([scriptblock]::Create($text))          # 点源：把函数定义进当前作用域
 
 $fail = 0
@@ -32,6 +32,7 @@ function Assert-Equal([string]$label, $actual, $expected) {
 Assert-Equal "rc.6 < rc.7"                (Compare-DshVersion '0.1.0-rc.6' '0.1.0-rc.7') -1
 Assert-Equal "rc.7 == rc.7"               (Compare-DshVersion '0.1.0-rc.7' '0.1.0-rc.7') 0
 Assert-Equal "rc.10 > rc.9 (numeric)"     (Compare-DshVersion '0.1.0-rc.10' '0.1.0-rc.9') 1
+Assert-Equal "rc1 > rc.8"                 (Compare-DshVersion '0.1.1-rc.1' '0.1.0-rc.8') 1
 Assert-Equal "release > prerelease"       (Compare-DshVersion '0.1.0' '0.1.0-rc.7') 1
 Assert-Equal "1.0.0 > rc.7"               (Compare-DshVersion '1.0.0' '0.1.0-rc.7') 1
 Assert-Equal "alpha < rc"                 (Compare-DshVersion '0.1.0-alpha.1' '0.1.0-rc.1') -1
@@ -47,6 +48,7 @@ Assert-Equal "support rc.6"               (Test-DshVersionSupported '0.1.0-rc.6'
 Assert-Equal "support rc.5"               (Test-DshVersionSupported '0.1.0-rc.5') $false
 Assert-Equal "support rc.7"               (Test-DshVersionSupported '0.1.0-rc.7') $true
 Assert-Equal "support rc.8"               (Test-DshVersionSupported '0.1.0-rc.8') $true
+Assert-Equal "support rc1"                 (Test-DshVersionSupported '0.1.1-rc.1') $true
 Assert-Equal "support future rc.9"        (Test-DshVersionSupported '0.1.0-rc.9') $true
 Assert-Equal "support 0.1.0 release"      (Test-DshVersionSupported '0.1.0') $true
 Assert-Equal "support 0.2.0"              (Test-DshVersionSupported '0.2.0') $true
@@ -57,6 +59,7 @@ Assert-Equal "support empty -> unknown"   (Test-DshVersionSupported '') $null
 # Test-DshVersionTested：只用于日志/提示，不是运行门槛
 Assert-Equal "tested rc.7"                (Test-DshVersionTested '0.1.0-rc.7') $true
 Assert-Equal "tested rc.8"                (Test-DshVersionTested '0.1.0-rc.8') $true
+Assert-Equal "tested rc1"                 (Test-DshVersionTested '0.1.1-rc.1') $true
 Assert-Equal "tested rc.9"                (Test-DshVersionTested '0.1.0-rc.9') $false
 Assert-Equal "tested 1.0.0"               (Test-DshVersionTested '1.0.0') $false
 

@@ -280,8 +280,13 @@ function Start-CapturedProcess(
 
 function Read-CapturedText([string]$path) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
-    try { return [IO.File]::ReadAllText($path) }
-    catch { return '' }
+    # Start-Process 的重定向句柄在 Web 进程运行期间可能仍保持打开；
+    # PowerShell Get-Content 对这种共享读场景比 File.ReadAllText 更稳。
+    try { return [string](Get-Content -LiteralPath $path -Raw -ErrorAction Stop) }
+    catch {
+        try { return [IO.File]::ReadAllText($path) }
+        catch { return '' }
+    }
 }
 
 function Normalize-IsolatedProfile([string]$value) {
@@ -314,6 +319,8 @@ $reason = ''
 $cleanupPassed = $true
 $cleanupReason = ''
 $useNpx = $false
+$activeStdoutPath = ''
+$activeStderrPath = ''
 
 try {
     if (-not [IO.Path]::IsPathRooted($tempHome) -or (Test-Path -LiteralPath $tempHome)) {
@@ -342,15 +349,34 @@ try {
     $env:DSH_HOME = $tempHome
     if ($env:DSH_HOME -ne $tempHome) { throw '临时 DSH_HOME 未生效；不返回兼容 PASS。' }
 
+    # plugin add 会初始化一个只含 dsh-base 的新 Profile；那样只能证明安装成功，
+    # 不能启动 Web UI。先加入与目标 CLI 同版本的 web-app，再加入待测插件，
+    # 使临时 Profile 与 DesktopShell 的 web Profile 结构一致。
+    $webSpec = '@deepseek-ai/dsh-web-app@' + $DshVersion
+    $webStdout = Join-Path $probeRoot 'web-app-install-stdout.log'
+    $webStderr = Join-Path $probeRoot 'web-app-install-stderr.log'
+    $activeStdoutPath = $webStdout
+    $activeStderrPath = $webStderr
+    $webInstallArgs = New-DshArguments @('plugin', '--profile', $profile, 'add', $webSpec)
+    $webInstallLaunch = New-LaunchSpec $executable $webInstallArgs
+    Write-Host "PLUGIN PREFLIGHT install base=$webSpec isolatedProfile=$profile tempDshHome=$tempHome"
+    $installTimeoutMs = [Math]::Max(180000, ($TimeoutSeconds * 1000))
+    $webInstallCode = Start-CapturedProcess $webInstallLaunch $tempHome $webStdout $webStderr $installTimeoutMs
+    if ($webInstallCode -ne 0) {
+        throw "Web Profile 基础包安装返回 exitCode=$webInstallCode：$webSpec"
+    }
+
     for ($i = 0; $i -lt $PluginSpec.Count; $i++) {
         $spec = ([string]$PluginSpec[$i]).Trim()
         if ([string]::IsNullOrWhiteSpace($spec)) { continue }
         $installStdout = Join-Path $probeRoot ('plugin-' + $i.ToString() + '-stdout.log')
         $installStderr = Join-Path $probeRoot ('plugin-' + $i.ToString() + '-stderr.log')
+        $activeStdoutPath = $installStdout
+        $activeStderrPath = $installStderr
         $installArgs = New-DshArguments @('plugin', '--profile', $profile, 'add', $spec)
         $installLaunch = New-LaunchSpec $executable $installArgs
         Write-Host "PLUGIN PREFLIGHT install spec=$spec isolatedProfile=$profile tempDshHome=$tempHome"
-        $installCode = Start-CapturedProcess $installLaunch $tempHome $installStdout $installStderr 120000
+        $installCode = Start-CapturedProcess $installLaunch $tempHome $installStdout $installStderr $installTimeoutMs
         if ($installCode -ne 0) {
             throw "插件安装返回 exitCode=$installCode：$spec"
         }
@@ -358,13 +384,18 @@ try {
 
     $profileDir = Join-Path $tempHome (Join-Path 'profiles' $profile)
     if (-not (Test-Path -LiteralPath $profileDir -PathType Container)) {
-        throw '插件安装后未发现临时 Profile 目录；无法证明完整隔离，未返回兼容 PASS。'
+        throw 'Web 基础包/插件安装后未发现临时 Profile 目录；无法证明完整隔离，未返回兼容 PASS。'
+    }
+    $profilePackage = Join-Path $profileDir 'package.json'
+    if (-not (Test-Path -LiteralPath $profilePackage -PathType Leaf) -or
+        -not ((Get-Content -LiteralPath $profilePackage -Raw -Encoding UTF8) -match '@deepseek-ai/dsh-web-app')) {
+        throw '临时 Profile 未包含 @deepseek-ai/dsh-web-app；无法证明 Web 兼容，未返回兼容 PASS。'
     }
 
     # 与 DesktopShell 的 BuildWebLaunchArguments 保持一致：web 是 dsh 的默认启动入口，
-    # 正式启动只传 --profile/--port；rc.8 再追加已确认支持的 --no-open。
+    # 正式启动只传 --profile/--port；已确认支持的 rc.8/rc.1 再追加 --no-open。
     $webArgs = New-DshArguments @('--profile', $profile, '--port', ([string]$port))
-    if ($DshVersion -eq '0.1.0-rc.8') { $webArgs += '--no-open' }
+    if ($DshVersion -in @('0.1.0-rc.8', '0.1.1-rc.1')) { $webArgs += '--no-open' }
     $webLaunch = New-LaunchSpec $executable $webArgs
     $webProcess = Start-Process -FilePath $webLaunch.FileName -ArgumentList $webLaunch.Arguments `
         -WorkingDirectory $tempHome -WindowStyle Hidden -RedirectStandardOutput $stdoutPath `
@@ -404,6 +435,12 @@ try {
 catch {
     $reason = $_.Exception.Message
     Write-Host "PLUGIN BOOT PREFLIGHT FAILED: $reason"
+    if ($activeStdoutPath) {
+        $installStdout = Read-CapturedText $activeStdoutPath
+        $installStderr = Read-CapturedText $activeStderrPath
+        if ($installStdout) { Write-Host '--- active install stdout (tail) ---'; Write-Host (($installStdout -split "`r?`n" | Select-Object -Last 20) -join [Environment]::NewLine) }
+        if ($installStderr) { Write-Host '--- active install stderr (tail) ---'; Write-Host (($installStderr -split "`r?`n" | Select-Object -Last 20) -join [Environment]::NewLine) }
+    }
     $stdout = Read-CapturedText $stdoutPath
     $stderr = Read-CapturedText $stderrPath
     if ($stdout) { Write-Host '--- web stdout (tail) ---'; Write-Host (($stdout -split "`r?`n" | Select-Object -Last 20) -join [Environment]::NewLine) }

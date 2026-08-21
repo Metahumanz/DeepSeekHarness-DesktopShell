@@ -9,9 +9,9 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
-# ---- 1. Dream Skin 已从固定 commit 切换到 npm 0.4.1，按能力/最低版本策略判断 ----
+# ---- 1. Dream Skin 已切换到本机真实 Profile 使用的 npm 0.4.5，按能力/最低版本策略判断 ----
 Assert-True "catalog no longer pins dsh-dream-skin@0.3.0" ($text -notmatch 'dsh-dream-skin@0\.3\.0')
-Assert-True "dream-skin uses npm ^0.4.1" ($text -match 'dsh-dream-skin@\^0\.4\.1')
+Assert-True "dream-skin uses npm ^0.4.5" ($text -match 'dsh-dream-skin@\^0\.4\.5')
 Assert-True "old pinned dream-skin commit removed" ($text -notmatch '28497f5294ba20f44acf8eecc62891297d38fc24')
 Assert-True "no 40-char dream-skin commit pinned" ($text -notmatch 'dsh-dream-skin/archive/[0-9a-f]{40}\.tar\.gz')
 

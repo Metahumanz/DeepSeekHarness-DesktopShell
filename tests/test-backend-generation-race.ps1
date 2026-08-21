@@ -16,6 +16,7 @@ try {
     ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if (-not $csc) { throw 'csc not found' }
 
+    # WebView2 引用：NuGet 缓存优先，否则下载固定版本；不下载 DSH/npm。
     $sdkRoot = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.web.webview2\1.0.4078.44'
     $core = $null
     $winForms = $null
@@ -25,7 +26,20 @@ try {
         $winForms = Get-ChildItem $sdkRoot -Recurse -Filter 'Microsoft.Web.WebView2.WinForms.dll' |
             Where-Object { $_.FullName -match '[\\/]lib[\\/]' } | Select-Object -First 1
     }
-    if (-not $core -or -not $winForms) { throw 'WebView2 reference assemblies not found' }
+    if (-not $core -or -not $winForms) {
+        $download = Join-Path $base 'wv2'
+        New-Item -ItemType Directory -Force -Path $download | Out-Null
+        $nupkg = Join-Path $download 'wv2.zip'
+        Invoke-WebRequest -UseBasicParsing `
+            -Uri 'https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.4078.44' `
+            -OutFile $nupkg -TimeoutSec 120
+        Expand-Archive -LiteralPath $nupkg -DestinationPath (Join-Path $download 'pkg') -Force
+        $core = Get-ChildItem (Join-Path $download 'pkg') -Recurse -Filter 'Microsoft.Web.WebView2.Core.dll' |
+            Where-Object { $_.FullName -match '[\\/]lib[\\/]' } | Select-Object -First 1
+        $winForms = Get-ChildItem (Join-Path $download 'pkg') -Recurse -Filter 'Microsoft.Web.WebView2.WinForms.dll' |
+            Where-Object { $_.FullName -match '[\\/]lib[\\/]' } | Select-Object -First 1
+    }
+    if (-not $core -or -not $winForms) { throw 'WebView2 reference assemblies not found after cache/download fallback' }
 
     $dshDir = Join-Path $base 'dsh'
     $logsDir = Join-Path $base 'logs'

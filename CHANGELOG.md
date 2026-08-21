@@ -4,6 +4,16 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.5（DSH 0.1.1-rc.1兼容认证）
+
+- **完成 rc1 CLI/Web/桌面壳兼容基线**：rc1 `--version`、`--help`（含 `--port` / `--no-open`）、Web ready、HTTP 200、稳定运行和 DesktopShell 后端启动/重启/退出路径已完成实测；OAuth 系统浏览器与回环导航仍保留为发布前人工签核项。
+- **兼容声明更新**：`0.1.1-rc.1` 加入 `testedDshVersions`；`defaultDshVersion` 和 `minimumCompatibleDshVersion` 继续保持 `0.1.0-rc.7`。
+- **已知能力更新**：rc1 加入已知 `--no-open` 能力；未来未知版本仍实际执行 `--help` 探测，不使用“版本号大于等于 rc.8 即支持”的规则。
+- **修复历史覆盖层 BUG**：重启按钮可见性曾受隐藏父容器的 WinForms 有效 `Visible` 影响，导致“能点击但无动作”；现在按显示决策绑定动作，并记录 `UI overlay action=restart`，同时覆盖层显示时隐藏 WebView2，关闭后恢复。
+- **插件清单按真实环境同步**：本机 `C:\Users\metahumanz\.dsh\profiles\web\package.json` 中的 23 个可移植插件逐项完成 rc1 隔离 preflight（安装 → Web ready → HTTP 200 → 稳定 10 秒 → 退出 → 端口清理），23/23 PASS。`@yuxianglin/dsh-bridge-browser` 是本地 `link:` 依赖，未伪造为可移植 PASS；`dsh-model-picker`、`modlens`、`dsh-status-rotator` 当前不在真实 Profile，未列入本轮测试。
+- **预检脚本加固**：隔离 Profile 先安装同版本 `@deepseek-ai/dsh-web-app`，并兼容读取运行中重定向日志；插件安装超时与 Web 启动超时分开，失败时输出安装日志尾部以区分网络/安装失败和插件运行失败。
+- **版本与门禁**：版本测试加入 rc1 支持/测试断言；认证静态检查加入 default/minimum/known-no-open/版本号和不在线下载约束；回归总数更新为 36 项。
+
 ## v1.0.4（运行期生命周期修复）
 
 - **托盘隐藏/恢复不再重建主窗口句柄**：MainForm 运行期间不再切换 `ShowInTaskbar`；关闭到托盘与恢复复用同一个 Form、WebView2 和 backend，并增加 Handle 创建/销毁诊断。托盘图标双击现在在显示/隐藏间切换，恢复时使用约 160ms 的 ease-out 淡入动效；普通激活、首次启动和系统关闭动画效果时不播放。

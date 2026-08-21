@@ -1,7 +1,7 @@
 name: Release
 
 # 发布 GitHub Release：
-# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.4）
+# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.5）
 #   （tag 已存在时校验其必须指向当前 HEAD，否则拒绝发布；Release 已存在直接失败）
 # - 或推送 v* tag 自动触发（版本号取 tag，去掉 v 前缀）
 # - 版本单一来源门禁：无论哪种触发方式，版本号必须等于仓库根目录 VERSION 文件，
@@ -13,7 +13,7 @@ name: Release
 #
 # 冻结策略（2026-08-19 起）：已发布的 tag 不再覆盖发布——本工作流不再删除已有 Release；
 # 若对某个已发布 tag 重新构建会因 Release 已存在而失败，这是有意行为。
-# 后续修复请发新版本（如 v1.0.4）。
+# 后续修复请发新版本（如 v1.0.5）。
 #
 # 结构：build job 只读验证+构建（无写权限）；publish job 持有 contents:write，
 # 负责打 tag 与创建 Release。所有 Actions 钉 commit SHA。
@@ -22,9 +22,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 1.0.4)'
+        description: 'Version to release (e.g. 1.0.5)'
         required: true
-        default: '1.0.4'
+        default: '1.0.5'
   push:
     tags:
       - 'v*'
@@ -165,15 +165,13 @@ jobs:
             同时匹配才继续）。
             本发布包面向 Windows 10/11 **x64**（WebView2Loader 为 win-x64 变体）。
 
-            **v1.0.4 发布摘要**：运行期生命周期与进程安全修复
-            - 托盘隐藏/恢复复用同一个 MainForm/WebView2，不再运行期切换 ShowInTaskbar 重建 HWND；
-              增加 Handle 创建/销毁诊断，托盘双击切换显示/隐藏并在恢复时淡入
-            - 真实退出统一取消 startup/restart/retry，取消后清理本轮启动的 backend，不再触碰已 Dispose 控件
-            - WebView2/overlay 恢复动作串行化；持续 Unresponsive 提供显式重建入口，不重启健康 DSH
-            - 探测子进程统一使用有界 stdout/stderr 读取与进程树清理；自有 backend 健康检查校验监听身份
-            - 持久设置与 active runtime snapshot 分离；托盘路径对话框不再把隐藏 MainForm 作为 modal owner
-            - 保持 v1.0.3 的 DSH 默认/测试版本与已确认插件规格；dsh-remote 未通过完整 BootReady 验收，暂不列入 v1.0.4 推荐；PerMonitorV2 仅增加人工验收矩阵
-            - 35 项自动回归门禁与 PowerShell 5.1 兼容门禁；插件完整 BootReady 验收另行运行隔离 release preflight
+            **v1.0.5 发布摘要**：DSH 0.1.1-rc.1 兼容认证与覆盖层修复
+            - rc1 CLI/Web/桌面壳启动、后端重启、退出和覆盖层路径完成实测；rc1 支持 `--no-open`
+            - rc1 加入 tested 版本和已知 `--no-open` 能力；默认/最低 DSH 仍为 0.1.0-rc.7
+            - 修复覆盖层重启按钮可见但未绑定动作的历史 BUG，并保留 WebView2 边界
+            - 本机真实 web Profile 的 23 个可移植插件逐项完成隔离 BootReady preflight，23/23 PASS；
+              本地 link 浏览器桥接和未安装的历史插件不伪造测试结论
+            - 36 项自动回归门禁与 PowerShell 5.1 兼容门禁；OAuth/系统浏览器流程仍按人工验收文档执行
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true

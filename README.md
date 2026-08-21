@@ -19,7 +19,7 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> DesktopShell v1.0.4（运行期生命周期修复；发布状态以 GitHub Release 为准） · DSH 0.1.0-rc.7（默认，因 fresh npx 安装可靠性；rc.8 已实测 CLI/Web 兼容）/ rc.7 / rc.8 已测试；未来 DSH 按 CLI 能力 best-effort 兼容
+> DesktopShell v1.0.5（DSH 0.1.1-rc.1 兼容认证；发布状态以 GitHub Release 为准） · DSH 0.1.0-rc.7（默认，因 fresh npx 安装可靠性；rc.7 / rc.8 / rc1 已测试）；未来 DSH 按 CLI 能力 best-effort 兼容
 
 ## 安装
 
@@ -39,8 +39,8 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.4/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.4
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.5/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.5
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
@@ -52,7 +52,7 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.4 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.5 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -94,7 +94,13 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Chat Tidy | Codex 风格对话排版 |
 | Side Outline | 对话侧边大纲 |
 | Better Archive | 会话归档整理 |
-| Model Picker | 模型选择器增强 |
+| Video Preview | 视频预览 |
+| Git Remotes | Git 远程仓库工具 |
+| Notification | 通知增强 |
+| Open in VS Code | 在 VS Code 中打开 |
+| Sidebar QA | Sidebar QA |
+| Better Sidebar Office | Better Sidebar Office |
+| Archify DSH | Archify DSH |
 
 ### 高级功能
 
@@ -105,14 +111,16 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Auto Mode | 自动连续执行模式 | 会改变 Agent 行为 |
 | Cost Meter | 用量与费用统计 | 统计参考，不等于官方账单 |
 | Dream Skin | 主题皮肤 | |
-| Status Rotator | 状态栏文案轮换 | |
 | Sentinel | 条件唤醒 | |
-| ModLens | 视觉包装 | |
-| Video Preview | 视频预览 | |
+| Liangshen | 量神 | |
+| Thought Buddy | Thought Buddy | |
 
 内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。
 需要追新版本可在向导的"额外插件"步骤粘贴自定义 spec。
-**dsh-remote 暂不列入 v1.0.4 推荐目录**：当前仅完成安装/`plugin add`，尚未通过
+本机 `web` Profile（2026-08-21 快照）的 23 个可移植插件已逐项完成 rc1 隔离 preflight：安装、Web ready、HTTP 200、稳定 10 秒、正常退出和端口清理均通过。
+`@yuxianglin/dsh-bridge-browser` 是本机 `link:` 依赖，不能移植到隔离 Profile，保留为 OAuth/浏览器桥接人工项。
+`dsh-model-picker`、`modlens`、`dsh-status-rotator` 当前不在真实 Profile，未列入本轮测试；缺席不等于 rc1 失败。
+**dsh-remote 暂不列入 v1.0.5 推荐目录**：当前仅完成安装/`plugin add`，尚未通过
 隔离 Profile 真实启动、BootReady、HTTP 200、稳定运行 10 秒且进程持续存活的完整验收；
 日常管理器只确认 package 安装成功，不启动用户真实 Profile，也不会把安装成功标记成兼容。
 发布前的完整插件验收必须单独运行（所有插件安装与启动均使用临时 `DSH_HOME`、临时 Profile、随机端口）：
@@ -183,20 +191,20 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 ```powershell
 .\scripts\Install-Desktop.ps1    # 源码安装：csc 编译 + 向导
 .\scripts\Build-Release.ps1      # 构建发布 zip（WebView2 固定 1.0.4078.44）
-.\scripts\Build-Release.ps1 -Version 1.0.4
+.\scripts\Build-Release.ps1 -Version 1.0.5
 ```
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
 **发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
-回归测试在 `tests\`（35 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
+回归测试在 `tests\`（36 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
 插件完整 BootReady 验收是独立 release preflight，不在日常插件安装流程中启动用户 Profile。
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.4`，必须与根目录
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.5`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
-1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（35 项，PowerShell 7 + 5.1）
+1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（36 项，PowerShell 7 + 5.1）
 2. `Build-Release -Version`（仅 x64）
 3. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
 4. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
@@ -210,7 +218,7 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.4`�
 ├── assets/                 # 图标（源自官方 favicon.svg）
 ├── scripts/                # 安装 / 管理 / 卸载 / 发布 / 修复脚本
 ├── src/                    # C# 桌面宿主源码（窗口/WebView2/进程托管/兼容修复）
-├── tests/                  # 回归测试（35 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
+├── tests/                  # 回归测试（36 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
 │                           #   生命周期 / 托盘句柄 / WebView 恢复 / 进程有界探测 / 设置快照 /
 │                           #   启动参数 / 端口归属 / 宿主日志 / 壳运行期 / 重验证 / 构建接线
 ├── .github/workflows/      # CI 与 GitHub Release 工作流

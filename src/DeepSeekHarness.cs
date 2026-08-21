@@ -1260,7 +1260,7 @@ namespace DeepSeekHarnessDesktop
             if (defaultDshVersionCache != null) return;
             defaultDshVersionCache = "0.1.0-rc.7";
             minimumCompatibleDshVersionCache = "0.1.0-rc.7";
-            testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8" };
+            testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8", "0.1.1-rc.1" };
             try
             {
                 string compatPath = Path.Combine(
@@ -2785,7 +2785,7 @@ namespace DeepSeekHarnessDesktop
 
         /// <summary>
         /// 探测当前 runner 的 DSH CLI 是否支持 --no-open。
-        /// rc.8 是已真实确认支持 --no-open 的版本，直接命中已知能力并缓存，不再启动 --help 探测。
+        /// rc.8 与 rc.1 是已真实确认支持 --no-open 的版本，直接命中已知能力并缓存，不再启动 --help 探测。
         /// rc.7 与未来未知版本继续按实际 --help 输出探测；探测失败保守返回 false（不加参数）。
         /// 同一 key 在本次 DesktopShell 生命周期内只探测一次。
         /// </summary>
@@ -2797,8 +2797,11 @@ namespace DeepSeekHarnessDesktop
             if (supportsNoOpenCache.HasValue && cliCapabilityKey == key)
                 return supportsNoOpenCache.Value;
 
-            // 已知能力短路：rc.8 已确认支持 --no-open，不需要为探测再启动一次 npx/dsh。
-            if (String.Equals(version, "0.1.0-rc.8", StringComparison.OrdinalIgnoreCase))
+            // 已知能力短路：rc.8 与 rc.1 已确认支持 --no-open，不需要为探测再启动一次 npx/dsh。
+            bool knownNoOpen =
+                String.Equals(version, "0.1.0-rc.8", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(version, "0.1.1-rc.1", StringComparison.OrdinalIgnoreCase);
+            if (knownNoOpen)
             {
                 cliCapabilityKey = key;
                 supportsNoOpenCache = true;
@@ -4007,16 +4010,27 @@ namespace DeepSeekHarnessDesktop
             overlayPrimaryHandler = primaryHandler;
             overlaySecondaryHandler = secondaryHandler;
 
-            overlayPrimaryButton.Visible = !String.IsNullOrEmpty(primaryText) && primaryHandler != null;
+            bool showPrimary = !String.IsNullOrEmpty(primaryText) && primaryHandler != null;
+            overlayPrimaryButton.Visible = showPrimary;
             overlayPrimaryButton.Text = primaryText ?? "";
             overlayPrimaryButton.Enabled = !recoveryBusy;
-            if (overlayPrimaryButton.Visible) overlayPrimaryButton.Click += overlayPrimaryHandler;
+            // loadingPanel 可能仍处于隐藏状态；此时子控件的 Visible getter
+            // 会受父控件状态影响。不能用 overlayPrimaryButton.Visible 判断
+            // 是否绑定事件，否则覆盖层再次显示时按钮可见但没有 Click handler。
+            if (showPrimary) overlayPrimaryButton.Click += overlayPrimaryHandler;
 
-            overlaySecondaryButton.Visible = !String.IsNullOrEmpty(secondaryText) && secondaryHandler != null;
+            bool showSecondary = !String.IsNullOrEmpty(secondaryText) && secondaryHandler != null;
+            overlaySecondaryButton.Visible = showSecondary;
             overlaySecondaryButton.Text = secondaryText ?? "";
             overlaySecondaryButton.Enabled = !recoveryBusy;
-            if (overlaySecondaryButton.Visible) overlaySecondaryButton.Click += overlaySecondaryHandler;
+            if (showSecondary) overlaySecondaryButton.Click += overlaySecondaryHandler;
 
+            // WebView2 是原生子窗口。仅靠 WinForms 的 BringToFront 让 loadingPanel
+            // “看起来”位于 WebView2 上方并不可靠：WebView2 仍可能拿到鼠标/键盘命中，
+            // 导致覆盖层按钮可见但 Click 不触发（尤其是后端中断后的恢复按钮）。
+            // 覆盖层表示当前页面不可操作，短暂隐藏 WebView2 可同时保证视觉和输入层级一致。
+            if (webView != null && !webView.IsDisposed)
+                webView.Visible = false;
             loadingPanel.Visible = true;
             loadingPanel.BringToFront();
             LayoutOverlay();
@@ -4029,6 +4043,8 @@ namespace DeepSeekHarnessDesktop
             copyErrorButton.Visible = false;
             errorTitle.Visible = false;
             loadingPanel.Visible = false;
+            if (webView != null && !webView.IsDisposed)
+                webView.Visible = true;
         }
 
         private ContextMenuStrip BuildTrayMenu()
@@ -5486,6 +5502,7 @@ namespace DeepSeekHarnessDesktop
 
         private async void OnOverlayRestartBackend(object sender, EventArgs e)
         {
+            HostLog.Line("UI overlay action=restart reason=" + (overlayReason ?? ""));
             await RestartBackendAsync();
         }
 
