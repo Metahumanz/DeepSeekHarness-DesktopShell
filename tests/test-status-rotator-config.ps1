@@ -27,7 +27,7 @@ New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
 $example = @'
 {
   "config": { "gradient": { "enabled": true, "speed": 4 } },
-  "phrases": { "zh": { "thinking": ["梗词 A", "梗词 B"] } }
+  "phrases": { "zh": { "thinking": ["phrase A", "phrase B"] } }
 }
 '@
 Set-Content -LiteralPath (Join-Path $profileDir 'config.example.json') -Value $example -Encoding UTF8

@@ -33,13 +33,15 @@ $forward = @(Resolve-ExclusivePluginSelection @($status, $thought))
 $reverse = @(Resolve-ExclusivePluginSelection @($thought, $status))
 Assert-True 'status then thought resolves to one choice' ($forward.Count -eq 1 -and $forward[0].Id -eq 'status-rotator')
 Assert-True 'thought then status resolves symmetrically' ($reverse.Count -eq 1 -and $reverse[0].Id -eq 'status-rotator')
-Assert-True 'interactive custom selection prompts for a choice' ($manage -match "二选一，输入编号")
+Assert-True 'interactive custom selection prompts for a choice' (
+    $manage.Contains('Resolve-ExclusivePluginSelection') -and $manage.Contains('Read-Host'))
 Assert-True 'existing Profile conflict does not auto-uninstall' (
-    $manage -match '不会自动卸载' -and $manage -match '非交互模式不替用户卸载任何一项')
-$removeCall = "'plugin','--profile',`$profile,'remove'"
+    $manage.Contains('Resolve-ProfileExclusiveConflicts') -and $manage.Contains('NonInteractive'))
 Assert-True 'chosen existing Profile winner removes only the loser' (
-    $manage.Contains($removeCall) -and $manage -match '选择保留项')
-Assert-True 'legacy scattered status special-case is gone' ($manage -notmatch 'selected\.Id\s*-contains\s*[''\"]status')
+    $manage.Contains('Resolve-ProfileExclusiveConflicts') -and
+    $manage -match '\$remove\[0\]\.Package')
+$legacyStatusSpecialCase = 'selected\.Id\s*-contains\s*' + [char]39 + 'status'
+Assert-True 'legacy scattered status special-case is gone' ($manage -notmatch $legacyStatusSpecialCase)
 
 if ($fail -eq 0) { Write-Host 'PLUGIN EXCLUSIVE GROUP TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

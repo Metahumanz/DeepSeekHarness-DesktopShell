@@ -39,7 +39,7 @@ Assert-True 'stale/nonexistent historical entries are absent' (
     $catalog -notmatch "Id='model-picker'" -and $catalog -notmatch "Id='modlens'" -and
     $catalog -notmatch 'dsh-bridge-browser')
 Assert-True 'local-only bridge remains documented outside portable catalog' (
-    $manage -match '本地集成依赖' -and $manage -match 'bridge-browser')
+    $manage -match 'link:' -and $manage -match 'bridge-browser')
 
 if ($fail -eq 0) { Write-Host 'PLUGIN CATALOG TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

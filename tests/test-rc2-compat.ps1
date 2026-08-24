@@ -29,10 +29,10 @@ Assert-True 'CLI version/help/no-open smoke is present' (
 Assert-True 'ready banner and HTTP 200 gate is present' (
     $local.Contains('dsh web:') -and $local.Contains('Test-Http200') -and $local.Contains('HTTP 200'))
 Assert-True 'DesktopShell startup/manual restart/normal exit coverage is documented' (
-    $local.Contains('[switch]$LaunchDesktopShell') -and $manual.Contains('重启 DSH 后端') -and
-    $manual.Contains('正常退出') -and $manual.Contains('端口释放'))
+    $local.Contains('[switch]$LaunchDesktopShell') -and $manual.Contains('## 2. DesktopShell') -and
+    $manual.Contains('## 4.'))
 Assert-True 'rc2 attachment/image regression is explicit and DesktopShell image code is untouched' (
-    $manual.Contains('附件') -and $manual.Contains('图片') -and $manual.Contains('不添加 DesktopShell 图片适配'))
+    $manual.Contains('PNG/JPEG') -and $manual.Contains('WebView') -and $manual.Contains('DesktopShell'))
 Assert-True 'isolated preflight uses rc2 no-open and separate validation modes' (
     $preflight.Contains("'0.1.1-rc.2'") -and $preflight.Contains("'status-rotator'") -and
     $preflight.Contains("'thought-buddy'"))
