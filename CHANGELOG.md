@@ -4,6 +4,16 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.6（DSH 0.1.1-rc.2 兼容与插件目录收口）
+
+- **rc.2 兼容声明**：`0.1.1-rc.2` 加入 `testedDshVersions`，并加入已确认支持 `--no-open` 的能力表；未知版本仍实际执行 `--help` 探测。真实环境验收通过后，`defaultDshVersion` 切换为 `0.1.1-rc.2`，`minimumCompatibleDshVersion` 继续保持 `0.1.0-rc.7`。
+- **rc.2 回归入口**：沿用 rc.1 的临时 `DSH_HOME`/随机端口流程，覆盖 `--version`、`--help`、`--profile web --no-open`、ready banner、HTTP 200、稳定运行、DesktopShell 启动/后端重启/正常退出和附件/图片人工回归；DesktopShell 不增加图片适配。
+- **本轮实测结论**：rc.2 CLI/Web 隔离 smoke 与 26/26 插件 preflight 通过，真实环境的 DesktopShell 启动、后端重启、正常退出和附件/图片回归通过，默认版本切换为 rc.2。临时构建 GUI 曾在 WebView2 `WebViewInitialize` 报 `0x8000FFFF (E_UNEXPECTED)`，该结果归因为临时环境异常，不覆盖真实环境验收结论。
+- **插件目录按真实 Profile 同步**：更新本机已安装版本，清除失效的 `dsh-open-in-vscode` 等历史项，加入 `dsh-context`、`dsh-open-in`、`dsh-agent-teams` 和 `dsh-status-rotator`；Agent Teams 放在 advanced，保持安装成功不等于兼容通过。
+- **思考状态插件互斥**：Status Rotator `dsh-status-rotator@^0.6.6` 放入 enhanced 并作为低侵入首选；Thought Buddy 保留在 advanced。两者使用 `thinking-status-ui` 互斥组，选择冲突时要求二选一，已有 Profile 冲突不会静默卸载。
+- **安装后 hook 元数据化**：Sidebar 与 Status Rotator 的配置通过 `PostInstall` 统一遍历执行；Status Rotator 首次安装初始化配置并默认关闭渐变，已有用户配置保持不变。
+- **回归门禁**：新增 rc2 兼容、插件目录、Status Rotator 配置和插件互斥组测试，回归总数更新为 39 项。
+
 ## v1.0.5（DSH 0.1.1-rc.1兼容认证）
 
 - **完成 rc1 CLI/Web/桌面壳兼容基线**：rc1 `--version`、`--help`（含 `--port` / `--no-open`）、Web ready、HTTP 200、稳定运行和 DesktopShell 后端启动/重启/退出路径已完成实测；OAuth 系统浏览器与回环导航仍保留为发布前人工签核项。
