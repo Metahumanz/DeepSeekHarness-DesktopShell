@@ -23,6 +23,7 @@ Assert-True "SupportsNoOpen uses effectiveVersion" ($cs -match 'SupportsNoOpen\(
 Assert-True "cache key includes command path" ($cs -match 'string key = \(usingNpx \? "npx:" : "cmd:"\) \+ command \+ ":" \+ version \+ ":" \+ profile;')
 Assert-True "known rc.8 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.0-rc\.8"' -and $cs -match 'supportsNoOpenCache = true;' -and $cs -match 'return true;')
 Assert-True "known rc1 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.1-rc\.1"' -and $cs -match 'bool knownNoOpen')
+Assert-True "known rc2 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.1-rc\.2"' -and $cs -match 'bool knownNoOpen')
 Assert-True "known rc.8 => --no-open" ($cs -match 'if \(noOpen\)\s*args \+= " --no-open";')
 $noOpenMethod = [regex]::Match($cs, 'private bool SupportsNoOpen[\s\S]*?\r?\n\s*///').Value
 Assert-True "future versions retain --help probe" ($noOpenMethod -match 'string probeArgs = usingNpx' -and $noOpenMethod -match '--help' -and $noOpenMethod -notmatch 'version\s*>=')
@@ -35,6 +36,7 @@ $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -
 Assert-True "defaultDshVersion valid (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "rc.8 is tested baseline" (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.0-rc.8' }).Count -gt 0)
 Assert-True "rc1 is tested baseline" (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.1' }).Count -gt 0)
+Assert-True "rc2 is tested baseline" (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.2' }).Count -gt 0)
 
 if ($fail -eq 0) { Write-Host 'LAUNCH ARGS TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

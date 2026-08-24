@@ -61,16 +61,19 @@ Assert-True 'install success is explicitly not compatibility success' (
 Assert-True 'dsh-remote is absent from the active recommendation catalog' (
     $catalog -notmatch "Id='remote'" -and
     $catalog -notmatch 'dsh-remote' -and
-    $catalog -match 'No=23; Id=\x27thought-buddy\x27')
+    $catalog -match 'No=25; Id=\x27thought-buddy\x27' -and
+    $catalog -match 'No=26; Id=\x27agent-teams\x27')
 Assert-True 'active catalog matches the real web Profile package set' (
-    $catalog -match "Id='market'.*dshmarket@1\.17\.1" -and
-    $catalog -match "Id='sidebar'.*dsh-better-sidebar@\^0\.14\.0" -and
+    $catalog -match "Id='market'.*dshmarket@1\.21\.2" -and
+    $catalog -match "Id='sidebar'.*dsh-better-sidebar@\^0\.15\.2" -and
     $catalog -match "Id='rewind'.*github:XSJUSTC/dsh-rewind" -and
-    $catalog -match "Id='cost'.*dsh-cost-meter@\^1\.5\.35" -and
+    $catalog -match "Id='cost'.*dsh-cost-meter@\^1\.5\.42" -and
     $catalog -match "Id='thought-buddy'.*@dsh-plugin/dsh-thought-buddy@\^0\.2\.0" -and
+    $catalog -match "Id='status-rotator'.*dsh-status-rotator@\^0\.6\.6" -and
+    $catalog -match "Id='agent-teams'.*@nanmicoder/dsh-agent-teams@\^0\.1\.13" -and
     $catalog -notmatch "Id='model-picker'" -and
     $catalog -notmatch "Id='modlens'" -and
-    $catalog -notmatch "Id='status'"
+    $catalog -notmatch 'open-in-vscode'
 )
 Assert-True 'local-only bridge-browser is documented but not offered as a portable plugin' (
     $manage -match '本地集成依赖' -and

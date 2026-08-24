@@ -19,7 +19,9 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> DesktopShell v1.0.5（DSH 0.1.1-rc.1 兼容认证；发布状态以 GitHub Release 为准） · DSH 0.1.0-rc.7（默认，因 fresh npx 安装可靠性；rc.7 / rc.8 / rc1 已测试）；未来 DSH 按 CLI 能力 best-effort 兼容
+> DesktopShell v1.0.6（DSH 0.1.1-rc.2 兼容收口；发布状态以 GitHub Release 为准） · DSH 0.1.1-rc.2（默认；最低兼容版本为 rc.7；rc.7 / rc.8 / rc1 / rc2 已列入测试基线）；未来 DSH 按 CLI 能力 best-effort 兼容
+
+> 当前 rc.2 CLI/Web 与 26 个插件隔离 preflight 已通过，真实环境 rc.2 验收通过，默认 DSH 已切换到 rc.2。一次临时构建 GUI 的 WebView2 `WebViewInitialize` 出现 `0x8000FFFF (E_UNEXPECTED)`，记录为该临时环境问题，不作为 rc.2 兼容否决依据。
 
 ## 安装
 
@@ -39,8 +41,8 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.5/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.5
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.6/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.6
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
@@ -52,7 +54,7 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.5 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.6 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -97,10 +99,12 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Video Preview | 视频预览 |
 | Git Remotes | Git 远程仓库工具 |
 | Notification | 通知增强 |
-| Open in VS Code | 在 VS Code 中打开 |
+| Open In | 在 VS Code、文件管理器或终端中打开 |
 | Sidebar QA | Sidebar QA |
 | Better Sidebar Office | Better Sidebar Office |
 | Archify DSH | Archify DSH |
+| Status Rotator | 思考/运行状态文案轮换（只改展示层） |
+| Context Insight | 上下文用量与组成观察 |
 
 ### 高级功能
 
@@ -113,15 +117,15 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Dream Skin | 主题皮肤 | |
 | Sentinel | 条件唤醒 | |
 | Liangshen | 量神 | |
-| Thought Buddy | Thought Buddy | |
+| Thought Buddy | Deep diving 状态条前的动态伙伴 | 与 Status Rotator 互斥 |
+| Agent Teams | 多 Agent 协作 | 会改变 Agent 行为 |
 
 内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。
 需要追新版本可在向导的"额外插件"步骤粘贴自定义 spec。
-本机 `web` Profile（2026-08-21 快照）的 23 个可移植插件已逐项完成 rc1 隔离 preflight：安装、Web ready、HTTP 200、稳定 10 秒、正常退出和端口清理均通过。
+本机 `web` Profile（2026-08-24 快照）包含 26 个可移植推荐插件；清单中的 `Installed` 是本机已安装版本，仍不等同于兼容 PASS。rc2 版本的逐插件隔离 preflight 使用临时 `DSH_HOME`、临时 Profile、随机端口，并逐项完成安装、Web ready、HTTP 200、稳定 10 秒、正常退出和端口清理后才记为 PASS。
 `@yuxianglin/dsh-bridge-browser` 是本机 `link:` 依赖，不能移植到隔离 Profile，保留为 OAuth/浏览器桥接人工项。
-`dsh-model-picker`、`modlens`、`dsh-status-rotator` 当前不在真实 Profile，未列入本轮测试；缺席不等于 rc1 失败。
-**dsh-remote 暂不列入 v1.0.5 推荐目录**：当前仅完成安装/`plugin add`，尚未通过
-隔离 Profile 真实启动、BootReady、HTTP 200、稳定运行 10 秒且进程持续存活的完整验收；
+历史上不存在/失效的 `dsh-model-picker`、`modlens`、`dsh-remote`、`dsh-open-in-vscode` 不再放入目录；本机未安装的插件不会被伪造为兼容 PASS。
+Status Rotator 是思考/运行状态增强的默认建议，只改展示层；Thought Buddy 仍可选，但两者属于 `thinking-status-ui` 互斥组。自定义选择同时选中时管理器要求二选一；已有 Profile 同时安装时只提示并让用户选择保留项，不会静默卸载。
 日常管理器只确认 package 安装成功，不启动用户真实 Profile，也不会把安装成功标记成兼容。
 发布前的完整插件验收必须单独运行（所有插件安装与启动均使用临时 `DSH_HOME`、临时 Profile、随机端口）：
 
@@ -191,20 +195,20 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 ```powershell
 .\scripts\Install-Desktop.ps1    # 源码安装：csc 编译 + 向导
 .\scripts\Build-Release.ps1      # 构建发布 zip（WebView2 固定 1.0.4078.44）
-.\scripts\Build-Release.ps1 -Version 1.0.5
+.\scripts\Build-Release.ps1 -Version 1.0.6
 ```
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
 **发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
-回归测试在 `tests\`（36 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
+回归测试在 `tests\`（39 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
 插件完整 BootReady 验收是独立 release preflight，不在日常插件安装流程中启动用户 Profile。
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.5`，必须与根目录
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.6`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
-1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（36 项，PowerShell 7 + 5.1）
+1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（39 项，PowerShell 7 + 5.1）
 2. `Build-Release -Version`（仅 x64）
 3. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
 4. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
@@ -218,7 +222,7 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.5`�
 ├── assets/                 # 图标（源自官方 favicon.svg）
 ├── scripts/                # 安装 / 管理 / 卸载 / 发布 / 修复脚本
 ├── src/                    # C# 桌面宿主源码（窗口/WebView2/进程托管/兼容修复）
-├── tests/                  # 回归测试（36 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
+├── tests/                  # 回归测试（39 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
 │                           #   生命周期 / 托盘句柄 / WebView 恢复 / 进程有界探测 / 设置快照 /
 │                           #   启动参数 / 端口归属 / 宿主日志 / 壳运行期 / 重验证 / 构建接线
 ├── .github/workflows/      # CI 与 GitHub Release 工作流

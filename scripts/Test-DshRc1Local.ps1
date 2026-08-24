@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$DshVersion = '0.1.1-rc.1',
+    [string]$DshVersion = '0.1.1-rc.2',
+    [ValidateSet('npx', 'command', 'auto')]
+    [string]$PluginRunnerMode = 'npx',
+    [string]$PluginDshPath = '',
     [int]$Port = 0,
     [string]$AppExe = '',
     [switch]$LaunchDesktopShell,
@@ -14,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$sessionRoot = Join-Path ([IO.Path]::GetTempPath()) ('dsh-rc1-local-' + [guid]::NewGuid().ToString('N'))
+$sessionRoot = Join-Path ([IO.Path]::GetTempPath()) ('dsh-rc2-local-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $sessionRoot | Out-Null
 
 function Say([string]$text) { Write-Host "[LOCAL] $text" -ForegroundColor Cyan }
@@ -49,6 +52,7 @@ function Stop-TestProcessTree([int]$targetPid) {
     if ($null -eq $exists) { return }
     Say "Stopping exact test PID $targetPid tree"
     & taskkill.exe /PID $targetPid /T /F | Out-Null
+    try { Stop-Process -Id $targetPid -Force -ErrorAction Stop } catch { }
 }
 
 function Get-ListeningPid([int]$port) {
@@ -195,7 +199,7 @@ function Invoke-CliSmoke {
 
     $versionResult = Invoke-CapturedCommand `
         -argumentLine ('/d /s /c "npx -y @deepseek-ai/dsh@' + $DshVersion + ' --version"') `
-        -dshHome $cliHome
+        -dshHome $cliHome -timeoutSeconds $TimeoutSeconds
     $versionOutput = ($versionResult.Stdout + "`n" + $versionResult.Stderr)
     $versionTokens = @($versionOutput -split '\s+')
     if (($versionResult.ExitCode -ne 0) -or (-not ($versionTokens -contains $DshVersion))) {
@@ -205,7 +209,7 @@ function Invoke-CliSmoke {
 
     $helpResult = Invoke-CapturedCommand `
         -argumentLine ('/d /s /c "npx -y @deepseek-ai/dsh@' + $DshVersion + ' --profile web --help"') `
-        -dshHome $cliHome
+        -dshHome $cliHome -timeoutSeconds $TimeoutSeconds
     $helpOutput = ($helpResult.Stdout + "`n" + $helpResult.Stderr)
     if ($helpResult.ExitCode -ne 0 -or
         $helpOutput -notmatch '--port' -or $helpOutput -notmatch '--no-open') {
@@ -276,7 +280,7 @@ function Start-IsolatedDesktopShell {
     if (-not $AppExe -and
         [IO.Path]::GetFullPath($sourceExe) -ieq [IO.Path]::GetFullPath($installedExe) -and
         -not (Test-Path -LiteralPath $patchedCandidate -PathType Leaf)) {
-        throw 'No patched candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient to verify the v1.0.5 overlay fix.'
+        throw 'No v1.0.6 candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient for this DesktopShell acceptance run.'
     }
     $sourceDir = Split-Path -Parent $sourceExe
     $guiDir = Join-Path $sessionRoot 'desktop-shell'
@@ -335,7 +339,7 @@ function Start-IsolatedDesktopShell {
     Write-Host ("DSH_HOME: {0}" -f $dshHome)
     Write-Host ("Port:     {0}" -f $guiPort)
     Write-Host ("Log:      {0}" -f (Join-Path $guiDir 'logs\desktop-shell.log'))
-    Write-Host 'Follow docs\DSH_RC1_MANUAL_ACCEPTANCE.md for real mouse, restart, tray, and exit checks.' -ForegroundColor Yellow
+    Write-Host 'Follow docs\DSH_RC2_MANUAL_ACCEPTANCE.md for DesktopShell startup, backend restart, attachment/image, tray, and exit checks.' -ForegroundColor Yellow
     Read-Host 'Press Enter after GUI manual checks; the exact test process and temp directory will be cleaned' | Out-Null
 
     Stop-TestProcessTree $process.Id
@@ -346,9 +350,9 @@ function Start-IsolatedDesktopShell {
 function Invoke-PluginPreflight {
     $preflight = Join-Path $repoRoot 'scripts\Test-PluginBootPreflight.ps1'
     $plugins = @(
-        [pscustomobject]@{ Name='dshmarket'; Spec='dshmarket@1.17.1' },
-        [pscustomobject]@{ Name='dsh-better-sidebar'; Spec='dsh-better-sidebar@^0.14.0' },
-        [pscustomobject]@{ Name='@michengai/dsh-skills-manager'; Spec='@michengai/dsh-skills-manager@0.1.23' },
+        [pscustomobject]@{ Name='dshmarket'; Spec='dshmarket@1.21.2' },
+        [pscustomobject]@{ Name='dsh-better-sidebar'; Spec='dsh-better-sidebar@^0.15.2' },
+        [pscustomobject]@{ Name='@michengai/dsh-skills-manager'; Spec='@michengai/dsh-skills-manager@0.1.24' },
         [pscustomobject]@{ Name='dsh-at-file'; Spec='github:omdsh-dev/dsh-at-file' },
         [pscustomobject]@{ Name='@xsj/dsh-rewind'; Spec='github:XSJUSTC/dsh-rewind' },
         [pscustomobject]@{ Name='dsh-file-mentions'; Spec='git+https://github.com/a903067276-rgb/dsh-file-mentions.git' },
@@ -359,22 +363,34 @@ function Invoke-PluginPreflight {
         [pscustomobject]@{ Name='dsh-video-preview'; Spec='dsh-video-preview@^0.1.1' },
         [pscustomobject]@{ Name='dsh-git-remotes'; Spec='github:yq04/dsh-git-remotes' },
         [pscustomobject]@{ Name='dsh-notification'; Spec='git+https://github.com/omdsh-dev/dsh-notification.git' },
-        [pscustomobject]@{ Name='dsh-open-in-vscode'; Spec='github:omdsh-dev/dsh-open-in-vscode' },
+        [pscustomobject]@{ Name='dsh-open-in'; Spec='dsh-open-in@^0.1.1' },
         [pscustomobject]@{ Name='dsh-sidebar-qa'; Spec='github:ChenRuoT/dsh-sidebar-qa' },
-        [pscustomobject]@{ Name='@huanlin/dsh-plugin-better-sidebar-plugin-office'; Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.0' },
+        [pscustomobject]@{ Name='@huanlin/dsh-plugin-better-sidebar-plugin-office'; Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.2' },
         [pscustomobject]@{ Name='@tt-a1i/archify-dsh'; Spec='@tt-a1i/archify-dsh@^0.1.0' },
-        [pscustomobject]@{ Name='@nanmicoder/dsh-auto-mode'; Spec='@nanmicoder/dsh-auto-mode@^0.1.4' },
-        [pscustomobject]@{ Name='dsh-cost-meter'; Spec='dsh-cost-meter@^1.5.35' },
-        [pscustomobject]@{ Name='dsh-dream-skin'; Spec='dsh-dream-skin@^0.4.5' },
+        [pscustomobject]@{ Name='dsh-status-rotator'; Spec='dsh-status-rotator@^0.6.6'; Validation='status-rotator' },
+        [pscustomobject]@{ Name='dsh-context'; Spec='dsh-context@^0.29.0' },
+        [pscustomobject]@{ Name='@nanmicoder/dsh-auto-mode'; Spec='@nanmicoder/dsh-auto-mode@^0.1.5' },
+        [pscustomobject]@{ Name='dsh-cost-meter'; Spec='dsh-cost-meter@^1.5.42' },
+        [pscustomobject]@{ Name='dsh-dream-skin'; Spec='dsh-dream-skin@^0.4.10' },
         [pscustomobject]@{ Name='dsh-sentinel'; Spec='dsh-sentinel@0.11.0' },
-        [pscustomobject]@{ Name='@linxin666/dsh-liangshen'; Spec='@linxin666/dsh-liangshen@^0.2.7' },
-        [pscustomobject]@{ Name='@dsh-plugin/dsh-thought-buddy'; Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0' }
+        [pscustomobject]@{ Name='@linxin666/dsh-liangshen'; Spec='@linxin666/dsh-liangshen@^0.3.2' },
+        [pscustomobject]@{ Name='@dsh-plugin/dsh-thought-buddy'; Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Validation='thought-buddy' },
+        [pscustomobject]@{ Name='@nanmicoder/dsh-agent-teams'; Spec='@nanmicoder/dsh-agent-teams@^0.1.13' }
     )
     $failed = 0
     foreach ($plugin in $plugins) {
         Say "Plugin preflight: $($plugin.Name) [$($plugin.Spec)]"
         try {
-            & $preflight -PluginSpec $plugin.Spec -DshVersion $DshVersion -StableSeconds 10
+            $validation = if ($plugin.Validation) { [string]$plugin.Validation } else { 'standard' }
+            $preflightArgs = @{
+                PluginSpec = @([string]$plugin.Spec)
+                DshVersion = $DshVersion
+                Validation = $validation
+                StableSeconds = 10
+                RunnerMode = $PluginRunnerMode
+            }
+            if ($PluginDshPath) { $preflightArgs.DshPath = $PluginDshPath }
+            & $preflight @preflightArgs
             if ($LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" }
             Ok $plugin.Name
         }

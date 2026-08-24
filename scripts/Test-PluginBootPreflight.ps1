@@ -3,11 +3,13 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]]$PluginSpec,
 
-    [string]$DshVersion = '0.1.0-rc.7',
+    [string]$DshVersion = '0.1.1-rc.2',
     [ValidateSet('npx', 'command', 'auto')]
     [string]$RunnerMode = 'npx',
     [string]$DshPath = '',
     [string]$ProfileName = '',
+    [ValidateSet('standard', 'status-rotator', 'thought-buddy')]
+    [string]$Validation = 'standard',
     [int]$StableSeconds = 10,
     [int]$TimeoutSeconds = 120
 )
@@ -289,6 +291,55 @@ function Read-CapturedText([string]$path) {
     }
 }
 
+function Read-JsonFile([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try { return Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch { return $null }
+}
+
+function Test-StatusRotatorPlugin([string]$profileDir) {
+    $pluginDir = Join-Path $profileDir 'node_modules\dsh-status-rotator'
+    $package = Read-JsonFile (Join-Path $pluginDir 'package.json')
+    $configPath = Join-Path $pluginDir 'config.json'
+    $clientPath = Join-Path $pluginDir 'lib\client.js'
+    $nodePath = Join-Path $pluginDir 'lib\index.js'
+    $smokePath = Join-Path $pluginDir 'scripts\smoke-test.cjs'
+    if (-not $package -or [string]$package.version -ne '0.6.6') { throw 'Status Rotator 版本不是已验证的 0.6.6。' }
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw 'Status Rotator 缺少 post-install 初始化后的 config.json。' }
+    $document = Read-JsonFile $configPath
+    if (-not $document -or -not $document.config -or $document.config.gradient.enabled -ne $false) {
+        throw 'Status Rotator 默认配置未关闭渐变。'
+    }
+    $thinking = @($document.phrases.zh.thinking)
+    if ($thinking.Count -lt 2) { throw 'Status Rotator 中文 thinking 梗词不足，无法验证轮换。' }
+    $clientText = if (Test-Path -LiteralPath $clientPath) { Get-Content -LiteralPath $clientPath -Raw -Encoding UTF8 } else { '' }
+    $nodeText = if (Test-Path -LiteralPath $nodePath) { Get-Content -LiteralPath $nodePath -Raw -Encoding UTF8 } else { '' }
+    if ($clientText -notmatch 'Deep diving\.\.\.' -or $clientText -notmatch 'setInterval' -or
+        $clientText -notmatch '状态文案' -or $clientText -notmatch 'gradient') {
+        throw 'Status Rotator 未发现 Deep diving 替换、轮换、设置页和渐变配置能力。'
+    }
+    if ($nodeText -notmatch 'config\.json' -or $nodeText -notmatch 'status-rotator') {
+        throw 'Status Rotator 未发现配置持久化路由。'
+    }
+    if (Test-Path -LiteralPath $smokePath -PathType Leaf) {
+        & node.exe $smokePath | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Status Rotator 自带 smoke-test 失败。' }
+    }
+    Write-Host 'PLUGIN PREFLIGHT status-rotator checks=phrase-rotation,deep-diving-replacement,gradient-off,settings-page'
+}
+
+function Test-ThoughtBuddyPlugin([string]$profileDir) {
+    $pluginDir = Join-Path $profileDir 'node_modules\@dsh-plugin\dsh-thought-buddy'
+    $package = Read-JsonFile (Join-Path $pluginDir 'package.json')
+    $clientPath = Join-Path $pluginDir 'lib\client.js'
+    if (-not $package -or [string]$package.version -ne '0.2.0') { throw 'Thought Buddy 版本不是已验证的 0.2.0。' }
+    $clientText = if (Test-Path -LiteralPath $clientPath) { Get-Content -LiteralPath $clientPath -Raw -Encoding UTF8 } else { '' }
+    if ($clientText -notmatch 'Deep diving' -or $clientText -notmatch 'setInterval') {
+        throw 'Thought Buddy 客户端能力文件不完整。'
+    }
+    Write-Host 'PLUGIN PREFLIGHT thought-buddy checks=separate-install'
+}
+
 function Normalize-IsolatedProfile([string]$value) {
     if ([string]::IsNullOrWhiteSpace($value)) {
         return 'compat-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
@@ -297,6 +348,29 @@ function Normalize-IsolatedProfile([string]$value) {
         throw 'ProfileName 必须是安全的隔离 Profile 名；无法构造隔离 Profile，因此不返回兼容 PASS。'
     }
     return $value
+}
+
+function Initialize-StatusRotatorPreflightConfig([string]$profileDir) {
+    $pluginDir = Join-Path $profileDir 'node_modules\dsh-status-rotator'
+    $configPath = Join-Path $pluginDir 'config.json'
+    $examplePath = Join-Path $pluginDir 'config.example.json'
+    if (-not (Test-Path -LiteralPath $pluginDir -PathType Container)) { return }
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath $examplePath -PathType Leaf)) { throw 'Status Rotator 缺少 config.example.json。' }
+        Copy-Item -LiteralPath $examplePath -Destination $configPath -Force
+    }
+    $document = Read-JsonFile $configPath
+    if (-not $document) { throw 'Status Rotator config.json 不是有效 JSON。' }
+    if (-not $document.config -or $document.config -is [array]) {
+        Add-Member -InputObject $document -MemberType NoteProperty -Name config -Value ([pscustomobject]@{}) -Force
+    }
+    if (-not $document.config.gradient -or $document.config.gradient -is [array] -or
+        $document.config.gradient -is [bool]) {
+        Add-Member -InputObject $document.config -MemberType NoteProperty -Name gradient -Value ([pscustomobject]@{}) -Force
+    }
+    Add-Member -InputObject $document.config.gradient -MemberType NoteProperty -Name enabled -Value $false -Force
+    [IO.File]::WriteAllText($configPath, ($document | ConvertTo-Json -Depth 50), [System.Text.UTF8Encoding]::new($false))
+    Write-Host 'PLUGIN PREFLIGHT status-rotator post-install fixture=config.json gradient=off'
 }
 
 function New-DshArguments([string[]]$tail) {
@@ -392,10 +466,14 @@ try {
         throw '临时 Profile 未包含 @deepseek-ai/dsh-web-app；无法证明 Web 兼容，未返回兼容 PASS。'
     }
 
+    if ($Validation -eq 'status-rotator') {
+        Initialize-StatusRotatorPreflightConfig $profileDir
+    }
+
     # 与 DesktopShell 的 BuildWebLaunchArguments 保持一致：web 是 dsh 的默认启动入口，
-    # 正式启动只传 --profile/--port；已确认支持的 rc.8/rc.1 再追加 --no-open。
+    # 正式启动只传 --profile/--port；已确认支持的 rc.8/rc.1/rc.2 再追加 --no-open。
     $webArgs = New-DshArguments @('--profile', $profile, '--port', ([string]$port))
-    if ($DshVersion -in @('0.1.0-rc.8', '0.1.1-rc.1')) { $webArgs += '--no-open' }
+    if ($DshVersion -in @('0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')) { $webArgs += '--no-open' }
     $webLaunch = New-LaunchSpec $executable $webArgs
     $webProcess = Start-Process -FilePath $webLaunch.FileName -ArgumentList $webLaunch.Arguments `
         -WorkingDirectory $tempHome -WindowStyle Hidden -RedirectStandardOutput $stdoutPath `
@@ -423,6 +501,37 @@ try {
             }
             if ($webProcess.HasExited -or -not (Test-Http200 $port)) {
                 throw '稳定确认结束时 Profile 已退出或 HTTP 不再返回 200。'
+            }
+            if ($Validation -eq 'status-rotator') {
+                Test-StatusRotatorPlugin $profileDir
+                $configPath = Join-Path $profileDir 'node_modules\dsh-status-rotator\config.json'
+                $configBeforeRestart = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
+                if (-not (Stop-PreflightWebProcess $webProcess $port)) {
+                    throw 'Status Rotator 重启前端口未能安全释放。'
+                }
+                try { $webProcess.Dispose() } catch { }
+                $webProcess = Start-Process -FilePath $webLaunch.FileName -ArgumentList $webLaunch.Arguments `
+                    -WorkingDirectory $tempHome -WindowStyle Hidden -RedirectStandardOutput $stdoutPath `
+                    -RedirectStandardError $stderrPath -PassThru
+                $restartDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+                $restartReady = $false
+                while ([DateTime]::UtcNow -lt $restartDeadline) {
+                    if ($webProcess.HasExited) { throw 'Status Rotator 重启后的 Profile 在 ready 前退出。' }
+                    $restartOutput = (Read-CapturedText $stdoutPath) + "`r`n" + (Read-CapturedText $stderrPath)
+                    if ($restartOutput -match '(?i)dsh\s+web:\s+http://(?:127\.0\.0\.1|localhost):' + $port.ToString() -and (Test-Http200 $port)) {
+                        $restartReady = $true
+                        break
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+                if (-not $restartReady -or (Get-Content -LiteralPath $configPath -Raw -Encoding UTF8) -ne $configBeforeRestart) {
+                    throw 'Status Rotator 重启后未保持配置。'
+                }
+                Test-StatusRotatorPlugin $profileDir
+                Write-Host 'PLUGIN PREFLIGHT status-rotator restart=config-preserved'
+            }
+            elseif ($Validation -eq 'thought-buddy') {
+                Test-ThoughtBuddyPlugin $profileDir
             }
             $passed = $true
             break
