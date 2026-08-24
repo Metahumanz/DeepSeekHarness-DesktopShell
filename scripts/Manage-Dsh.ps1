@@ -43,9 +43,11 @@ $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 # - minimumCompatibleDshVersion：明确过旧的版本下限，低于它不应继续尝试。
 # - testedDshVersions：实际验证过的版本，只用于日志/提示，不作为未来版本硬白名单。
 # 兼容旧 schema v1：只有 verifiedDshVersion 时，默认/最低/测试都回落到该版本。
-$DefaultDshVersion = '0.1.0-rc.7'
+$DefaultDshVersion = '0.1.1-rc.2'
 $MinimumCompatibleDshVersion = '0.1.0-rc.7'
-$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1')
+$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')
+# 已实际确认支持 --no-open 的版本；未知版本仍由 DesktopShell 在启动时探测 --help。
+$KnownNoOpenDshVersions = @('0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')
 $compatPath = Join-Path $desktopDir 'COMPATIBILITY.json'
 if (Test-Path -LiteralPath $compatPath -PathType Leaf) {
     try {
@@ -79,37 +81,40 @@ $defaultProfilePnpmVersion = '10.33.2'
 #   - 有正式 npm/release 且已确认兼容的推荐项使用 caret/range 或 release tag，不再一律锁旧 commit。
 #   - GitHub 插件有正式 release tag 时优先 release tag，不无条件跟随 main。
 #   - 对 DesktopShell 有兼容修复依赖的插件（Cost Meter / Sentinel）保持已审核版本，不裸跟 latest。
-#   - 下表按本机真实 web Profile（C:\Users\metahumanz\.dsh\profiles\web\package.json，2026-08-21）同步；
-#     Installed 只是本机快照，不等于已经完成 rc1 BootReady 兼容认证。
+#   - 下表按本机真实 web Profile（C:\Users\metahumanz\.dsh\profiles\web\package.json，2026-08-24）同步；
+#     Installed 只是本机快照，不等于已经完成 rc2 BootReady 兼容认证。
 #   - 本机 link:C:\Users\metahumanz\.dsh\dsh-browser\... 的 bridge-browser 是本地集成依赖，
 #     不放入可移植推荐目录，也不在隔离 preflight 中伪造安装。
 $PluginCatalog = @(
     # ---- 核心推荐 ----
-    [pscustomobject]@{ No=1;  Id='market';        Name='插件市场';                  Spec='dshmarket@1.17.1'; Tier='core'; Allow=@(); Installed='1.17.1' },
-    [pscustomobject]@{ No=2;  Id='sidebar';       Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@^0.14.0'; Tier='core'; Allow=@('node-pty'); Installed='0.14.0'; Note='按本机 web Profile 使用 0.14.0；不因本机实测改变 default/minimum rc.7' },
-    [pscustomobject]@{ No=3;  Id='skills';        Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.23'; Tier='core'; Allow=@(); Installed='0.1.23' },
-    [pscustomobject]@{ No=4;  Id='at-file';       Name='@file 文件引用';            Spec='github:omdsh-dev/dsh-at-file'; Tier='core'; Allow=@(); Installed='0.6.7' },
+    [pscustomobject]@{ No=1;  Id='market';        Name='插件市场';                  Spec='dshmarket@1.21.2'; Tier='core'; Allow=@(); Installed='1.21.2' },
+    [pscustomobject]@{ No=2;  Id='sidebar';       Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@^0.15.2'; Tier='core'; Allow=@('node-pty'); Installed='0.15.2'; PostInstall='ConfigureBetterSidebar'; Note='按本机 web Profile 使用 0.15.2；插件快照不改变 default rc.2 / minimum rc.7' },
+    [pscustomobject]@{ No=3;  Id='skills';        Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.24'; Tier='core'; Allow=@(); Installed='0.1.24' },
+    [pscustomobject]@{ No=4;  Id='at-file';       Name='@file 文件引用';            Spec='github:omdsh-dev/dsh-at-file'; Tier='core'; Allow=@(); Installed='0.6.8' },
     [pscustomobject]@{ No=5;  Id='rewind';        Name='历史消息回退/重跑';         Spec='github:XSJUSTC/dsh-rewind'; Tier='core'; Allow=@(); Installed='2.1.1' },
     # ---- 体验增强 ----
-    [pscustomobject]@{ No=6;  Id='file-mentions'; Name='文件路径点击/提及';         Spec='git+https://github.com/a903067276-rgb/dsh-file-mentions.git'; Tier='enhanced'; Allow=@(); Installed='1.0.8' },
-    [pscustomobject]@{ No=7;  Id='collapse';      Name='Tool/Think 自动折叠';       Spec='github:a179-sanae/dsh-auto-collapse'; Tier='enhanced'; Allow=@(); Installed='0.1.3' },
+    [pscustomobject]@{ No=6;  Id='file-mentions'; Name='文件路径点击/提及';         Spec='git+https://github.com/a903067276-rgb/dsh-file-mentions.git'; Tier='enhanced'; Allow=@(); Installed='1.0.9' },
+    [pscustomobject]@{ No=7;  Id='collapse';      Name='Tool/Think 自动折叠';       Spec='github:a179-sanae/dsh-auto-collapse'; Tier='enhanced'; Allow=@(); Installed='0.1.4' },
     [pscustomobject]@{ No=8;  Id='tidy';          Name='Codex 风格对话排版';        Spec='dsh-chat-tidy@^0.2.0'; Tier='enhanced'; Allow=@(); Installed='0.2.0' },
     [pscustomobject]@{ No=9;  Id='outline';       Name='对话侧边大纲';              Spec='github:EnkiduGilgamesh/dsh-codex-side-outline'; Tier='enhanced'; Allow=@(); Installed='1.0.0' },
     [pscustomobject]@{ No=10; Id='archive';       Name='Better Archive';            Spec='git+https://github.com/huahai0202/dsh-better-archive.git'; Tier='enhanced'; Allow=@(); Installed='0.3.1' },
     [pscustomobject]@{ No=11; Id='video';         Name='视频预览';                  Spec='dsh-video-preview@^0.1.1'; Tier='enhanced'; Allow=@(); Installed='0.1.1' },
     [pscustomobject]@{ No=12; Id='git-remotes';   Name='Git 远程仓库工具';          Spec='github:yq04/dsh-git-remotes'; Tier='enhanced'; Allow=@(); Installed='0.1.0' },
     [pscustomobject]@{ No=13; Id='notification';  Name='通知增强';                  Spec='git+https://github.com/omdsh-dev/dsh-notification.git'; Tier='enhanced'; Allow=@(); Installed='0.1.3' },
-    [pscustomobject]@{ No=14; Id='open-vscode';   Name='在 VS Code 中打开';         Spec='github:omdsh-dev/dsh-open-in-vscode'; Tier='enhanced'; Allow=@(); Installed='0.1.6' },
+    [pscustomobject]@{ No=14; Id='open-in';       Name='在 VS Code/终端中打开';     Spec='dsh-open-in@^0.1.1'; Tier='enhanced'; Allow=@(); Installed='0.1.1' },
     [pscustomobject]@{ No=15; Id='sidebar-qa';    Name='Sidebar QA';                Spec='github:ChenRuoT/dsh-sidebar-qa'; Tier='enhanced'; Allow=@(); Installed='0.4.0' },
-    [pscustomobject]@{ No=16; Id='sidebar-office'; Name='Better Sidebar Office';      Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.0'; Tier='enhanced'; Allow=@(); Installed='0.1.0' },
+    [pscustomobject]@{ No=16; Id='sidebar-office'; Name='Better Sidebar Office';      Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.2'; Tier='enhanced'; Allow=@(); Installed='0.1.2' },
     [pscustomobject]@{ No=17; Id='archify';       Name='Archify DSH';                Spec='@tt-a1i/archify-dsh@^0.1.0'; Tier='enhanced'; Allow=@(); Installed='0.1.0' },
+    [pscustomobject]@{ No=18; Id='status-rotator'; Name='Status Rotator';             Spec='dsh-status-rotator@^0.6.6'; Tier='enhanced'; Allow=@(); Installed='0.6.6'; Package='dsh-status-rotator'; PostInstall='ConfigureStatusRotator'; ExclusiveGroup='thinking-status-ui'; Recommended=$true; Note='思考状态体验增强首选：只改展示层；初次配置默认关闭渐变' },
+    [pscustomobject]@{ No=19; Id='context';       Name='Context Insight';            Spec='dsh-context@^0.29.0'; Tier='enhanced'; Allow=@(); Installed='0.29.0' },
     # ---- 高级/实验（默认不装） ----
-    [pscustomobject]@{ No=18; Id='auto-mode';     Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@^0.1.4'; Tier='advanced'; Allow=@(); Installed='0.1.4' },
-    [pscustomobject]@{ No=19; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter@^1.5.35'; Tier='advanced'; Allow=@(); Installed='1.5.35'; Note='统计参考，不等于官方账单；按本机 web Profile 声明 ^1.5.35，当前安装 1.5.35' },
-    [pscustomobject]@{ No=20; Id='dream-skin';    Name='Dream Skin 主题';           Spec='dsh-dream-skin@^0.4.5'; Tier='advanced'; Allow=@(); Installed='0.4.5'; Note='本机 web Profile 实际安装 0.4.5，保留 sticky restore / host-backed marker 检查' },
-    [pscustomobject]@{ No=21; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@(); Installed='0.11.0' },
-    [pscustomobject]@{ No=22; Id='liangshen';     Name='量神';                       Spec='@linxin666/dsh-liangshen@^0.2.7'; Tier='advanced'; Allow=@(); Installed='0.2.7' },
-    [pscustomobject]@{ No=23; Id='thought-buddy'; Name='Thought Buddy';              Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Tier='advanced'; Allow=@(); Installed='0.2.0' }
+    [pscustomobject]@{ No=20; Id='auto-mode';     Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@^0.1.5'; Tier='advanced'; Allow=@(); Installed='0.1.5' },
+    [pscustomobject]@{ No=21; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter@^1.5.42'; Tier='advanced'; Allow=@(); Installed='1.5.42'; Note='统计参考，不等于官方账单；按本机 web Profile 声明 ^1.5.42，当前安装 1.5.42' },
+    [pscustomobject]@{ No=22; Id='dream-skin';    Name='Dream Skin 主题';           Spec='dsh-dream-skin@^0.4.10'; Tier='advanced'; Allow=@(); Installed='0.4.10'; Note='本机 web Profile 实际安装 0.4.10，保留 sticky restore / host-backed marker 检查' },
+    [pscustomobject]@{ No=23; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@(); Installed='0.11.0' },
+    [pscustomobject]@{ No=24; Id='liangshen';     Name='量神';                       Spec='@linxin666/dsh-liangshen@^0.3.2'; Tier='advanced'; Allow=@(); Installed='0.3.2' },
+    [pscustomobject]@{ No=25; Id='thought-buddy'; Name='Thought Buddy';              Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Tier='advanced'; Allow=@(); Installed='0.2.0'; Package='@dsh-plugin/dsh-thought-buddy'; ExclusiveGroup='thinking-status-ui'; Note='与 Status Rotator 互斥；会改变 Deep diving 状态条内容与头像' },
+    [pscustomobject]@{ No=26; Id='agent-teams';   Name='Agent Teams';                Spec='@nanmicoder/dsh-agent-teams@^0.1.13'; Tier='advanced'; Allow=@(); Installed='0.1.13'; Note='高级功能：多 Agent 协作，会改变 Agent 行为' }
 )
 
 function Read-Default([string]$prompt, [string]$default) {
@@ -381,7 +386,7 @@ function Compare-DshVersion([string]$a, [string]$b) {
 
 # $null = 版本串为空（无法读取，按未知处理）；$false = 版本可解析但低于最低兼容版本，
 # 或版本串无法解析（无法证明达到最低版本）；$true = 版本可解析且 >= minimumCompatibleDshVersion。
-# 不再要求“等于某个唯一验证版本”：rc.7/rc.8/rc.1 已测试，未来版本只要不低于最低版本就允许尝试。
+# 不再要求“等于某个唯一验证版本”：rc.7/rc.8/rc.1/rc.2 已测试，未来版本只要不低于最低版本就允许尝试。
 function Test-DshVersionSupported([string]$version) {
     if ([string]::IsNullOrWhiteSpace($version)) { return $null }
     $cmp = Compare-DshVersion $version $MinimumCompatibleDshVersion
@@ -694,11 +699,111 @@ function Show-PluginCatalog {
         $tag = switch ($p.Tier) { 'core' { '核心推荐' } 'enhanced' { '体验增强' } default { '高级/实验' } }
         Write-Host ('{0,2}. {1,-28} [{2}]' -f $p.No, $p.Name, $tag)
         if ($p.Installed) { Write-Host ('      本机快照：{0}' -f $p.Installed) -ForegroundColor DarkGray }
+        if ($p.Recommended -eq $true) { Write-Host '      新 Profile 思考状态增强首选（与 Thought Buddy 二选一）' -ForegroundColor Green }
         if ($p.Note) { Write-Host ('      备注：{0}' -f $p.Note) -ForegroundColor DarkGray }
     }
     Write-Host ''
     Write-Host '内置推荐采用选择性 pin：已确认兼容的新版用 range/release tag，未验证或兼容依赖保持已审核版本。' -ForegroundColor DarkGray
     Write-Host '需要追新版本可在“额外插件”步骤粘贴自定义 spec。' -ForegroundColor DarkGray
+}
+
+function Get-ExclusiveSelectionConflicts([object[]]$selected) {
+    $groups = @($selected |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.ExclusiveGroup) } |
+        Group-Object -Property ExclusiveGroup)
+    foreach ($group in $groups) {
+        if ($group.Count -gt 1) {
+            [pscustomobject]@{ Name=[string]$group.Name; Members=@($group.Group) }
+        }
+    }
+}
+
+function Resolve-ExclusivePluginSelection([object[]]$selected) {
+    $result = @($selected)
+    foreach ($conflict in @(Get-ExclusiveSelectionConflicts $result)) {
+        $members = @($conflict.Members)
+        $recommended = @($members | Where-Object { $_.Recommended -eq $true } | Select-Object -First 1)
+        if ($recommended.Count -eq 0) { $recommended = @($members | Select-Object -First 1) }
+        $keepId = [string]$recommended[0].Id
+
+        if ($NonInteractive) {
+            Warn ("互斥插件组 {0} 同时被选中；非交互模式保留推荐项 {1}，跳过 {2}。" -f
+                $conflict.Name, $recommended[0].Name,
+                (($members | Where-Object { $_.Id -ne $keepId } | ForEach-Object Name) -join '、'))
+        }
+        else {
+            Write-Host ("检测到互斥插件组：{0}" -f $conflict.Name) -ForegroundColor Yellow
+            for ($i = 0; $i -lt $members.Count; $i++) {
+                $suffix = if ($members[$i].Id -eq $keepId) { '（推荐）' } else { '' }
+                Write-Host ("  {0}. {1}{2}" -f ($i + 1), $members[$i].Name, $suffix)
+            }
+            do {
+                $choice = (Read-Host '二选一，输入编号').Trim()
+                $choiceIndex = 0
+                $valid = [int]::TryParse($choice, [ref]$choiceIndex) -and
+                    $choiceIndex -ge 1 -and $choiceIndex -le $members.Count
+                if (-not $valid) { Warn '请输入有效编号。' }
+            } while (-not $valid)
+            $keepId = [string]$members[$choiceIndex - 1].Id
+        }
+
+        $result = @($result | Where-Object {
+            [string]$_.ExclusiveGroup -ne $conflict.Name -or [string]$_.Id -eq $keepId
+        })
+    }
+    return @($result)
+}
+
+function Get-ProfileExclusiveConflicts([string]$profile) {
+    $packagePath = Join-Path $dshHome ("profiles\{0}\package.json" -f $profile)
+    if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) { return @() }
+    try {
+        $package = Get-Content -LiteralPath $packagePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $dependencyNames = @()
+        if ($package.dependencies) { $dependencyNames = @($package.dependencies.PSObject.Properties.Name) }
+        foreach ($group in @($PluginCatalog | Where-Object { $_.ExclusiveGroup } | Group-Object ExclusiveGroup)) {
+            $members = @($group.Group | Where-Object { $_.Package -and $_.Package -in $dependencyNames })
+            if ($members.Count -gt 1) {
+                [pscustomobject]@{ Name=[string]$group.Name; Members=$members }
+            }
+        }
+    }
+    catch { Warn ("无法读取 Profile 插件依赖，跳过互斥检查：{0}" -f $_.Exception.Message) }
+}
+
+function Resolve-ProfileExclusiveConflicts([string]$profile) {
+    foreach ($conflict in @(Get-ProfileExclusiveConflicts $profile)) {
+        $members = @($conflict.Members)
+        Warn ("已有 Profile 同时安装了互斥插件组 {0}：{1}。不会自动卸载。" -f
+            $conflict.Name, (($members | ForEach-Object Name) -join '、'))
+        if ($NonInteractive) {
+            Warn '非交互模式不替用户卸载任何一项；请手动选择保留项后重试。'
+            continue
+        }
+
+        for ($i = 0; $i -lt $members.Count; $i++) {
+            Write-Host ("  {0}. 保留 {1}" -f ($i + 1), $members[$i].Name)
+        }
+        Write-Host '  0. 暂不处理（保留冲突现状）'
+        do {
+            $choice = (Read-Host '选择保留项').Trim()
+            $choiceIndex = 0
+            $valid = [int]::TryParse($choice, [ref]$choiceIndex) -and
+                $choiceIndex -ge 0 -and $choiceIndex -le $members.Count
+            if (-not $valid) { Warn '请输入有效编号。' }
+        } while (-not $valid)
+        if ($choiceIndex -eq 0) { continue }
+
+        $keep = $members[$choiceIndex - 1]
+        $remove = @($members | Where-Object { $_.Id -ne $keep.Id } | Select-Object -First 1)
+        if ($remove.Count -eq 0 -or [string]::IsNullOrWhiteSpace([string]$remove[0].Package)) {
+            Warn '无法解析需要移除的插件包名，保留冲突现状。'
+            continue
+        }
+        $code = Invoke-ManagedDsh $profile @('plugin','--profile',$profile,'remove',[string]$remove[0].Package)
+        if ($code -eq 0) { Ok ("已按选择保留 {0}，移除 {1}。" -f $keep.Name, $remove[0].Name) }
+        else { Warn ("移除 {0} 失败（退出码 {1}）；冲突仍需处理。" -f $remove[0].Name, $code) }
+    }
 }
 
 function Select-Plugins([bool]$existingProfile) {
@@ -716,28 +821,83 @@ function Select-Plugins([bool]$existingProfile) {
     $nonAdvancedCount = @($PluginCatalog | Where-Object { $_.Tier -ne 'advanced' }).Count
     $allCount = @($PluginCatalog).Count
     Write-Host ("  1. 核心推荐（{0} 个：插件市场 / 工作台 / Skills / @file / Rewind）" -f $coreCount)
-    Write-Host ("  2. 核心推荐 + 体验增强（{0} 个）" -f $nonAdvancedCount)
+    Write-Host ("  2. 核心推荐 + 体验增强（{0} 个，含 Status Rotator 首选项）" -f $nonAdvancedCount)
     Write-Host ("  3. 全部已审核插件（{0} 个，选择性 pin）" -f $allCount)
     Write-Host '  4. 自定义选择'
+    Write-Host '  思考/运行状态体验增强默认建议：Status Rotator（与 Thought Buddy 二选一）' -ForegroundColor Green
     $choice = Read-Default '插件安装方案' '0'
     if ($choice -eq '0') { return @() }
-    if ($choice -eq '1') { return @($PluginCatalog | Where-Object { $_.Tier -eq 'core' }) }
-    if ($choice -eq '2') { return @($PluginCatalog | Where-Object { $_.Tier -ne 'advanced' }) }
-    if ($choice -eq '3') { return @($PluginCatalog) }
+    if ($choice -eq '1') { return @(Resolve-ExclusivePluginSelection @($PluginCatalog | Where-Object { $_.Tier -eq 'core' })) }
+    if ($choice -eq '2') { return @(Resolve-ExclusivePluginSelection @($PluginCatalog | Where-Object { $_.Tier -ne 'advanced' })) }
+    if ($choice -eq '3') { return @(Resolve-ExclusivePluginSelection @($PluginCatalog)) }
 
     Show-PluginCatalog
     $raw = Read-Host '输入编号，逗号分隔（例如 1,2,10,13；留空=不装）'
     if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
     $numbers = @($raw -split '[,，\s]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
-    return @($PluginCatalog | Where-Object { $_.No -in $numbers })
+    return @(Resolve-ExclusivePluginSelection @($PluginCatalog | Where-Object { $_.No -in $numbers }))
 }
 
-function Configure-BetterSidebar {
+function ConfigureBetterSidebar {
     if (-not (Get-Command pwsh.exe -ErrorAction SilentlyContinue)) { return }
     if (Read-YesNo 'Better Sidebar：固定使用 PowerShell 7 (pwsh.exe)？' $true) {
         [Environment]::SetEnvironmentVariable('DSH_SIDEBAR_SHELL','pwsh.exe','User')
         $env:DSH_SIDEBAR_SHELL = 'pwsh.exe'
         Ok '已设置用户环境变量 DSH_SIDEBAR_SHELL=pwsh.exe。'
+    }
+}
+
+function ConfigureStatusRotator([string]$profile) {
+    $pluginDir = Join-Path $dshHome ("profiles\{0}\node_modules\dsh-status-rotator" -f $profile)
+    $configPath = Join-Path $pluginDir 'config.json'
+    $examplePath = Join-Path $pluginDir 'config.example.json'
+    if (-not (Test-Path -LiteralPath $pluginDir -PathType Container)) {
+        Warn 'Status Rotator：安装目录不存在，跳过默认配置。'
+        return $false
+    }
+
+    $created = $false
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath $examplePath -PathType Leaf)) {
+            Warn 'Status Rotator：缺少 config.example.json，无法初始化配置。'
+            return $false
+        }
+        Copy-Item -LiteralPath $examplePath -Destination $configPath -Force
+        $created = $true
+    }
+
+    if (-not $created) {
+        Ok 'Status Rotator：保留已有配置（包括用户的渐变/文案选择）。'
+        return $true
+    }
+
+    try {
+        $document = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $document.config -or $document.config -is [array]) {
+            Add-Member -InputObject $document -MemberType NoteProperty -Name config -Value ([pscustomobject]@{}) -Force
+        }
+        if (-not $document.config.gradient -or $document.config.gradient -is [array] -or
+            $document.config.gradient -is [bool]) {
+            Add-Member -InputObject $document.config -MemberType NoteProperty -Name gradient -Value ([pscustomobject]@{}) -Force
+        }
+        Add-Member -InputObject $document.config.gradient -MemberType NoteProperty -Name enabled -Value $false -Force
+        [IO.File]::WriteAllText($configPath, ($document | ConvertTo-Json -Depth 50), [System.Text.UTF8Encoding]::new($false))
+        Ok 'Status Rotator：已初始化默认配置，关闭炫彩渐变；可在设置页重新开启。'
+        return $true
+    }
+    catch {
+        Warn ("Status Rotator：默认配置写入失败：{0}" -f $_.Exception.Message)
+        return $false
+    }
+}
+
+function Invoke-PluginPostInstall([string]$profile, [object]$plugin) {
+    $hook = [string]$plugin.PostInstall
+    if ([string]::IsNullOrWhiteSpace($hook)) { return }
+    switch ($hook) {
+        'ConfigureBetterSidebar' { ConfigureBetterSidebar }
+        'ConfigureStatusRotator' { ConfigureStatusRotator $profile | Out-Null }
+        default { Warn ("未识别的插件 PostInstall hook：{0}（插件 {1}）" -f $hook, $plugin.Name) }
     }
 }
 
@@ -756,18 +916,21 @@ function Test-DreamSkinPersistenceFix([string]$profile) {
 }
 
 function Install-Plugins([string]$profile, [object[]]$selected) {
+    Resolve-ProfileExclusiveConflicts $profile
     if (-not $selected -or $selected.Count -eq 0) { return }
+    $selected = @(Resolve-ExclusivePluginSelection $selected)
+    if ($selected.Count -eq 0) { return }
 
     # Dream Skin 非破坏升级：Profile 里已是旧实现（无持久化修复 marker）时，
-    # 先说明再确认；确认后按目录里的 npm ^0.4.5 安装（同名包会替换旧实现）。
+    # 先说明再确认；确认后按目录里的 npm ^0.4.10 安装（同名包会替换旧实现）。
     # 绝不删 webview2-data / ~/.dsh / Profile，也不手工改 DSH 官方 ThemeRuntime。
     $dreamSkin = @($selected | Where-Object { $_.Id -eq 'dream-skin' } | Select-Object -First 1)
     if ($dreamSkin -and -not (Test-DreamSkinPersistenceFix $profile)) {
         $dreamSpec = [string]$dreamSkin.Spec
         if ($NonInteractive) {
-            Warn 'Dream Skin：Profile 中检测到旧 0.3.0 实现（无持久化修复 marker），将替换为 npm ^0.4.5（含持久化修复）。'
-        } elseif (Read-YesNo '检测到 Dream Skin 0.3.0 旧实现，存在重启后第三方皮肤回退问题。是否升级到 npm ^0.4.5（含持久化修复）？' $true) {
-            Ok '确认升级 Dream Skin 到 npm ^0.4.5。'
+            Warn 'Dream Skin：Profile 中检测到旧 0.3.0 实现（无持久化修复 marker），将替换为 npm ^0.4.10（含持久化修复）。'
+        } elseif (Read-YesNo '检测到 Dream Skin 0.3.0 旧实现，存在重启后第三方皮肤回退问题。是否升级到 npm ^0.4.10（含持久化修复）？' $true) {
+            Ok '确认升级 Dream Skin 到 npm ^0.4.10。'
         } else {
             $selected = @($selected | Where-Object { $_.Id -ne 'dream-skin' })
             Warn '已跳过 Dream Skin 升级。'
@@ -781,24 +944,35 @@ function Install-Plugins([string]$profile, [object[]]$selected) {
     Update-AllowBuilds $profile $allow
 
     $failures = @()
+    $installedPlugins = @()
     foreach ($plugin in $selected) {
         Say "安装插件：$($plugin.Name)"
         $code = Invoke-ManagedDsh $profile @('plugin','--profile',$profile,'add',$plugin.Spec)
         if ($code -ne 0) {
             Warn "安装失败：$($plugin.Name)（退出码 $code）"
             $failures += $plugin.Name
-        } else { Ok "已安装：$($plugin.Name)（仅安装成功，尚未证明运行兼容）" }
+        } else {
+            Ok "已安装：$($plugin.Name)（仅安装成功，尚未证明运行兼容）"
+            $installedPlugins += $plugin
+        }
     }
 
-    if ($selected.Id -contains 'sidebar') { Configure-BetterSidebar }
     if (-not $NonInteractive) {
         $extra = Read-Host '还要安装额外插件吗？可直接粘贴 package/spec，多个用分号分隔；留空跳过'
         foreach ($spec in @($extra -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
             Say "安装额外插件：$spec"
             $code = Invoke-ManagedDsh $profile @('plugin','--profile',$profile,'add',$spec)
             if ($code -ne 0) { $failures += $spec }
-            else { Ok "已安装：$spec（仅安装成功，尚未证明运行兼容）" }
+            else {
+                Ok "已安装：$spec（仅安装成功，尚未证明运行兼容）"
+                $catalogPlugin = @($PluginCatalog | Where-Object { [string]$_.Spec -eq [string]$spec } | Select-Object -First 1)
+                if ($catalogPlugin.Count -gt 0) { $installedPlugins += $catalogPlugin[0] }
+            }
         }
+    }
+
+    foreach ($plugin in $installedPlugins) {
+        Invoke-PluginPostInstall $profile $plugin
     }
 
     if ($failures.Count -gt 0) {
@@ -823,6 +997,8 @@ function Show-Diagnostics([string]$profile) {
     Write-Host "Node.js:  $node"
     Write-Host "DSH:      $(if ($current.DshPath) {$current.DshPath} else {"npx @deepseek-ai/dsh@$($current.Version)"})"
     Write-Host "版本:     $($current.Version)"
+    Write-Host "已测版本: $($TestedDshVersions -join ', ')"
+    Write-Host "已确认 --no-open: $($KnownNoOpenDshVersions -join ', ')"
     Write-Host "Profile:  $profile"
     $profileDir = Join-Path $dshHome "profiles\$profile"
     Write-Host "Profile 目录: $(if (Test-Path $profileDir) {'存在'} else {'尚未创建'})"

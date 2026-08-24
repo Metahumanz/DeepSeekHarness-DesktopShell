@@ -3,7 +3,7 @@
 )
 
 # 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
-# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、36 项回归测试。
+# 包含：全部脚本解析检查、PSScriptAnalyzer(Error)、39 项回归测试。
 # 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
 # 注意：托盘、WebView2、连续重启、Dream Skin 真实恢复属于人工 Windows 验收
 #（见 docs/DREAM_SKIN_ACCEPTANCE.md），源码级测试不能替代。
@@ -15,7 +15,7 @@ $tests = @(
     'test-launch-args.ps1',
     'test-npx-version-parser.ps1',
     'test-dsh-version.ps1',
-    'test-dsh-rc1-certification.ps1',
+    'test-rc2-compat.ps1',
     'test-runner-mode.ps1',
     'test-repair-regex.ps1',
     'test-install-ownership.ps1',
@@ -31,6 +31,9 @@ $tests = @(
     'test-backend-exit-diagnostics.ps1',
     'test-backend-generation-race.ps1',
     'test-plugin-boot-acceptance.ps1',
+    'test-plugin-catalog.ps1',
+    'test-status-rotator-config.ps1',
+    'test-plugin-exclusive-group.ps1',
     'test-plugin-preflight-cleanup.ps1',
     'test-startup-identity.ps1',
     'test-tray-quit-deferred.ps1',
