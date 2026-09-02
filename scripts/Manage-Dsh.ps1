@@ -46,6 +46,7 @@ $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 $DefaultDshVersion = '0.1.1-rc.2'
 $MinimumCompatibleDshVersion = '0.1.0-rc.7'
 $TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')
+$NpxDshChannelOptions = @()
 # 已实际确认支持 --no-open 的版本；未知版本仍由 DesktopShell 在启动时探测 --help。
 $KnownNoOpenDshVersions = @('0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')
 $compatPath = Join-Path $desktopDir 'COMPATIBILITY.json'
@@ -67,6 +68,27 @@ if (Test-Path -LiteralPath $compatPath -PathType Leaf) {
             if ($parsed.Count -gt 0) { $TestedDshVersions = $parsed }
         } elseif ($compat.verifiedDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
             $TestedDshVersions = @([string]$compat.verifiedDshVersion)
+        }
+        if ($compat.PSObject.Properties.Name -contains 'npxDshChannelOptions') {
+            $seenTags = @{}
+            foreach ($item in @($compat.npxDshChannelOptions)) {
+                $tag = ([string]$item.tag).Trim().ToLowerInvariant()
+                if ($tag -notmatch '^[a-z][a-z0-9-]{0,31}$') { continue }
+                if ($seenTags.ContainsKey($tag)) { continue }
+                $seenTags[$tag] = $true
+
+                $label = [string]$item.label
+                if ([string]::IsNullOrWhiteSpace($label)) { $label = "官方 $tag 标签" }
+                $note = [string]$item.note
+                $profileMode = if ([string]$item.profileMode -eq 'isolated') { 'isolated' } else { 'current' }
+                $NpxDshChannelOptions += [pscustomobject]@{
+                    Tag = $tag
+                    Label = $label.Trim()
+                    Note = $note.Trim()
+                    Preview = [bool]$item.preview
+                    ProfileMode = $profileMode
+                }
+            }
         }
     } catch {}
 }
@@ -102,7 +124,7 @@ $PluginCatalog = @(
     [pscustomobject]@{ No=12; Id='git-remotes';   Name='Git 远程仓库工具';          Spec='github:yq04/dsh-git-remotes'; Tier='enhanced'; Allow=@(); Installed='0.1.0' },
     [pscustomobject]@{ No=13; Id='notification';  Name='通知增强';                  Spec='git+https://github.com/omdsh-dev/dsh-notification.git'; Tier='enhanced'; Allow=@(); Installed='0.1.3' },
     [pscustomobject]@{ No=14; Id='open-in';       Name='在 VS Code/终端中打开';     Spec='dsh-open-in@^0.1.1'; Tier='enhanced'; Allow=@(); Installed='0.1.1' },
-    [pscustomobject]@{ No=15; Id='sidebar-qa';    Name='Sidebar QA';                Spec='github:ChenRuoT/dsh-sidebar-qa'; Tier='enhanced'; Allow=@(); Installed='0.4.0' },
+    [pscustomobject]@{ No=15; Id='sidebar-qa';    Name='Sidebar QA';                Spec='dsh-sidebar-qa@0.4.0'; Tier='enhanced'; Allow=@(); Installed='0.4.0'; Note='生产 rc.2 固定 npm 精确版 0.4.0：v0.5.0 起依赖 0.1.2-alpha.1 的 remote.session，不能用于 rc.2' },
     [pscustomobject]@{ No=16; Id='sidebar-office'; Name='Better Sidebar Office';      Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.2'; Tier='enhanced'; Allow=@(); Installed='0.1.2' },
     [pscustomobject]@{ No=17; Id='archify';       Name='Archify DSH';                Spec='@tt-a1i/archify-dsh@^0.1.0'; Tier='enhanced'; Allow=@(); Installed='0.1.0' },
     [pscustomobject]@{ No=18; Id='status-rotator'; Name='Status Rotator';             Spec='dsh-status-rotator@^0.6.6'; Tier='enhanced'; Allow=@(); Installed='0.6.6'; Package='dsh-status-rotator'; PostInstall='ConfigureStatusRotator'; ExclusiveGroup='thinking-status-ui'; Recommended=$true; Note='思考状态体验增强首选：只改展示层；初次配置默认关闭渐变' },
@@ -132,6 +154,154 @@ function Read-YesNo([string]$prompt, [bool]$defaultYes = $true) {
         if (-not $value) { return $defaultYes }
         if ($value -in @('y','yes','是','1')) { return $true }
         if ($value -in @('n','no','否','0')) { return $false }
+    }
+}
+
+function New-NpxDshSelection(
+    [string]$version,
+    [string]$source = 'fixed',
+    [bool]$preview = $false,
+    [string]$profileMode = 'current',
+    [string]$label = ''
+) {
+    return [pscustomobject]@{
+        Version = Normalize-Version $version
+        Source = $source
+        Preview = $preview
+        ProfileMode = if ($profileMode -eq 'isolated') { 'isolated' } else { 'current' }
+        Label = $label
+    }
+}
+
+function Get-NpxDshVersionChoices([string]$currentVersion) {
+    $choices = @()
+    $seen = @{}
+
+    $choices += [pscustomobject]@{
+        Version = $DefaultDshVersion
+        Tag = ''
+        Dynamic = $false
+        Label = '生产推荐（已测试）'
+        Note = 'DesktopShell 默认版本；已纳入正式兼容测试。'
+        Preview = $false
+        ProfileMode = 'current'
+        Kind = '生产推荐'
+    }
+    $seen[$DefaultDshVersion.ToLowerInvariant()] = $true
+
+    foreach ($version in @($TestedDshVersions)) {
+        if ($version -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') { continue }
+        $key = $version.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $choices += [pscustomobject]@{
+            Version = $version
+            Tag = ''
+            Dynamic = $false
+            Label = '已测试（历史版本）'
+            Note = '已完成历史兼容验证，但不是当前生产默认。'
+            Preview = $false
+            ProfileMode = 'current'
+            Kind = '已测试'
+        }
+    }
+
+    foreach ($option in @($NpxDshChannelOptions)) {
+        $tag = [string]$option.Tag
+        if ($tag -notmatch '^[a-z][a-z0-9-]{0,31}$') { continue }
+        $choices += [pscustomobject]@{
+            Version = ''
+            Tag = $tag
+            Dynamic = $true
+            Label = [string]$option.Label
+            Note = [string]$option.Note
+            Preview = [bool]$option.Preview
+            ProfileMode = [string]$option.ProfileMode
+            Kind = if ([bool]$option.Preview) { '预览，未正式测试' } else { '官方通道，未固定为正式测试' }
+        }
+    }
+
+    # 历史设置或命令行参数若不是目录项，仍可明确地“保持当前”，避免向导静默改写用户选择。
+    $current = if ($currentVersion) { $currentVersion.Trim() } else { '' }
+    if ($current -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+        $currentKey = $current.ToLowerInvariant()
+        if (-not $seen.ContainsKey($currentKey)) {
+            $choices += [pscustomobject]@{
+                Version = $current
+                Tag = ''
+                Dynamic = $false
+                Label = '当前设置（未列入目录）'
+                Note = '保留已有版本；未标记为 DesktopShell 正式测试版本。'
+                Preview = $true
+                ProfileMode = 'current'
+                Kind = '当前设置，未正式测试'
+            }
+        }
+    }
+    return @($choices)
+}
+
+function Select-NpxDshVersion([string]$currentVersion) {
+    # 自动化调用继续尊重 -DshVersion / 已保存设置；交互向导不再要求用户手输版本串。
+    if ($NonInteractive) {
+        return (New-NpxDshSelection (Normalize-Version $currentVersion) 'fixed' $false 'current' '当前设置')
+    }
+
+    $choices = @(Get-NpxDshVersionChoices $currentVersion)
+    if ($choices.Count -eq 0) {
+        return (New-NpxDshSelection $DefaultDshVersion 'fixed' $false 'current' '生产推荐')
+    }
+
+    $defaultChoice = 1
+    for ($i = 0; $i -lt $choices.Count; $i++) {
+        # 未测试的旧 alpha/自定义设置只允许显式选择，不再成为首次向导的默认项。
+        if (-not $choices[$i].Preview -and -not $choices[$i].Dynamic -and
+            [string]::Equals([string]$choices[$i].Version, $currentVersion, [StringComparison]::OrdinalIgnoreCase)) {
+            $defaultChoice = $i + 1
+            break
+        }
+    }
+
+    Write-Host 'npx DSH 版本（输入编号，不需要手输版本号）：'
+    for ($i = 0; $i -lt $choices.Count; $i++) {
+        $choice = $choices[$i]
+        $suffix = if (($i + 1) -eq $defaultChoice) { '（默认）' } else { '' }
+        $kind = [string]$choice.Kind
+        $shown = if ($choice.Dynamic) { "官方 $($choice.Tag) 标签（实时解析）" } else { [string]$choice.Version }
+        Write-Host ("  {0}. {1}  {2} [{3}] {4}" -f ($i + 1), $shown, $choice.Label, $kind, $suffix)
+        if ($choice.Note) { Write-Host ("      " + $choice.Note) -ForegroundColor DarkGray }
+    }
+    Write-Host '  0. 取消'
+
+    while ($true) {
+        $raw = Read-Default '选择版本' ([string]$defaultChoice)
+        if ($raw -eq '0') { return $null }
+
+        $number = 0
+        if (-not [int]::TryParse($raw, [ref]$number) -or $number -lt 1 -or $number -gt $choices.Count) {
+            Warn '请输入上方版本选项的编号。'
+            continue
+        }
+
+        $selected = $choices[$number - 1]
+        if ($selected.Preview) {
+            $previewName = if ($selected.Dynamic) { "官方 $($selected.Tag) 标签" } else { [string]$selected.Version }
+            Warn ("已选择预览版本/通道 {0}；它不会加入正式 testedDshVersions，也不会改变生产默认版本。" -f $previewName)
+            if (-not (Read-YesNo '确认仅用于预览验证？' $false)) { return $null }
+        }
+
+        $resolvedVersion = if ($selected.Dynamic) {
+            Resolve-NpmDshDistTag ([string]$selected.Tag)
+        } else {
+            [string]$selected.Version
+        }
+        if ($selected.Dynamic) {
+            Ok ("npm 标签 {0} 当前解析为：{1}" -f $selected.Tag, $resolvedVersion)
+        }
+        $source = if ($selected.Dynamic) { [string]$selected.Tag } else { 'fixed' }
+        return (New-NpxDshSelection -version $resolvedVersion -source $source `
+            -preview ([bool]$selected.Preview) -profileMode ([string]$selected.ProfileMode) `
+            -label ([string]$selected.Label))
     }
 }
 
@@ -204,6 +374,48 @@ function Get-Npx {
     return $npx.Source
 }
 
+function Get-Npm {
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npm) { $npm = Get-Command npm.exe -ErrorAction SilentlyContinue }
+    if (-not $npm) { $npm = Get-Command npm -ErrorAction SilentlyContinue }
+    if (-not $npm) { Fail '找不到 npm。无法查询官方 DSH dist-tag。请确认 Node.js/npm 已正确安装。' }
+    return $npm.Source
+}
+
+function Resolve-NpmDshDistTag([string]$tag) {
+    Ensure-Node
+    $tag = ([string]$tag).Trim().ToLowerInvariant()
+    if ($tag -notmatch '^[a-z][a-z0-9-]{0,31}$') {
+        Fail "无效的 npm DSH 标签：$tag"
+    }
+
+    $npm = Get-Npm
+    Say "查询 npm 官方 DSH 标签：$tag"
+    # 与 npx 版本探测一样，保留 npm stderr；否则上游标签/网络故障会被误报成“没有版本”。
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $raw = (& $npm view ("@deepseek-ai/dsh@" + $tag) version --json 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldEap
+    }
+    $text = ($raw | Out-String).Trim()
+    if ($code -ne 0) {
+        throw "无法查询 npm 标签 @deepseek-ai/dsh@$tag（退出码 $code）。原始输出：`r`n$text"
+    }
+
+    # npm view --json 正常输出为 JSON 字符串；只接受独占行的 SemVer，不能从报错文字里猜版本。
+    $lines = @($text -split "`r?`n")
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $candidate = $lines[$i].Trim().Trim('"')
+        if ($candidate -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
+            return $candidate
+        }
+    }
+    throw "npm 标签 @deepseek-ai/dsh@$tag 未返回可用的 DSH SemVer。原始输出：`r`n$text"
+}
+
 function Normalize-Version([string]$value) {
     if ([string]::IsNullOrWhiteSpace($value)) { return $defaultDshVersion }
     if ($value -notmatch '^[A-Za-z0-9._+\-]+$') { return $defaultDshVersion }
@@ -226,6 +438,41 @@ function Normalize-Profile([string]$value) {
     if ($value -notmatch '^[A-Za-z0-9_-]+$') { return 'web' }
     if (Test-ReservedProfileName $value) { return 'web' }
     return $value
+}
+
+function Get-NewIsolatedPreviewProfile([string]$version) {
+    $safeVersion = ([regex]::Replace(([string]$version).ToLowerInvariant(), '[^a-z0-9]+', '-')).Trim('-')
+    if ([string]::IsNullOrWhiteSpace($safeVersion)) { $safeVersion = 'unknown' }
+    $base = Normalize-Profile ("desktop-preview-" + $safeVersion)
+    if ($base -eq 'web') { $base = 'desktop-preview' }
+
+    $profilesRoot = Join-Path $dshHome 'profiles'
+    $candidate = $base
+    $number = 2
+    while (Test-Path -LiteralPath (Join-Path $profilesRoot $candidate)) {
+        $candidate = $base + '-' + $number.ToString()
+        $number++
+    }
+    return $candidate
+}
+
+function Resolve-ProfileForNpxSelection(
+    [object]$selection,
+    [string]$currentProfile,
+    [switch]$PromptForProfile
+) {
+    if ($selection -and $selection.ProfileMode -eq 'isolated') {
+        $isolated = Get-NewIsolatedPreviewProfile $selection.Version
+        Warn ("该预览通道可能与现有第三方插件 API 不兼容。将使用新的隔离 Profile：{0}" -f $isolated)
+        Warn '现有 Profile、插件、主题和会话目录均不会被移动、删除或改写。'
+        if (-not (Read-YesNo '确认使用隔离 Profile 继续？' $true)) { return $null }
+        return $isolated
+    }
+
+    if ($PromptForProfile) {
+        return (Normalize-Profile (Read-Default 'Profile 名称' $currentProfile))
+    }
+    return (Normalize-Profile $currentProfile)
 }
 
 
@@ -1038,6 +1285,7 @@ function Guided-Setup {
     Ensure-Node
     $current = Get-CurrentSettings
     $existing = Get-DshCommand
+    $npxSelection = $null
 
     if ($existing) {
         $gated = Resolve-DshCommandWithGate $existing
@@ -1045,17 +1293,27 @@ function Guided-Setup {
             $resolved = $gated
             Ok "使用现有 DSH：$($resolved.Path)$(if ($resolved.Version) { "  ($($resolved.Version))" } else { '' })"
         } else {
-            $version = Read-Default 'npx 使用的 DSH 版本' $current.Version
-            $resolved = Prepare-NpxDsh $version
+            $npxSelection = Select-NpxDshVersion $current.Version
+            if (-not $npxSelection) {
+                Warn '已取消选择 npx DSH 版本；不会写入设置。'
+                return $false
+            }
+            $resolved = Prepare-NpxDsh $npxSelection.Version
         }
     } else {
-        $version = Read-Default 'npx 使用的 DSH 版本' $current.Version
-        $resolved = Prepare-NpxDsh $version
+        $npxSelection = Select-NpxDshVersion $current.Version
+        if (-not $npxSelection) {
+            Warn '已取消选择 npx DSH 版本；不会写入设置。'
+            return $false
+        }
+        $resolved = Prepare-NpxDsh $npxSelection.Version
     }
 
-    Remove-LegacyPrivateRuntime
-
-    $profile = Normalize-Profile (Read-Default 'Profile 名称' $current.Profile)
+    $profile = Resolve-ProfileForNpxSelection $npxSelection $current.Profile -PromptForProfile
+    if (-not $profile) {
+        Warn '已取消 Profile 选择；不会写入设置。'
+        return $false
+    }
     $webPortText = Read-Default 'Web 端口' ([string]$current.Port)
     $webPort = 3080
     if (-not [int]::TryParse($webPortText, [ref]$webPort) -or $webPort -lt 1 -or $webPort -gt 65535) { $webPort = 3080 }
@@ -1078,6 +1336,9 @@ function Guided-Setup {
     $acceptedPath = if ($resolved.Mode -eq 'command') { [string]$resolved.AcceptedPath } else { '' }
     $acceptedVer = if ($resolved.Mode -eq 'command') { [string]$resolved.AcceptedVersion } else { '' }
     Save-DesktopSettings $resolved.Path $resolved.Version $profile $webPort $work $close $dev $resolved.Mode $acceptedPath $acceptedVer
+    # 只有用户完成版本/Profile/设置选择并且新设置已成功保存后，才清理旧草案运行时。
+    # 因此在向导中取消不会修改用户的现有 DSH 目录。
+    Remove-LegacyPrivateRuntime
 
     $profilePackage = Join-Path $dshHome "profiles\$profile\package.json"
     $profileExisted = Test-Path -LiteralPath $profilePackage -PathType Leaf
@@ -1106,6 +1367,7 @@ function Guided-Setup {
     else { Write-Host "DSH：npx @deepseek-ai/dsh@$($resolved.Version)" }
     Write-Host "Profile：$profile"
     Write-Host "Web： http://127.0.0.1:$webPort"
+    return $true
 }
 
 function Interactive-Menu {
@@ -1135,15 +1397,33 @@ function Interactive-Menu {
                         Save-DesktopSettings $gated.Path $gated.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev $gated.Mode $gated.AcceptedPath $gated.AcceptedVersion
                     } else {
                         Write-Host '改用官方 npx 运行方式（已持久化为仅 npx，不会再回捡 PATH 里的 dsh）。'
-                        $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
-                        $resolved = Prepare-NpxDsh $v
-                        Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx' '' ''
+                        $v = Select-NpxDshVersion $current.Version
+                        if ($v) {
+                            $profile = Resolve-ProfileForNpxSelection $v $current.Profile
+                            if ($profile) {
+                                $resolved = Prepare-NpxDsh $v.Version
+                                Save-DesktopSettings $null $resolved.Version $profile $current.Port $current.Work $current.Close $current.Dev 'npx' '' ''
+                            } else {
+                                Warn '已取消隔离 Profile 选择，未修改桌面设置。'
+                            }
+                        } else {
+                            Warn '已取消选择 npx 版本，未修改桌面设置。'
+                        }
                     }
                 } else {
                     Write-Host '系统 PATH 中没有 dsh；DesktopShell 使用官方 npx 运行方式。'
-                    $v = Read-Default 'npx 使用的 DSH 版本' $current.Version
-                    $resolved = Prepare-NpxDsh $v
-                    Save-DesktopSettings $null $resolved.Version $current.Profile $current.Port $current.Work $current.Close $current.Dev 'npx' '' ''
+                    $v = Select-NpxDshVersion $current.Version
+                    if ($v) {
+                        $profile = Resolve-ProfileForNpxSelection $v $current.Profile
+                        if ($profile) {
+                            $resolved = Prepare-NpxDsh $v.Version
+                            Save-DesktopSettings $null $resolved.Version $profile $current.Port $current.Work $current.Close $current.Dev 'npx' '' ''
+                        } else {
+                            Warn '已取消隔离 Profile 选择，未修改桌面设置。'
+                        }
+                    } else {
+                        Warn '已取消选择 npx 版本，未修改桌面设置。'
+                    }
                 }
             }
             '2' {
@@ -1195,7 +1475,15 @@ function Interactive-Menu {
 }
 
 try {
-    if ($FirstInstall) { Guided-Setup }
+    if ($FirstInstall) {
+        $completed = Guided-Setup
+        if (-not $completed) {
+            # 2 是安装核心识别的“用户正常取消”信号：不把取消误报为初始化/编译失败。
+            Write-Host ''
+            Warn '初始化向导已取消；DesktopShell 和现有 DSH 设置均未提交新更改。'
+            exit 2
+        }
+    }
     else { Interactive-Menu }
     exit 0
 } catch {

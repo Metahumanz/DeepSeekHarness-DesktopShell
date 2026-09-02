@@ -376,10 +376,26 @@ try {
     if ($NoWizard) {
         Say 'NoWizard：无人值守初始化（发现现有 dsh 就使用；否则使用 npx；不改现有插件）。'
         & $manager -FirstInstall -NonInteractive
-        if ($LASTEXITCODE -ne 0) { Fail "无人值守初始化失败（退出码 $LASTEXITCODE）。" }
+        $managerExitCode = $LASTEXITCODE
+        if ($managerExitCode -ne 0) { Fail "无人值守初始化失败（退出码 $managerExitCode）。" }
     } else {
         & $manager -FirstInstall
-        if ($LASTEXITCODE -ne 0) { Fail "初始化向导失败（退出码 $LASTEXITCODE）。" }
+        $managerExitCode = $LASTEXITCODE
+        # 管理器以 2 表示用户在尚未保存设置前取消了首次向导。它不是安装错误：
+        # 非就地安装直接丢弃 stage；原安装目录和其 settings.json 不会被交换或覆盖。
+        if ($managerExitCode -eq 2) {
+            if ($stage -and (Test-Path -LiteralPath $stage)) {
+                Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+                $stage = $null
+            }
+            if ($inPlace) {
+                Warn '初始化向导已取消；未写入新的 DSH 设置。'
+            } else {
+                Warn '初始化向导已取消；未替换现有 DesktopShell 安装。'
+            }
+            exit 0
+        }
+        if ($managerExitCode -ne 0) { Fail "初始化向导失败（退出码 $managerExitCode）。" }
     }
 
     # ---- Commit（非就地：目录交换 + 保留升级前的 exe 以便回滚） ----

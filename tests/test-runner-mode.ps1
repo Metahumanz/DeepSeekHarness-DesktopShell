@@ -7,7 +7,7 @@ $hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh
 $fail = 0
 function Assert-Equal([string]$label, $actual, $expected) {
     if ($actual -eq $expected) { Write-Host "PASS: $label" }
-    else { $fail++; Write-Host "FAIL: $label  (actual=<$actual> expected=<$expected>)" }
+    else { $script:fail++; Write-Host "FAIL: $label  (actual=<$actual> expected=<$expected>)" }
 }
 
 # ---- 1. 纯函数：Resolve-RunnerMode / Normalize-Profile / Test-ReservedProfileName / Resolve-DshCommandForOps（AST 提取真实实现） ----
@@ -151,6 +151,54 @@ if ((Invoke-HermeticInstall $tE) -ne 0) { $fail++; 'E FAILED: install' }
 $sE = Get-InstalledSettings $tE
 Assert-Equal "E mode=npx (version unreadable)" $sE.dshRunnerMode 'npx'
 Assert-Equal "E path empty" ([string]$sE.dshPath) ''
+
+# 场景 G：交互首次向导选择 0/取消 -> 不是安装错误，不提交 stage/新安装目录。
+# Read-Host 在标准输入重定向下可读取该行；此处通过真实 Install-Release 调用覆盖
+# “Manage-Dsh exit 2 → 安装核心正常取消”的传播路径。
+function Invoke-HermeticInteractiveCancel([string]$target) {
+    $env:Path = "$shimDir;$env:SystemRoot\System32;$env:SystemRoot"
+    $env:DSH_HOME = $testDshHome
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $hostExe
+        $psi.Arguments = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -SetupDir "{1}" -InstallDir "{2}" -NoShortcuts -NoLaunch' -f $installer, $pkg, $target)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $psi
+        if (-not $process.Start()) { throw '无法启动交互取消测试进程。' }
+        try {
+            # 第一个 0 拒绝复用无效的 dsh 命令，第二个 0 取消版本选择。
+            $process.StandardInput.WriteLine('0')
+            $process.StandardInput.WriteLine('0')
+            $process.StandardInput.Close()
+            $stdout = $process.StandardOutput.ReadToEnd()
+            $stderr = $process.StandardError.ReadToEnd()
+            if (-not $process.WaitForExit(90000)) {
+                try { $process.Kill() } catch { }
+                throw '交互取消测试超时。'
+            }
+            return [pscustomobject]@{
+                ExitCode = [int]$process.ExitCode
+                Output = [string]$stdout + "`r`n" + [string]$stderr
+            }
+        } finally {
+            $process.Dispose()
+        }
+    } finally {
+        $env:Path = $origPath
+        $env:DSH_HOME = $origDshHome
+    }
+}
+
+$tG = Join-Path $base 'caseG-cancelled'
+$cancelled = Invoke-HermeticInteractiveCancel $tG
+Assert-Equal "G cancelled first-install exits successfully" $cancelled.ExitCode 0
+Assert-Equal "G cancelled first-install leaves no new target directory" (Test-Path -LiteralPath $tG) $false
 
 Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 if ($fail -eq 0) { Write-Host 'RUNNER MODE TESTS PASSED' } else { Write-Host "FAILURES: $fail" }

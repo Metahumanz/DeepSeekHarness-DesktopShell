@@ -28,6 +28,8 @@ Assert-True 'current enhanced versions and replacements are synchronized' (
     $catalog -match "auto-collapse.*Installed='0\.1\.4'" -and
     $catalog -match "Id='open-in'.*dsh-open-in@\^0\.1\.1.*Installed='0\.1\.1'" -and
     $catalog -match "Id='context'.*dsh-context@\^0\.29\.0.*Installed='0\.29\.0'")
+Assert-True 'Sidebar QA production spec is pinned to the rc.2-compatible npm release' (
+    $catalog -match "Id='sidebar-qa'.*dsh-sidebar-qa@0\.4\.0.*Installed='0\.4\.0'")
 Assert-True 'current advanced versions are synchronized' (
     $catalog -match "auto-mode@\^0\.1\.5.*Installed='0\.1\.5'" -and
     $catalog -match "cost-meter@\^1\.5\.42.*Installed='1\.5\.42'" -and
