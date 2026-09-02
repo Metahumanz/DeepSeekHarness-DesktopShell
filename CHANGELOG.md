@@ -4,7 +4,7 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
-## 未发布
+## v1.0.7（DSH 通道与 alpha Preview 兼容边界）
 
 - **rc.2 Sidebar QA 回归修复**：生产插件目录和 rc.2 验收改为固定 npm 精确版 `dsh-sidebar-qa@0.4.0`。上游 `0.5.0` 依赖 DSH `0.1.2-alpha.1` 引入的 `remote.session`，在 rc.2 会保持 pending 并让页面显示插件加载失败；不再跟随 GitHub HEAD。
 - **rc.2 Agent Teams 回归修复**：生产插件目录和 rc.2 验收改为固定 npm 精确版 `@nanmicoder/dsh-agent-teams@0.1.14`。上游 `0.1.15` 起要求 `0.1.2-alpha.2` 的 `uiConversation` 服务，在 rc.2 会保持 pending 并让页面显示插件加载失败；不再使用会漂移到 alpha 的范围版本。

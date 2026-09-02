@@ -332,7 +332,7 @@ function Start-IsolatedDesktopShell {
     if (-not $AppExe -and
         [IO.Path]::GetFullPath($sourceExe) -ieq [IO.Path]::GetFullPath($installedExe) -and
         -not (Test-Path -LiteralPath $patchedCandidate -PathType Leaf)) {
-        throw 'No v1.0.6 candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient for this DesktopShell acceptance run.'
+        throw 'No v1.0.7 candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient for this DesktopShell acceptance run.'
     }
     $sourceDir = Split-Path -Parent $sourceExe
     $guiDir = Join-Path $sessionRoot 'desktop-shell'
