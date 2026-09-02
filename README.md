@@ -151,6 +151,15 @@ Status Rotator 是思考/运行状态增强的默认建议，只改展示层；T
 
 开始菜单 →「管理 DSH - 插件与配置」：检查 DSH / 修改 npx 版本、Profile、Web 端口、
 默认工作目录、关闭行为、开发者模式；安装插件；查看插件列表与诊断。
+选择 npx 版本时输入菜单编号，不需要手输版本号：菜单列出生产默认、其他已测试历史版本，
+以及官方 `latest` / `alpha` dist-tag 通道。选择通道时才实时查询 npm 并固定到本次解析出的准确版本，
+因此不会静默自动升级；`latest` 适合获取当前稳定发布，`alpha` 仅用于预览验证，不会加入正式测试列表或替换默认版本。
+`alpha` 通道会自动改用新建的隔离 Profile，保留原 Profile、插件、主题和会话不动；若手动使用未来未测试版本导致
+插件 loader 报 API 失配，DesktopShell 也会提供相同的“隔离 Preview Profile 重试”操作。当前 alpha 线使用
+BrowserAuth ready URL；DesktopShell 已适配其 303/Cookie 首次握手，token 只在内存中使用、不会写入设置或日志。
+当前 alpha Preview 的已验证组合、已确认不兼容插件和验证边界见
+[DSH alpha 预览兼容快照](docs/DSH_ALPHA_PREVIEW_COMPATIBILITY.md)；它是按标签解析时的快照，
+不构成生产兼容声明。
 
 ## 更新插件
 

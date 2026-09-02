@@ -4,6 +4,15 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## 未发布
+
+- **rc.2 Sidebar QA 回归修复**：生产插件目录和 rc.2 验收改为固定 npm 精确版 `dsh-sidebar-qa@0.4.0`。上游 `0.5.0` 依赖 DSH `0.1.2-alpha.1` 引入的 `remote.session`，在 rc.2 会保持 pending 并让页面显示插件加载失败；不再跟随 GitHub HEAD。
+- **npx 通道选择**：管理器和首次向导改为编号选项，不再要求手输版本号；除生产默认和历史已测版本外，新增官方 `latest` / `alpha` dist-tag 选项。标签在选择时实时解析成准确版本而非在代码中逐个维护，rc.2 仍保持生产默认。
+- **预览 Profile 隔离与取消语义**：`alpha` 通道会生成新的隔离 Profile，不修改原有插件、主题或会话；未来未测试 DSH 若在插件 loader 阶段出现明确 API 失配，启动页提供同样的隔离 Profile 重试入口。首次安装中取消版本/Profile 选择会干净退出，不再被上层误报为“安装核心失败”。
+- **alpha BrowserAuth 适配**：从本次自有 DSH 的 loopback ready banner 提取并校验临时 URL，完成 `303 → Cookie → 200` BootReady 探测并用于 WebView2 首次导航；token 只保存在对应 backend run 的内存中，后端日志和错误摘要统一脱敏。外部已运行的 BrowserAuth DSH 因无法安全取得 launch token，会明确提示改由 DesktopShell 启动。
+- **alpha 线状态**：预览通道不会写入正式 tested 列表，也不会改变生产默认。BrowserAuth 运行期路径已经具备适配，但第三方插件 API 仍处于迁移期，未宣称为正式兼容。
+- **alpha.4 隔离验证快照**：`0.1.2-alpha.4` 的 18 项 Preview 插件组合完成稳定启动与 Status Rotator 重启保持性验证；Better Sidebar、Auto Collapse、Open In、Agent Teams 和本地 Browser Bridge 因已确认的 DSH 插件 API 失配被排除。完整范围和版本快照见 `docs/DSH_ALPHA_PREVIEW_COMPATIBILITY.md`。
+
 ## v1.0.6（DSH 0.1.1-rc.2 兼容与插件目录收口）
 
 - **rc.2 兼容声明**：`0.1.1-rc.2` 加入 `testedDshVersions`，并加入已确认支持 `--no-open` 的能力表；未知版本仍实际执行 `--help` 探测。真实环境验收通过后，`defaultDshVersion` 切换为 `0.1.1-rc.2`，`minimumCompatibleDshVersion` 继续保持 `0.1.0-rc.7`。
