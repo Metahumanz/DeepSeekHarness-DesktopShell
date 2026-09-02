@@ -68,24 +68,11 @@ jobs:
 
       - name: Run verify gate (Windows PowerShell 5.1)
         shell: pwsh
-        run: powershell -NoProfile -File tests/verify.ps1 -SkipAnalyzer
+        run: powershell -NoProfile -File tests/verify.ps1 -Suite Ps51Compat -SkipAnalyzer
 
       - name: Build release package
         shell: pwsh
         run: pwsh -NoProfile -File scripts/Build-Release.ps1 -Version "${{ steps.version.outputs.version }}"
-
-      - name: Verify package contents
-        shell: pwsh
-        run: |
-          $zip = 'release/DeepSeekHarness-DesktopShell.zip'
-          $tmp = Join-Path $env:TEMP ('rel-verify-' + [guid]::NewGuid().ToString('N'))
-          Expand-Archive -Path $zip -DestinationPath $tmp -Force
-          $root = Join-Path $tmp 'DeepSeek Harness DesktopShell'
-          if (-not (Test-Path (Join-Path $root 'DeepSeekHarness.exe'))) { throw 'DeepSeekHarness.exe missing' }
-          if (-not (Test-Path (Join-Path $root 'version.txt'))) { throw 'version.txt missing' }
-          $actual = @(Get-ChildItem -Path $root -File).Count
-          if (-not (Test-Path 'release/SHA256SUMS.txt')) { throw 'SHA256SUMS.txt missing' }
-          Write-Host "Package verified ($actual files; Build-Release performed the authoritative expected-file check)."
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
@@ -121,6 +108,23 @@ jobs:
         with:
           name: release-package
           path: ./release/
+
+      # Build-Release 在上传前已按完整清单校验 ZIP；这里仅验证跨 Job 下载的
+      # ZIP 与其 SHA256SUMS.txt 仍匹配，避免重新维护第二份文件清单。
+      - name: Verify downloaded artifact hash
+        shell: pwsh
+        run: |
+          $zip = 'release/DeepSeekHarness-DesktopShell.zip'
+          $sums = 'release/SHA256SUMS.txt'
+          if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) { throw 'release zip missing after artifact download' }
+          if (-not (Test-Path -LiteralPath $sums -PathType Leaf)) { throw 'SHA256SUMS.txt missing after artifact download' }
+          $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+          $expected = "SHA256  $actual  DeepSeekHarness-DesktopShell.zip"
+          $declared = (Get-Content -LiteralPath $sums -Raw).Trim()
+          if (-not [string]::Equals($declared, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'downloaded release artifact hash does not match SHA256SUMS.txt'
+          }
+          Write-Host 'Downloaded release artifact hash verified.'
 
       - name: Ensure tag (manual dispatch)
         if: github.event_name == 'workflow_dispatch'

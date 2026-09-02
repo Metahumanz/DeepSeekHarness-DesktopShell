@@ -13,35 +13,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 统一门禁（tests/verify.ps1）：解析 + PSScriptAnalyzer + 六项回归测试
+      # PowerShell 7 跑完整源码门禁；5.1 只跑显式标记的宿主兼容套件。
       - name: Verify gate (PowerShell 7)
         shell: pwsh
         run: pwsh -NoProfile -File tests/verify.ps1
 
       - name: Verify gate (Windows PowerShell 5.1)
         shell: pwsh
-        run: powershell -NoProfile -File tests/verify.ps1 -SkipAnalyzer
+        run: powershell -NoProfile -File tests/verify.ps1 -Suite Ps51Compat -SkipAnalyzer
 
       - name: Build release package (C# compile + zip self-check)
         shell: pwsh
         run: pwsh -NoProfile -File scripts/Build-Release.ps1
 
-      - name: Verify zip content
-        shell: pwsh
-        run: |
-          $zip = 'release/DeepSeekHarness-DesktopShell.zip'
-          $expected = 15
-          $tmp = Join-Path $env:TEMP ('ci-verify-' + [guid]::NewGuid().ToString('N'))
-          Expand-Archive -Path $zip -DestinationPath $tmp -Force
-          $actual = @(Get-ChildItem -Path (Join-Path $tmp 'DeepSeek Harness DesktopShell') -File).Count
-          if ($actual -ne $expected) { Write-Error "zip file count $actual != $expected"; exit 1 }
-          if (-not (Test-Path 'release/SHA256SUMS.txt')) { Write-Error 'SHA256SUMS.txt missing'; exit 1 }
-          Write-Host "zip content verified ($actual files)."
-
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6
-        with:
-          name: release-package
-          path: |
-            release/DeepSeekHarness-DesktopShell.zip
-            release/SHA256SUMS.txt
+      # Build-Release 已对 ZIP 的完整期望清单和 SHA256SUMS.txt 做权威自校验；
+      # 普通 CI 不重复解压，也不上传只供 tag 发布工作流使用的临时 Release 工件。
