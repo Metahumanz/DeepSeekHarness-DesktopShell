@@ -27,7 +27,11 @@ Assert-True 'local rc2 script defaults to rc2' ($local.Contains("[string]`$DshVe
 Assert-True 'CLI version/help/no-open smoke is present' (
     $local.Contains('--version') -and $local.Contains('--help') -and $local.Contains('--no-open'))
 Assert-True 'ready banner and HTTP 200 gate is present' (
-    $local.Contains('dsh web:') -and $local.Contains('Test-Http200') -and $local.Contains('HTTP 200'))
+    $local.Contains('Get-DshReadyUrl') -and $local.Contains('Test-Http200') -and $local.Contains('HTTP 200'))
+Assert-True 'local smoke can safely target an existing DSH_HOME on a random test port' (
+    $local.Contains('[string]$WebProfileDshHome') -and
+    $local.Contains('Web startup uses existing DSH_HOME') -and
+    $local.Contains('$run = Start-DshServer $probePort $webHome'))
 Assert-True 'DesktopShell startup/manual restart/normal exit coverage is documented' (
     $local.Contains('[switch]$LaunchDesktopShell') -and $manual.Contains('## 2. DesktopShell') -and
     $manual.Contains('## 4.'))
@@ -36,7 +40,7 @@ Assert-True 'rc2 attachment/image regression is explicit and DesktopShell image 
 Assert-True 'isolated preflight uses rc2 no-open and separate validation modes' (
     $preflight.Contains("'0.1.1-rc.2'") -and $preflight.Contains("'status-rotator'") -and
     $preflight.Contains("'thought-buddy'"))
-Assert-True 'VERSION is 1.0.6' ($version -eq '1.0.6')
+Assert-True 'VERSION is 1.0.7' ($version -eq '1.0.7')
 
 if ($fail -eq 0) { Write-Host 'DSH RC2 COMPAT TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

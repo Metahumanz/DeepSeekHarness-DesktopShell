@@ -46,13 +46,34 @@ try {
     New-Item -ItemType Directory -Force -Path $dshDir, $logsDir | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $dshDir 'dsh.cmd'),
         "@echo off`r`nsetlocal`r`necho %*|findstr /C:`"--help`" >nul`r`nif not errorlevel 1 ( echo --no-open & exit /b 0 )`r`necho %*|findstr /C:`"--version`" >nul`r`nif not errorlevel 1 ( echo 0.1.0-rc.7 & exit /b 0 )`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0dsh-server.ps1`" %*`r`n")
-    [System.IO.File]::WriteAllText((Join-Path $dshDir 'dsh-server.ps1'),
-        "param([string]`$Profile='web',[int]`$Port=3080)`r`n" +
-        "`$mode=if(Test-Path (Join-Path `$PSScriptRoot 'mode.txt')){(Get-Content (Join-Path `$PSScriptRoot 'mode.txt') -Raw).Trim()}else{'pass'}`r`n" +
-        "`$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,`$Port); `$l.Start()`r`n" +
-        "if(`$mode -eq 'fail'){ Start-Sleep -Milliseconds 500; [Console]::Error.WriteLine('plugin tree failed to load'); exit 1 }`r`n" +
-        "Write-Output ('dsh web: http://127.0.0.1:{0}' -f `$Port)`r`n" +
-        "while(`$true){ `$c=`$l.AcceptTcpClient(); `$s=`$c.GetStream(); `$b=[Text.Encoding]::ASCII.GetBytes(('HTTP/1.1 200 OK' + [char]13 + [char]10 + 'Content-Length: 0' + [char]13 + [char]10 + 'Connection: close' + [char]13 + [char]10 + [char]13 + [char]10)); `$s.Write(`$b,0,`$b.Length); `$s.Close(); `$c.Close() }`r`n")
+    $serverSource = @'
+param([string]$Profile='web',[int]$Port=3080)
+$mode=if(Test-Path (Join-Path $PSScriptRoot 'mode.txt')){(Get-Content (Join-Path $PSScriptRoot 'mode.txt') -Raw).Trim()}else{'pass'}
+$l=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,$Port); $l.Start()
+if($mode -eq 'fail'){ Start-Sleep -Milliseconds 500; [Console]::Error.WriteLine('plugin tree failed to load'); exit 1 }
+if($mode -eq 'auth'){
+  Write-Output ('dsh web: http://127.0.0.1:{0}/?token=fixture-launch-token' -f $Port)
+  while($true){
+    $c=$l.AcceptTcpClient()
+    try {
+      $s=$c.GetStream(); $reader=[System.IO.StreamReader]::new($s,[Text.Encoding]::ASCII,$false,1024,$true)
+      $requestLine=[string]$reader.ReadLine(); $cookie=''
+      while($true){ $line=$reader.ReadLine(); if($null -eq $line -or $line.Length -eq 0){break}; if($line -match '(?i)^Cookie:\s*(.+)$'){ $cookie=$Matches[1] } }
+      if($requestLine -match '^GET /\?token=fixture-launch-token HTTP/'){
+        $response="HTTP/1.1 303 See Other`r`nLocation: /`r`nSet-Cookie: dsh-auth-fixture=ok; Path=/`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+      } elseif($requestLine -match '^GET / HTTP/' -and $cookie -match 'dsh-auth-fixture=ok') {
+        $response="HTTP/1.1 200 OK`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+      } else {
+        $response="HTTP/1.1 401 Unauthorized`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+      }
+      $bytes=[Text.Encoding]::ASCII.GetBytes($response); $s.Write($bytes,0,$bytes.Length); $reader.Dispose(); $s.Close()
+    } catch {} finally { try{$c.Close()}catch{} }
+  }
+}
+Write-Output ('dsh web: http://127.0.0.1:{0}' -f $Port)
+while($true){ $c=$l.AcceptTcpClient(); $s=$c.GetStream(); $b=[Text.Encoding]::ASCII.GetBytes(('HTTP/1.1 200 OK' + [char]13 + [char]10 + 'Content-Length: 0' + [char]13 + [char]10 + 'Connection: close' + [char]13 + [char]10 + [char]13 + [char]10)); $s.Write($b,0,$b.Length); $s.Close(); $c.Close() }
+'@
+    [System.IO.File]::WriteAllText((Join-Path $dshDir 'dsh-server.ps1'), $serverSource)
 
     $harnessCs = Join-Path $base 'harness.cs'
     $harnessSource = @'
@@ -147,8 +168,30 @@ class BootReadyHarness
             }
             finally { ready.Dispose(); }
 
+            File.WriteAllText(modePath, "auth");
+            int authPort = FreePort();
+            DshProcessManager authenticated = new DshProcessManager();
+            try
+            {
+                DshProcessManager.BackendStartResult authResult = authenticated.EnsureStarted(
+                    authPort, baseDir, logsDir, "0.1.0-rc.7", "web", dshPath, "command", false);
+                Assert(authResult != null && authResult.BootReady,
+                    "BrowserAuth ready URL follows 303 cookie exchange to BootReady");
+                string authUrl = authenticated.GetWebUrl(authPort);
+                Assert(authUrl.IndexOf("?token=fixture-launch-token", StringComparison.Ordinal) >= 0,
+                    "BrowserAuth ready URL is retained only for the active run");
+                Assert(authenticated.IsDshHealthy(authPort, 500),
+                    "BrowserAuth backend remains healthy after BootReady");
+                Assert(authenticated.GetRecentFailureSummary().IndexOf("fixture-launch-token", StringComparison.Ordinal) < 0,
+                    "BrowserAuth token is absent from recent output summary");
+            }
+            finally { authenticated.Dispose(); }
+
             string hostLog = Path.Combine(logsDir, "desktop-shell.log");
             string log = File.Exists(hostLog) ? File.ReadAllText(hostLog) : "";
+            string dshLogs = "";
+            foreach (string path in Directory.GetFiles(logsDir, "dsh-*.log"))
+                dshLogs += File.ReadAllText(path);
             Assert(log.IndexOf("READY-BANNER seen", StringComparison.OrdinalIgnoreCase) >= 0,
                 "ready banner is logged");
             Assert(log.IndexOf("HTTP200", StringComparison.OrdinalIgnoreCase) >= 0 &&
@@ -159,6 +202,11 @@ class BootReadyHarness
                 log.IndexOf("expectedStop=false", StringComparison.OrdinalIgnoreCase) >= 0 &&
                 log.IndexOf("state=Starting", StringComparison.OrdinalIgnoreCase) >= 0,
                 "unexpected pre-BootReady exit is diagnosed with state and exit code");
+            Assert(log.IndexOf("fixture-launch-token", StringComparison.Ordinal) < 0 &&
+                dshLogs.IndexOf("fixture-launch-token", StringComparison.Ordinal) < 0,
+                "BrowserAuth token is never written to host or DSH logs");
+            Assert(dshLogs.IndexOf("token=[REDACTED]", StringComparison.Ordinal) >= 0,
+                "BrowserAuth ready banner is redacted in DSH logs");
         }
         catch (Exception ex)
         {

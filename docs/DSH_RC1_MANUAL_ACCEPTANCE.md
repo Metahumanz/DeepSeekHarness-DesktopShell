@@ -358,7 +358,7 @@ $PluginSpecs = @(
     'github:yq04/dsh-git-remotes',
     'git+https://github.com/omdsh-dev/dsh-notification.git',
     'github:omdsh-dev/dsh-open-in-vscode',
-    'github:ChenRuoT/dsh-sidebar-qa',
+    'dsh-sidebar-qa@0.4.0',
     '@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.0',
     '@tt-a1i/archify-dsh@^0.1.0',
     '@nanmicoder/dsh-auto-mode@^0.1.4',

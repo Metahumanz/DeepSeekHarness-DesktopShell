@@ -19,9 +19,9 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> DesktopShell v1.0.6（DSH 0.1.1-rc.2 兼容收口；发布状态以 GitHub Release 为准） · DSH 0.1.1-rc.2（默认；最低兼容版本为 rc.7；rc.7 / rc.8 / rc1 / rc2 已列入测试基线）；未来 DSH 按 CLI 能力 best-effort 兼容
+> DesktopShell v1.0.7（DSH 通道选择与 alpha Preview 运行时适配；发布状态以 GitHub Release 为准） · DSH 0.1.1-rc.2（默认；最低兼容版本为 rc.7；rc.7 / rc.8 / rc1 / rc2 已列入测试基线）；未来 DSH 按 CLI 能力 best-effort 兼容
 
-> 当前 rc.2 CLI/Web 与 26 个插件隔离 preflight 已通过，真实环境 rc.2 验收通过，默认 DSH 已切换到 rc.2。一次临时构建 GUI 的 WebView2 `WebViewInitialize` 出现 `0x8000FFFF (E_UNEXPECTED)`，记录为该临时环境问题，不作为 rc.2 兼容否决依据。
+> 生产路径继续固定 rc.2。`alpha` 仅使用新建隔离 Profile：BrowserAuth 启动握手已适配，21 项 Preview 插件基线可启动；Better Sidebar、Auto Collapse、Agent Teams、Open In 及其依赖仍不属于 alpha 兼容范围。
 
 ## 安装
 
@@ -41,8 +41,8 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.6/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.6
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.7/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.7
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
@@ -54,7 +54,7 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.6 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.7 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -118,9 +118,9 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Sentinel | 条件唤醒 | |
 | Liangshen | 量神 | |
 | Thought Buddy | Deep diving 状态条前的动态伙伴 | 与 Status Rotator 互斥 |
-| Agent Teams | 多 Agent 协作 | 会改变 Agent 行为 |
+| Agent Teams | 多 Agent 协作 | rc2 固定 `0.1.14`；会改变 Agent 行为 |
 
-内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。
+内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。Agent Teams 在生产 rc2 固定为 `0.1.14`；`0.1.15` 起要求 alpha 的 `uiConversation` 服务，不能在 rc2 Profile 中使用。
 需要追新版本可在向导的"额外插件"步骤粘贴自定义 spec。
 本机 `web` Profile（2026-08-24 快照）包含 26 个可移植推荐插件；清单中的 `Installed` 是本机已安装版本，仍不等同于兼容 PASS。rc2 版本的逐插件隔离 preflight 使用临时 `DSH_HOME`、临时 Profile、随机端口，并逐项完成安装、Web ready、HTTP 200、稳定 10 秒、正常退出和端口清理后才记为 PASS。
 `@yuxianglin/dsh-bridge-browser` 是本机 `link:` 依赖，不能移植到隔离 Profile，保留为 OAuth/浏览器桥接人工项。
@@ -151,6 +151,15 @@ Status Rotator 是思考/运行状态增强的默认建议，只改展示层；T
 
 开始菜单 →「管理 DSH - 插件与配置」：检查 DSH / 修改 npx 版本、Profile、Web 端口、
 默认工作目录、关闭行为、开发者模式；安装插件；查看插件列表与诊断。
+选择 npx 版本时输入菜单编号，不需要手输版本号：菜单列出生产默认、其他已测试历史版本，
+以及官方 `latest` / `alpha` dist-tag 通道。选择通道时才实时查询 npm 并固定到本次解析出的准确版本，
+因此不会静默自动升级；`latest` 适合获取当前稳定发布，`alpha` 仅用于预览验证，不会加入正式测试列表或替换默认版本。
+`alpha` 通道会自动改用新建的隔离 Profile，保留原 Profile、插件、主题和会话不动；若手动使用未来未测试版本导致
+插件 loader 报 API 失配，DesktopShell 也会提供相同的“隔离 Preview Profile 重试”操作。当前 alpha 线使用
+BrowserAuth ready URL；DesktopShell 已适配其 303/Cookie 首次握手，token 只在内存中使用、不会写入设置或日志。
+当前 alpha Preview 的已验证组合、已确认不兼容插件和验证边界见
+[DSH alpha 预览兼容快照](docs/DSH_ALPHA_PREVIEW_COMPATIBILITY.md)；它是按标签解析时的快照，
+不构成生产兼容声明。
 
 ## 更新插件
 
@@ -195,7 +204,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 ```powershell
 .\scripts\Install-Desktop.ps1    # 源码安装：csc 编译 + 向导
 .\scripts\Build-Release.ps1      # 构建发布 zip（WebView2 固定 1.0.4078.44）
-.\scripts\Build-Release.ps1 -Version 1.0.6
+.\scripts\Build-Release.ps1 -Version 1.0.7
 ```
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
@@ -205,7 +214,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.6`，必须与根目录
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.7`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
 1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（39 项，PowerShell 7 + 5.1）

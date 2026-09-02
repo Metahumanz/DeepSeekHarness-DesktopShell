@@ -10,6 +10,8 @@ param(
     [string]$ProfileName = '',
     [ValidateSet('standard', 'status-rotator', 'thought-buddy')]
     [string]$Validation = 'standard',
+    [ValidateRange(0, 180)]
+    [int]$BrowserProbeSeconds = 0,
     [int]$StableSeconds = 10,
     [int]$TimeoutSeconds = 120
 )
@@ -27,12 +29,43 @@ function Get-FreeTcpPort {
     }
 }
 
-function Test-Http200([int]$port) {
+function Redact-BrowserAuthText([string]$text) {
+    if ($null -eq $text) { return '' }
+    return [regex]::Replace(
+        $text,
+        '(?i)([?&](?:token|access_token|auth|authorization)=)[^&#\s]+',
+        '$1[REDACTED]')
+}
+
+function Get-DshReadyUrl([string]$output, [int]$port) {
+    $match = [regex]::Match($output, '(?im)\bdsh\s+web\s*:\s*(?<url>http://[^\s]+)')
+    if (-not $match.Success) { return '' }
+
+    [System.Uri]$uri = $null
+    if (-not [System.Uri]::TryCreate(
+            $match.Groups['url'].Value,
+            [System.UriKind]::Absolute,
+            [ref]$uri)) {
+        return ''
+    }
+    $readyHost = $uri.Host.ToLowerInvariant()
+    $loopback = $readyHost -in @('127.0.0.1', 'localhost', '::1', '[::1]')
+    if ($uri.Scheme -ne [System.Uri]::UriSchemeHttp -or -not $loopback -or $uri.Port -ne $port) {
+        return ''
+    }
+    return $uri.AbsoluteUri
+}
+
+function Test-Http200([string]$url) {
     $request = $null
     try {
-        $request = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$port/")
+        $request = [System.Net.HttpWebRequest]::Create($url)
         $request.Method = 'GET'
-        $request.AllowAutoRedirect = $false
+        # alpha BrowserAuth 的 launch URL 通过 303 + Set-Cookie 进入干净根路径；
+        # 每个 probe 使用临时 cookie jar，绝不写入用户的 DSH_HOME 或浏览器配置。
+        $request.AllowAutoRedirect = $true
+        $request.MaximumAutomaticRedirections = 3
+        $request.CookieContainer = [System.Net.CookieContainer]::new()
         $request.KeepAlive = $false
         $request.Timeout = 700
         $request.ReadWriteTimeout = 700
@@ -40,7 +73,10 @@ function Test-Http200([int]$port) {
         try { return ([int]$response.StatusCode -eq 200) }
         finally { $response.Dispose() }
     }
-    catch { return $false }
+    catch {
+        try { if ($_.Exception.Response) { $_.Exception.Response.Dispose() } } catch { }
+        return $false
+    }
 }
 
 function Test-PortOpen([int]$port) {
@@ -304,7 +340,11 @@ function Test-StatusRotatorPlugin([string]$profileDir) {
     $clientPath = Join-Path $pluginDir 'lib\client.js'
     $nodePath = Join-Path $pluginDir 'lib\index.js'
     $smokePath = Join-Path $pluginDir 'scripts\smoke-test.cjs'
-    if (-not $package -or [string]$package.version -ne '0.6.6') { throw 'Status Rotator 版本不是已验证的 0.6.6。' }
+    # 不以某个历史发布号作为准入条件；下面的配置、客户端、服务端和重启保持性检查
+    # 才是实际兼容性证据。这样新版本不会仅因版本号变化被误判为不兼容。
+    if (-not $package -or [string]::IsNullOrWhiteSpace([string]$package.version)) {
+        throw 'Status Rotator 缺少可识别的 package.json 版本。'
+    }
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw 'Status Rotator 缺少 post-install 初始化后的 config.json。' }
     $document = Read-JsonFile $configPath
     if (-not $document -or -not $document.config -or $document.config.gradient.enabled -ne $false) {
@@ -332,7 +372,9 @@ function Test-ThoughtBuddyPlugin([string]$profileDir) {
     $pluginDir = Join-Path $profileDir 'node_modules\@dsh-plugin\dsh-thought-buddy'
     $package = Read-JsonFile (Join-Path $pluginDir 'package.json')
     $clientPath = Join-Path $pluginDir 'lib\client.js'
-    if (-not $package -or [string]$package.version -ne '0.2.0') { throw 'Thought Buddy 版本不是已验证的 0.2.0。' }
+    if (-not $package -or [string]::IsNullOrWhiteSpace([string]$package.version)) {
+        throw 'Thought Buddy 缺少可识别的 package.json 版本。'
+    }
     $clientText = if (Test-Path -LiteralPath $clientPath) { Get-Content -LiteralPath $clientPath -Raw -Encoding UTF8 } else { '' }
     if ($clientText -notmatch 'Deep diving' -or $clientText -notmatch 'setInterval') {
         throw 'Thought Buddy 客户端能力文件不完整。'
@@ -378,6 +420,20 @@ function New-DshArguments([string[]]$tail) {
         return @('-y', ('@deepseek-ai/dsh@' + $DshVersion)) + $tail
     }
     return $tail
+}
+
+function Test-DshNoOpenSupport([string]$profile, [string]$workingDirectory) {
+    $helpStdout = Join-Path $probeRoot 'cli-help-stdout.log'
+    $helpStderr = Join-Path $probeRoot 'cli-help-stderr.log'
+    $helpArgs = New-DshArguments @('--profile', $profile, '--help')
+    $helpLaunch = New-LaunchSpec $executable $helpArgs
+    $helpCode = Start-CapturedProcess $helpLaunch $workingDirectory $helpStdout $helpStderr 30000
+    if ($helpCode -ne 0) {
+        Write-Host "PLUGIN PREFLIGHT --help returned exitCode=$helpCode; conservatively omitting --no-open"
+        return $false
+    }
+    $helpText = (Read-CapturedText $helpStdout) + "`r`n" + (Read-CapturedText $helpStderr)
+    return ($helpText -match '(?m)(?:^|\s)--no-open(?:\s|$)')
 }
 
 $tempHome = Join-Path ([IO.Path]::GetTempPath()) ('dsh-plugin-preflight-' + [guid]::NewGuid().ToString('N'))
@@ -471,35 +527,34 @@ try {
     }
 
     # 与 DesktopShell 的 BuildWebLaunchArguments 保持一致：web 是 dsh 的默认启动入口，
-    # 正式启动只传 --profile/--port；已确认支持的 rc.8/rc.1/rc.2 再追加 --no-open。
+    # 正式启动只传 --profile/--port；任何版本均以真实 --help 能力探测决定是否追加 --no-open，
+    # 不把新的 alpha/rc 版本号维护成另一份硬编码列表。
     $webArgs = New-DshArguments @('--profile', $profile, '--port', ([string]$port))
-    if ($DshVersion -in @('0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')) { $webArgs += '--no-open' }
+    if (Test-DshNoOpenSupport $profile $tempHome) { $webArgs += '--no-open' }
     $webLaunch = New-LaunchSpec $executable $webArgs
     $webProcess = Start-Process -FilePath $webLaunch.FileName -ArgumentList $webLaunch.Arguments `
         -WorkingDirectory $tempHome -WindowStyle Hidden -RedirectStandardOutput $stdoutPath `
         -RedirectStandardError $stderrPath -PassThru
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $bannerSeen = $false
+    $readyUrl = ''
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($webProcess.HasExited) {
             throw "Profile 在 BootReady 前退出，exitCode=$($webProcess.ExitCode)。"
         }
 
         $combined = (Read-CapturedText $stdoutPath) + "`r`n" + (Read-CapturedText $stderrPath)
-        if ($combined -match '(?i)dsh\s+web:\s+http://(?:127\.0\.0\.1|localhost):' + $port.ToString()) {
-            $bannerSeen = $true
-        }
+        $readyUrl = Get-DshReadyUrl $combined $port
 
-        if ($bannerSeen -and (Test-Http200 $port)) {
+        if ($readyUrl -and (Test-Http200 $readyUrl)) {
             $stableDeadline = [DateTime]::UtcNow.AddSeconds($StableSeconds)
             while ([DateTime]::UtcNow -lt $stableDeadline) {
-                if ($webProcess.HasExited -or -not (Test-Http200 $port)) {
+                if ($webProcess.HasExited -or -not (Test-Http200 $readyUrl)) {
                     throw 'Profile 已出现 ready banner/HTTP 200，但未稳定运行满要求时长。'
                 }
                 Start-Sleep -Milliseconds 250
             }
-            if ($webProcess.HasExited -or -not (Test-Http200 $port)) {
+            if ($webProcess.HasExited -or -not (Test-Http200 $readyUrl)) {
                 throw '稳定确认结束时 Profile 已退出或 HTTP 不再返回 200。'
             }
             if ($Validation -eq 'status-rotator') {
@@ -515,10 +570,12 @@ try {
                     -RedirectStandardError $stderrPath -PassThru
                 $restartDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
                 $restartReady = $false
+                $restartUrl = ''
                 while ([DateTime]::UtcNow -lt $restartDeadline) {
                     if ($webProcess.HasExited) { throw 'Status Rotator 重启后的 Profile 在 ready 前退出。' }
                     $restartOutput = (Read-CapturedText $stdoutPath) + "`r`n" + (Read-CapturedText $stderrPath)
-                    if ($restartOutput -match '(?i)dsh\s+web:\s+http://(?:127\.0\.0\.1|localhost):' + $port.ToString() -and (Test-Http200 $port)) {
+                    $restartUrl = Get-DshReadyUrl $restartOutput $port
+                    if ($restartUrl -and (Test-Http200 $restartUrl)) {
                         $restartReady = $true
                         break
                     }
@@ -533,6 +590,15 @@ try {
             elseif ($Validation -eq 'thought-buddy') {
                 Test-ThoughtBuddyPlugin $profileDir
             }
+            if ($BrowserProbeSeconds -gt 0) {
+                # 只公布随机端口，不把 alpha BrowserAuth 一次性 URL/token 写入终端。
+                # rc2 等无 BrowserAuth 的版本可由本地浏览器使用该端口检查真实渲染状态。
+                Write-Host "PLUGIN PREFLIGHT browser-probe port=$port holdSeconds=$BrowserProbeSeconds"
+                Start-Sleep -Seconds $BrowserProbeSeconds
+                if ($webProcess.HasExited -or -not (Test-Http200 $readyUrl)) {
+                    throw 'Browser probe 等待期间 Profile 已退出或 HTTP 不再返回 200。'
+                }
+            }
             $passed = $true
             break
         }
@@ -545,13 +611,13 @@ catch {
     $reason = $_.Exception.Message
     Write-Host "PLUGIN BOOT PREFLIGHT FAILED: $reason"
     if ($activeStdoutPath) {
-        $installStdout = Read-CapturedText $activeStdoutPath
-        $installStderr = Read-CapturedText $activeStderrPath
+        $installStdout = Redact-BrowserAuthText (Read-CapturedText $activeStdoutPath)
+        $installStderr = Redact-BrowserAuthText (Read-CapturedText $activeStderrPath)
         if ($installStdout) { Write-Host '--- active install stdout (tail) ---'; Write-Host (($installStdout -split "`r?`n" | Select-Object -Last 20) -join [Environment]::NewLine) }
         if ($installStderr) { Write-Host '--- active install stderr (tail) ---'; Write-Host (($installStderr -split "`r?`n" | Select-Object -Last 20) -join [Environment]::NewLine) }
     }
-    $stdout = Read-CapturedText $stdoutPath
-    $stderr = Read-CapturedText $stderrPath
+    $stdout = Redact-BrowserAuthText (Read-CapturedText $stdoutPath)
+    $stderr = Redact-BrowserAuthText (Read-CapturedText $stderrPath)
     if ($stdout) { Write-Host '--- web stdout (tail) ---'; Write-Host (($stdout -split "`r?`n" | Select-Object -Last 20) -join [Environment]::NewLine) }
     if ($stderr) { Write-Host '--- web stderr (tail) ---'; Write-Host (($stderr -split "`r?`n" | Select-Object -Last 20) -join [Environment]::NewLine) }
 }

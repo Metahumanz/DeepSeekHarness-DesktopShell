@@ -32,7 +32,7 @@ Assert-True "pending resets foreign stability counter" ($cs -match 'foreignPid =
 # ---- 1c. 启动成功即确认归属（P0-5） + 半失败清理（P0-6） ----
 Assert-True "BackendStartResult returned by EnsureStarted" ($cs -match 'public class BackendStartResult' -and $cs -match 'public BackendStartResult EnsureStarted')
 Assert-True "success requires BootReady after listener confirmation" ($cs -match 'WaitForBootReady\(run, port, cancellationToken, true\)' -and $cs -match 'public bool BootReady')
-Assert-True "BootReady requires ready banner and HTTP 200" ($cs -match 'requireReadyBanner' -and $cs -match 'IsHttp200\(port, 500, cancellationToken\)' -and $cs -match 'stableSamples = 3')
+Assert-True "BootReady requires ready banner and HTTP 200" ($cs -match 'requireReadyBanner' -and $cs -match 'IsHttp200\(run, port, 500, cancellationToken\)' -and $cs -match 'stableSamples = 3')
 Assert-True "process exit before BootReady is startup failure" ($cs -match 'DSH 在 BootReady 前退出')
 Assert-True "BACKEND ready is logged only after BootReady" ($cs -match 'BACKEND ready generation=')
 Assert-True "failed start cleans up owned job/process" ($cs -match 'START-CLEANUP begin' -and $cs -match 'START-CLEANUP done')
@@ -95,6 +95,19 @@ Assert-True "foreign stableCount logged" ($cs -match 'identity=foreign stableCou
 Assert-True "sawReadyBanner field exists" ($cs -match 'private bool sawReadyBanner;')
 Assert-True "banner detected in OnOutput" ($cs -match 'READY-BANNER seen generation=' -and $cs -match 'run\.SawReadyBanner = true;')
 Assert-True "banner is auxiliary only (job check still primary)" ($cs -match 'ProbeListenerIdentity\(port, pid, out commandLine\)')
+Assert-True "BrowserAuth ready URL is per-run and loopback validated" (
+    $cs -match 'public string ReadyUrl = "";' -and $cs -match 'TryExtractReadyUrl' -and
+    $cs -match 'IsTrustedLoopbackWebUri' -and $cs -match 'GetWebUrl\(int port\)')
+Assert-True "BrowserAuth health probe follows the cookie redirect in memory" (
+    $cs -match 'MaximumAutomaticRedirections = 3;' -and $cs -match 'CookieContainer = new CookieContainer\(\);')
+Assert-True "BrowserAuth token is redacted from backend output" (
+    $cs -match 'SensitiveQueryParameterRegex' -and $cs -match 'RedactSensitiveOutput\(text\)' -and
+    $cs -match '\[REDACTED\]')
+Assert-True "WebView navigation uses the active trusted ready URL" (
+    $cs -match 'return dsh\.GetWebUrl\(activeRuntimeSettings\.port\);')
+Assert-True "external BrowserAuth attach fails with an actionable safe boundary" (
+    $cs -match 'IsHttpUnauthorized\(port, 500, cancellationToken\)' -and
+    $cs -match '无法安全读取非自己启动进程的 launch token')
 
 if ($fail -eq 0) { Write-Host 'RESTART STATE TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

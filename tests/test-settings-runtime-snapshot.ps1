@@ -21,7 +21,7 @@ function Get-MethodBody([string]$text, [string]$signature, [string]$nextSignatur
 
 Assert-True 'persisted and active runtime snapshots exist' ($sourceText -match 'persistedSettings' -and $sourceText -match 'activeRuntimeSettings')
 Assert-True 'health check reads active port' ($sourceText -match 'IsDshHealthy\(activeRuntimeSettings\.port')
-Assert-True 'DSH URL reads active port' ($sourceText -match '127\.0\.0\.1:" \+ activeRuntimeSettings\.port')
+Assert-True 'DSH URL reads active port' ($sourceText -match 'dsh\.GetWebUrl\(activeRuntimeSettings\.port\)')
 Assert-True 'profile and runner startup read active snapshot' ($sourceText -match 'activeRuntimeSettings\.profileName' -and $sourceText -match 'activeRuntimeSettings\.dshRunnerMode')
 Assert-True 'save path snapshots before save and classifies backend fields' ($sourceText -match 'AppSettings oldSnapshot = persistedSettings\.Clone\(\)' -and $sourceText -match 'BackendRuntimeSettingsChanged\(oldSnapshot, persistedSettings\)')
 

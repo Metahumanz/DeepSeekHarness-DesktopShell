@@ -9,6 +9,7 @@ param(
     [switch]$LaunchDesktopShell,
     [switch]$RunPlugins,
     [switch]$KeepTemp,
+    [string]$WebProfileDshHome = '',
     [int]$TimeoutSeconds = 60,
     [int]$StableSeconds = 3
 )
@@ -170,7 +171,7 @@ function Start-DshServer([int]$port, [string]$dshHome) {
     }
 }
 
-function Get-RunOutput($run) {
+function Get-RunOutputRaw($run) {
     $stdout = if (Test-Path -LiteralPath $run.StdoutPath) {
         Get-Content -LiteralPath $run.StdoutPath -Raw -ErrorAction SilentlyContinue
     } else { '' }
@@ -180,14 +181,57 @@ function Get-RunOutput($run) {
     return ([string]$stdout + "`r`n" + [string]$stderr)
 }
 
-function Test-Http200([int]$port) {
+function Redact-BrowserAuthText([string]$text) {
+    if ($null -eq $text) { return '' }
+    return [regex]::Replace(
+        $text,
+        '(?i)([?&](?:token|access_token|auth|authorization)=)[^&#\s]+',
+        '$1[REDACTED]')
+}
+
+function Get-RunOutput($run) {
+    return (Redact-BrowserAuthText (Get-RunOutputRaw $run))
+}
+
+function Get-DshReadyUrl($run, [int]$port) {
+    $output = Get-RunOutputRaw $run
+    $match = [regex]::Match($output, '(?im)\bdsh\s+web\s*:\s*(?<url>http://[^\s]+)')
+    if (-not $match.Success) { return '' }
+
+    [System.Uri]$uri = $null
+    if (-not [System.Uri]::TryCreate(
+            $match.Groups['url'].Value,
+            [System.UriKind]::Absolute,
+            [ref]$uri)) {
+        return ''
+    }
+    $readyHost = $uri.Host.ToLowerInvariant()
+    $loopback = $readyHost -in @('127.0.0.1', 'localhost', '::1', '[::1]')
+    if ($uri.Scheme -ne [System.Uri]::UriSchemeHttp -or -not $loopback -or $uri.Port -ne $port) {
+        return ''
+    }
+    return $uri.AbsoluteUri
+}
+
+function Test-Http200([string]$url) {
+    $request = $null
     try {
-        $response = Invoke-WebRequest -UseBasicParsing `
-            -Uri ('http://127.0.0.1:' + $port.ToString() + '/') `
-            -TimeoutSec 3
-        return ($response.StatusCode -eq 200)
+        $request = [System.Net.HttpWebRequest]::Create($url)
+        $request.Method = 'GET'
+        # alpha BrowserAuth 先 303 写入 Cookie 再跳转到干净根路径；测试 cookie jar
+        # 为单次请求所有，既不复用也不落盘。
+        $request.AllowAutoRedirect = $true
+        $request.MaximumAutomaticRedirections = 3
+        $request.CookieContainer = [System.Net.CookieContainer]::new()
+        $request.KeepAlive = $false
+        $request.Timeout = 3000
+        $request.ReadWriteTimeout = 3000
+        $response = $request.GetResponse()
+        try { return ([int]$response.StatusCode -eq 200) }
+        finally { $response.Dispose() }
     }
     catch {
+        try { if ($_.Exception.Response) { $_.Exception.Response.Dispose() } } catch { }
         return $false
     }
 }
@@ -195,6 +239,14 @@ function Test-Http200([int]$port) {
 function Invoke-CliSmoke {
     $cliHome = Join-Path $sessionRoot 'cli-dsh-home'
     New-Item -ItemType Directory -Force -Path $cliHome | Out-Null
+    $webHome = $cliHome
+    if (-not [string]::IsNullOrWhiteSpace($WebProfileDshHome)) {
+        if (-not (Test-Path -LiteralPath $WebProfileDshHome -PathType Container)) {
+            throw "WebProfileDshHome does not exist: $WebProfileDshHome"
+        }
+        $webHome = (Resolve-Path -LiteralPath $WebProfileDshHome).Path
+        Say "Web startup uses existing DSH_HOME (read/write only as DSH normally does): $webHome"
+    }
     Say "CLI version probe: $DshVersion"
 
     $versionResult = Invoke-CapturedCommand `
@@ -218,18 +270,18 @@ function Invoke-CliSmoke {
     Ok 'CLI --help contains --port / --no-open'
 
     $probePort = if ($Port -gt 0) { $Port } else { Get-FreeTcpPort }
-    $run = Start-DshServer $probePort $cliHome
+    $run = Start-DshServer $probePort $webHome
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
         $ready = $false
+        $readyUrl = ''
         while ([DateTime]::UtcNow -lt $deadline) {
             $run.Process.Refresh()
             if ($run.Process.HasExited) {
                 throw "DSH exited before ready, exit code $($run.Process.ExitCode): $(Get-RunOutput $run)"
             }
-            $output = Get-RunOutput $run
-            $banner = $output -match ('dsh web:\s+http://127\.0\.0\.1:' + [regex]::Escape([string]$probePort))
-            if ($banner -and (Test-Http200 $probePort)) {
+            $readyUrl = Get-DshReadyUrl $run $probePort
+            if ($readyUrl -and (Test-Http200 $readyUrl)) {
                 $ready = $true
                 break
             }
@@ -240,12 +292,12 @@ function Invoke-CliSmoke {
         }
 
         for ($i = 0; $i -lt $StableSeconds; $i++) {
-            if (-not (Test-Http200 $probePort)) {
+            if (-not $readyUrl -or -not (Test-Http200 $readyUrl)) {
                 throw "DSH HTTP 200 stability check failed on port $probePort"
             }
             Start-Sleep -Seconds 1
         }
-        Ok ("CLI --no-open ready + HTTP 200 + stable {0}s on port {1}" -f $StableSeconds, $probePort)
+        Ok ("CLI --no-open ready URL + HTTP 200 + stable {0}s on port {1}" -f $StableSeconds, $probePort)
     }
     finally {
         try { $run.Process.Refresh() } catch { }
@@ -280,7 +332,7 @@ function Start-IsolatedDesktopShell {
     if (-not $AppExe -and
         [IO.Path]::GetFullPath($sourceExe) -ieq [IO.Path]::GetFullPath($installedExe) -and
         -not (Test-Path -LiteralPath $patchedCandidate -PathType Leaf)) {
-        throw 'No v1.0.6 candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient for this DesktopShell acceptance run.'
+        throw 'No v1.0.7 candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient for this DesktopShell acceptance run.'
     }
     $sourceDir = Split-Path -Parent $sourceExe
     $guiDir = Join-Path $sessionRoot 'desktop-shell'
@@ -364,7 +416,7 @@ function Invoke-PluginPreflight {
         [pscustomobject]@{ Name='dsh-git-remotes'; Spec='github:yq04/dsh-git-remotes' },
         [pscustomobject]@{ Name='dsh-notification'; Spec='git+https://github.com/omdsh-dev/dsh-notification.git' },
         [pscustomobject]@{ Name='dsh-open-in'; Spec='dsh-open-in@^0.1.1' },
-        [pscustomobject]@{ Name='dsh-sidebar-qa'; Spec='github:ChenRuoT/dsh-sidebar-qa' },
+        [pscustomobject]@{ Name='dsh-sidebar-qa'; Spec='dsh-sidebar-qa@0.4.0' },
         [pscustomobject]@{ Name='@huanlin/dsh-plugin-better-sidebar-plugin-office'; Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.2' },
         [pscustomobject]@{ Name='@tt-a1i/archify-dsh'; Spec='@tt-a1i/archify-dsh@^0.1.0' },
         [pscustomobject]@{ Name='dsh-status-rotator'; Spec='dsh-status-rotator@^0.6.6'; Validation='status-rotator' },
@@ -375,7 +427,7 @@ function Invoke-PluginPreflight {
         [pscustomobject]@{ Name='dsh-sentinel'; Spec='dsh-sentinel@0.11.0' },
         [pscustomobject]@{ Name='@linxin666/dsh-liangshen'; Spec='@linxin666/dsh-liangshen@^0.3.2' },
         [pscustomobject]@{ Name='@dsh-plugin/dsh-thought-buddy'; Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Validation='thought-buddy' },
-        [pscustomobject]@{ Name='@nanmicoder/dsh-agent-teams'; Spec='@nanmicoder/dsh-agent-teams@^0.1.13' }
+        [pscustomobject]@{ Name='@nanmicoder/dsh-agent-teams'; Spec='@nanmicoder/dsh-agent-teams@0.1.14' }
     )
     $failed = 0
     foreach ($plugin in $plugins) {
