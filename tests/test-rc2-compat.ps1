@@ -27,7 +27,11 @@ Assert-True 'local rc2 script defaults to rc2' ($local.Contains("[string]`$DshVe
 Assert-True 'CLI version/help/no-open smoke is present' (
     $local.Contains('--version') -and $local.Contains('--help') -and $local.Contains('--no-open'))
 Assert-True 'ready banner and HTTP 200 gate is present' (
-    $local.Contains('dsh web:') -and $local.Contains('Test-Http200') -and $local.Contains('HTTP 200'))
+    $local.Contains('Get-DshReadyUrl') -and $local.Contains('Test-Http200') -and $local.Contains('HTTP 200'))
+Assert-True 'local smoke can safely target an existing DSH_HOME on a random test port' (
+    $local.Contains('[string]$WebProfileDshHome') -and
+    $local.Contains('Web startup uses existing DSH_HOME') -and
+    $local.Contains('$run = Start-DshServer $probePort $webHome'))
 Assert-True 'DesktopShell startup/manual restart/normal exit coverage is documented' (
     $local.Contains('[switch]$LaunchDesktopShell') -and $manual.Contains('## 2. DesktopShell') -and
     $manual.Contains('## 4.'))

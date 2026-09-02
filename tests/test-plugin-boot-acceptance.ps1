@@ -2,8 +2,10 @@
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $managePath = Join-Path $repo 'scripts\Manage-Dsh.ps1'
 $preflightPath = Join-Path $repo 'scripts\Test-PluginBootPreflight.ps1'
+$csPath = Join-Path $repo 'src\DeepSeekHarness.cs'
 $manage = [System.IO.File]::ReadAllText($managePath)
 $preflight = [System.IO.File]::ReadAllText($preflightPath)
+$cs = [System.IO.File]::ReadAllText($csPath)
 
 $fail = 0
 function Assert-True([string]$label, [bool]$condition) {
@@ -38,12 +40,27 @@ Assert-True 'preflight installs plugins before booting the isolated Profile' (
     $preflight -notmatch 'New-DshArguments @\(\x27web\x27,\s+\x27--profile\x27')
 Assert-True 'preflight uses a random port and the full BootReady gate' (
     $preflight -match 'Get-FreeTcpPort' -and
-    $preflight -match 'dsh\\s\+web:' -and
+    $preflight -match 'dsh\\s\+web\\s\*:' -and
     $preflight -match 'Test-Http200' -and
     $preflight -match 'Get-Content -LiteralPath \$path -Raw' -and
     $preflight -match '\$StableSeconds' -and
     $preflight -match '\$installTimeoutMs = \[Math\]::Max' -and
     $preflight -match '\$webProcess\.HasExited')
+Assert-True 'preflight accepts BrowserAuth ready URLs without exposing their token' (
+    $preflight -match 'Get-DshReadyUrl' -and
+    $preflight -match 'MaximumAutomaticRedirections = 3' -and
+    $preflight -match 'Redact-BrowserAuthText')
+Assert-True 'special plugin validations prove capabilities instead of pinning an obsolete release number' (
+    $preflight -match 'BrowserProbeSeconds' -and
+    $preflight -match 'Status Rotator 缺少可识别的 package.json 版本' -and
+    $preflight -match 'Thought Buddy 缺少可识别的 package.json 版本' -and
+    $preflight -notmatch "version -ne '0\.6\.6'" -and
+    $preflight -notmatch "version -ne '0\.2\.0'")
+Assert-True 'preflight probes --no-open from CLI help instead of listing each future DSH version' (
+    $preflight -match 'function Test-DshNoOpenSupport' -and
+    $preflight -match 'New-DshArguments @\(\x27--profile\x27, \$profile, \x27--help\x27\)' -and
+    $preflight -match 'Test-DshNoOpenSupport \$profile \$tempHome' -and
+    $preflight -notmatch "0\.1\.2-alpha\.3.*0\.1\.2-alpha\.4")
 Assert-True 'preflight cleans only its own process tree and restores DSH_HOME' (
     $preflight -match 'Stop-ProcessTree' -and
     $preflight -match 'Get-ListeningPidForPort' -and
@@ -79,6 +96,13 @@ Assert-True 'local-only bridge-browser is documented but not offered as a portab
     $manage -match '本地集成依赖' -and
     $manage -match 'bridge-browser' -and
     $catalog -notmatch 'dsh-bridge-browser'
+)
+Assert-True 'unverified plugin API mismatches offer an isolated Profile instead of modifying the real Profile' (
+    $cs -match 'IsPluginLoaderApiMismatch' -and
+    $cs -match 'does not provide an export named' -and
+    $cs -match 'AllocateIsolatedPreviewProfileName' -and
+    $cs -match 'OnOverlayUseIsolatedPreviewProfile' -and
+    $cs -match '现有 Profile、插件、主题和会话不会被修改'
 )
 
 if ($fail -eq 0) { Write-Host 'PLUGIN BOOT ACCEPTANCE TESTS PASSED' }
