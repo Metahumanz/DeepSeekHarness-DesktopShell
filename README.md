@@ -209,7 +209,8 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
 **发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
-回归测试在 `tests\`（39 项，pwsh 与 Windows PowerShell 5.1 双宿主），CI 每次 push/PR 自动运行。
+回归测试在 `tests\`：PowerShell 7 运行全部 39 项；Windows PowerShell 5.1 解析全部脚本，
+并运行 7 项真实覆盖宿主差异的兼容回归。CI 每次 push/PR 自动运行。
 插件完整 BootReady 验收是独立 release preflight，不在日常插件安装流程中启动用户 Profile。
 
 ## Release 流程
@@ -217,10 +218,12 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.8`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
-1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（39 项，PowerShell 7 + 5.1）
-2. `Build-Release -Version`（仅 x64）
-3. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
-4. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
+1. 校验输入版本 == 根目录 `VERSION`，然后运行 PowerShell 7 全量回归（39 项）及
+   Windows PowerShell 5.1 兼容套件（7 项，另解析全部脚本）
+2. `Build-Release -Version`（仅 x64）；该步骤按完整期望清单解包自校验 ZIP，并生成 SHA256
+3. 发布 Job 下载工件后仅复核 ZIP 与 `SHA256SUMS.txt` 的哈希一致性
+4. 校验 tag（已存在时必须指向当前 HEAD，否则拒绝）
+5. 创建 tag 与 GitHub Release，上传 `DeepSeekHarness-DesktopShell.zip` + `SHA256SUMS.txt`
 
 推送 `v*` tag 也会触发同样流程。两个资产必须同时上传，一键安装的哈希校验才能通过。
 

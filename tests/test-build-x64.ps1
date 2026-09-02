@@ -3,6 +3,8 @@ $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $buildRelease = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Build-Release.ps1'))
 $installDesktop = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Install-Desktop.ps1'))
 $installRelease = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Install-Release.ps1'))
+$verify = [System.IO.File]::ReadAllText((Join-Path $repo 'tests\verify.ps1'))
+$ciYml = [System.IO.File]::ReadAllText((Join-Path $repo '.github\workflows\ci.yml'))
 $releaseYml = [System.IO.File]::ReadAllText((Join-Path $repo '.github\workflows\release.yml'))
 $versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
 
@@ -35,7 +37,41 @@ Assert-True "release.yml defaults to repo version $versionText" ($releaseYml -ma
 Assert-True "release.yml gates version against VERSION file" ($releaseYml -match 'Get-Content -LiteralPath VERSION -Raw')
 Assert-True "release.yml still freezes old releases (no delete step)" ($releaseYml -notmatch 'delete_release|delete-existing')
 
-# ---- 4. 根目录版本文件与兼容基线内容自洽 ----
+# ---- 4. CI/Release 只在必要处跨 PowerShell 宿主重复执行 ----
+$fullSuiteMatch = [regex]::Match($verify, '(?s)\$fullTests = @\((.*?)\)\s*\r?\n\r?\n# Windows')
+$ps51SuiteMatch = [regex]::Match($verify, '(?s)\$ps51CompatibilityTests = @\((.*?)\)\s*\r?\n\r?\n\$tests')
+$fullSuiteTests = @($fullSuiteMatch.Groups[1].Value | Select-String -AllMatches "'([^']+\.ps1)'" | ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value })
+$ps51SuiteTests = @($ps51SuiteMatch.Groups[1].Value | Select-String -AllMatches "'([^']+\.ps1)'" | ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value })
+$requiredPs51Tests = @(
+    'test-npx-version-parser.ps1',
+    'test-dsh-version.ps1',
+    'test-runner-mode.ps1',
+    'test-repair-regex.ps1',
+    'test-install-ownership.ps1',
+    'test-uninstall-guards.ps1',
+    'test-plugin-preflight-cleanup.ps1'
+)
+
+Assert-True 'verify exposes separate Full and Ps51Compat suites' ($verify -match "ValidateSet\('Full', 'Ps51Compat'\)" -and $fullSuiteMatch.Success -and $ps51SuiteMatch.Success)
+Assert-True "Full suite retains all 39 regression tests (got: $($fullSuiteTests.Count))" ($fullSuiteTests.Count -eq 39)
+Assert-True "Ps51Compat retains exactly 7 host-sensitive tests (got: $($ps51SuiteTests.Count))" (
+    $ps51SuiteTests.Count -eq $requiredPs51Tests.Count -and
+    @($requiredPs51Tests | Where-Object { $ps51SuiteTests -notcontains $_ }).Count -eq 0)
+Assert-True 'PowerShell 7 remains the one full-source gate' ($ciYml -match 'run: pwsh -NoProfile -File tests/verify\.ps1' -and $releaseYml -match 'run: pwsh -NoProfile -File tests/verify\.ps1')
+Assert-True 'both workflows run only the PS 5.1 compatibility suite' ($ciYml -match 'tests/verify\.ps1 -Suite Ps51Compat -SkipAnalyzer' -and $releaseYml -match 'tests/verify\.ps1 -Suite Ps51Compat -SkipAnalyzer')
+
+# Build-Release 是 ZIP 文件清单的唯一权威校验点；CI 不再重复解包，普通 CI 也不上传无人消费的工件。
+Assert-True 'Build-Release owns exact package-manifest verification' ($buildRelease -match '\$ExpectedPackageFiles = @\(' -and $buildRelease -match '\$missing = @\(' -and $buildRelease -match '\$unexpected = @\(')
+Assert-True 'CI no longer repeats ZIP extraction or uploads unused release artifacts' ($ciYml -notmatch 'Verify zip content|Expand-Archive|actions/upload-artifact')
+Assert-True 'release build no longer repeats package extraction' ($releaseYml -notmatch 'Verify package contents|Expand-Archive')
+$downloadIndex = $releaseYml.IndexOf('Download release artifacts', [System.StringComparison]::Ordinal)
+$hashIndex = $releaseYml.IndexOf('Verify downloaded artifact hash', [System.StringComparison]::Ordinal)
+Assert-True 'release verifies the downloaded artifact hash after the cross-job download' (
+    $downloadIndex -ge 0 -and $hashIndex -gt $downloadIndex -and
+    $releaseYml -match 'Get-FileHash -LiteralPath \$zip -Algorithm SHA256' -and
+    $releaseYml -match 'SHA256SUMS\.txt')
+
+# ---- 5. 根目录版本文件与兼容基线内容自洽 ----
 Assert-True "root VERSION is 1.0.8 (got: $versionText)" ($versionText -eq '1.0.8')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True "COMPATIBILITY.json defaultDshVersion is a valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
