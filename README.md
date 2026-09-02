@@ -19,7 +19,7 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> DesktopShell v1.0.7（DSH 通道选择与 alpha Preview 运行时适配；发布状态以 GitHub Release 为准） · DSH 0.1.1-rc.2（默认；最低兼容版本为 rc.7；rc.7 / rc.8 / rc1 / rc2 已列入测试基线）；未来 DSH 按 CLI 能力 best-effort 兼容
+> DesktopShell v1.0.8（DSH 通道选择与 alpha Preview 运行时适配；发布状态以 GitHub Release 为准） · DSH 0.1.1-rc.2（默认；最低兼容版本为 rc.7；rc.7 / rc.8 / rc1 / rc2 已列入测试基线）；未来 DSH 按 CLI 能力 best-effort 兼容
 
 > 生产路径继续固定 rc.2。`alpha` 仅使用新建隔离 Profile：BrowserAuth 启动握手已适配，21 项 Preview 插件基线可启动；Better Sidebar、Auto Collapse、Agent Teams、Open In 及其依赖仍不属于 alpha 兼容范围。
 
@@ -41,8 +41,8 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.7/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.7
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.8/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.8
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
@@ -54,7 +54,7 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.7 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.8 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -204,7 +204,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 ```powershell
 .\scripts\Install-Desktop.ps1    # 源码安装：csc 编译 + 向导
 .\scripts\Build-Release.ps1      # 构建发布 zip（WebView2 固定 1.0.4078.44）
-.\scripts\Build-Release.ps1 -Version 1.0.7
+.\scripts\Build-Release.ps1 -Version 1.0.8
 ```
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
@@ -214,7 +214,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.7`，必须与根目录
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.8`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
 1. 校验输入版本 == 根目录 `VERSION`，然后跑全部回归测试（39 项，PowerShell 7 + 5.1）

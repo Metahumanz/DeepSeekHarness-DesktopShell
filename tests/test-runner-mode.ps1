@@ -152,10 +152,19 @@ $sE = Get-InstalledSettings $tE
 Assert-Equal "E mode=npx (version unreadable)" $sE.dshRunnerMode 'npx'
 Assert-Equal "E path empty" ([string]$sE.dshPath) ''
 
-# 场景 G：交互首次向导选择 0/取消 -> 不是安装错误，不提交 stage/新安装目录。
-# Read-Host 在标准输入重定向下可读取该行；此处通过真实 Install-Release 调用覆盖
-# “Manage-Dsh exit 2 → 安装核心正常取消”的传播路径。
-function Invoke-HermeticInteractiveCancel([string]$target) {
+# 场景 G：首次向导取消 -> 不是安装错误，不提交 stage/新安装目录。
+# 这里直接把测试包中的管理器替换为确定性 exit 2 桩，覆盖
+# “Manage-Dsh exit 2 → 安装核心正常取消”的传播路径。不能依赖重定向
+# Read-Host：GitHub Runner 的非交互 ConsoleHost 与本机桌面控制台行为不同。
+@'
+param(
+    [switch]$FirstInstall,
+    [switch]$NonInteractive
+)
+exit 2
+'@ | Set-Content -LiteralPath (Join-Path $pkg 'Manage-Dsh.ps1') -Encoding ascii
+
+function Invoke-HermeticFirstInstallCancel([string]$target) {
     $env:Path = "$shimDir;$env:SystemRoot\System32;$env:SystemRoot"
     $env:DSH_HOME = $testDshHome
     try {
@@ -164,18 +173,13 @@ function Invoke-HermeticInteractiveCancel([string]$target) {
         $psi.Arguments = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -SetupDir "{1}" -InstallDir "{2}" -NoShortcuts -NoLaunch' -f $installer, $pkg, $target)
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
-        $psi.RedirectStandardInput = $true
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
 
         $process = [System.Diagnostics.Process]::new()
         $process.StartInfo = $psi
-        if (-not $process.Start()) { throw '无法启动交互取消测试进程。' }
+        if (-not $process.Start()) { throw '无法启动首次安装取消测试进程。' }
         try {
-            # 第一个 0 拒绝复用无效的 dsh 命令，第二个 0 取消版本选择。
-            $process.StandardInput.WriteLine('0')
-            $process.StandardInput.WriteLine('0')
-            $process.StandardInput.Close()
             $stdout = $process.StandardOutput.ReadToEnd()
             $stderr = $process.StandardError.ReadToEnd()
             if (-not $process.WaitForExit(90000)) {
@@ -196,7 +200,7 @@ function Invoke-HermeticInteractiveCancel([string]$target) {
 }
 
 $tG = Join-Path $base 'caseG-cancelled'
-$cancelled = Invoke-HermeticInteractiveCancel $tG
+$cancelled = Invoke-HermeticFirstInstallCancel $tG
 Assert-Equal "G cancelled first-install exits successfully" $cancelled.ExitCode 0
 Assert-Equal "G cancelled first-install leaves no new target directory" (Test-Path -LiteralPath $tG) $false
 

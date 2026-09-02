@@ -4,6 +4,10 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.8（Windows PowerShell 5.1 发布门禁修复）
+
+- **取消路径 CI 稳定性**：首次安装取消的回归改为向安装核心注入确定性的 `Manage-Dsh` 退出码 `2` 桩，直接验证“正常取消、不提交暂存目录”的正式契约；不再依赖 GitHub Runner 非交互 ConsoleHost 对重定向 `Read-Host` 的实现差异。此前 `v1.0.7` 标签的远端门禁因此未能完成发布，按不可变标签策略以本补丁版本重新发布。
+
 ## v1.0.7（DSH 通道与 alpha Preview 兼容边界）
 
 - **rc.2 Sidebar QA 回归修复**：生产插件目录和 rc.2 验收改为固定 npm 精确版 `dsh-sidebar-qa@0.4.0`。上游 `0.5.0` 依赖 DSH `0.1.2-alpha.1` 引入的 `remote.session`，在 rc.2 会保持 pending 并让页面显示插件加载失败；不再跟随 GitHub HEAD。
