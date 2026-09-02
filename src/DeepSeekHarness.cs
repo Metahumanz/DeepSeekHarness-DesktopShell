@@ -960,6 +960,9 @@ namespace DeepSeekHarnessDesktop
             public string State = "Starting";
             public bool BootReady;
             public bool SawReadyBanner;
+            // BrowserAuth 的一次性 URL 仅保存在本次 backend run 的内存中；绝不写入
+            // settings、宿主日志或 dsh-*.log。run 停止/换代时立即清空。
+            public string ReadyUrl = "";
             public string LastPortLog = "";
             // 只有 Exited callback 已经完成自己的日志/事件派发后，旧 run 才可回收。
             // 这样 RegisterRun 在 callback 尚未返回时不会 Dispose 正在使用的 drain 句柄。
@@ -998,6 +1001,12 @@ namespace DeepSeekHarnessDesktop
         public event EventHandler<BackendProcessExitedEventArgs> BackendProcessExited;
         private bool expectedStop;
         private const int RecentOutputLimit = 60;
+        private static readonly Regex ReadyBannerUrlRegex = new Regex(
+            @"\bdsh\s+web\s*:\s*(?<url>http://[^\s]+)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex SensitiveQueryParameterRegex = new Regex(
+            @"([?&](?:token|access_token|auth|authorization)=)[^&#\s]+",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public DshProcessManager()
         {
@@ -1023,8 +1032,10 @@ namespace DeepSeekHarnessDesktop
         {
             BackendRun run = new BackendRun(
                 Interlocked.Increment(ref backendGeneration), port, profile, runLogPath);
+            BackendRun previousRun = null;
             lock (runLock)
             {
+                previousRun = currentRun;
                 backendRuns.Add(run);
                 currentRun = run;
                 // 与 currentRun 的换代一起更新这些仍为旧调用方保留的镜像字段，
@@ -1041,6 +1052,9 @@ namespace DeepSeekHarnessDesktop
                 sawReadyBanner = false;
                 lastPortLog = "";
             }
+            // 上一代已经不再是导航目标；主动抹除它保留在内存中的 BrowserAuth token。
+            // 此处不能在 runLock 内再拿 OutputLock，避免与 stdout 回调的锁顺序相反。
+            ClearReadyUrl(previousRun);
             // 换代之后，之前已经完整结束的 run 不再是 currentRun，可以立即回收；
             // 尚未完成 Exited callback/drain 的 run 会由 callback 返回时再回收。
             ReclaimCompletedRuns();
@@ -1217,6 +1231,78 @@ namespace DeepSeekHarnessDesktop
                 }
             }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// 返回当前自有 DSH 的可信 Web URL。alpha BrowserAuth 的 launch token 只来自
+        /// 本次子进程输出的、同端口 loopback ready banner；不能验证时回退到传统根路径。
+        /// </summary>
+        public string GetWebUrl(int port)
+        {
+            BackendRun run = CurrentRun;
+            if (run != null && IsCurrentRun(run) && OwnsBackend && BootReady && run.BootReady)
+            {
+                string readyUrl = GetReadyUrl(run, port);
+                if (!String.IsNullOrEmpty(readyUrl)) return readyUrl;
+            }
+            return DefaultWebUrl(port);
+        }
+
+        private static string DefaultWebUrl(int port)
+        {
+            return "http://127.0.0.1:" + port.ToString() + "/";
+        }
+
+        private static bool IsTrustedLoopbackWebUri(Uri uri, int port)
+        {
+            if (uri == null || !uri.IsAbsoluteUri || uri.Scheme != Uri.UriSchemeHttp ||
+                uri.Port != port || !String.IsNullOrEmpty(uri.UserInfo))
+                return false;
+
+            string host = (uri.Host ?? "").ToLowerInvariant();
+            return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]";
+        }
+
+        private static bool TryExtractReadyUrl(string output, int port, out string readyUrl)
+        {
+            readyUrl = "";
+            if (String.IsNullOrEmpty(output) || port <= 0) return false;
+
+            Match match = ReadyBannerUrlRegex.Match(output);
+            if (!match.Success) return false;
+
+            Uri uri;
+            if (!Uri.TryCreate(match.Groups["url"].Value, UriKind.Absolute, out uri) ||
+                !IsTrustedLoopbackWebUri(uri, port))
+                return false;
+
+            readyUrl = uri.AbsoluteUri;
+            return true;
+        }
+
+        private static string GetReadyUrl(BackendRun run, int port)
+        {
+            if (run == null || run.Port != port) return "";
+            lock (run.OutputLock) return run.ReadyUrl ?? "";
+        }
+
+        private static bool HasReadyBanner(BackendRun run)
+        {
+            if (run == null) return false;
+            lock (run.OutputLock)
+                return run.SawReadyBanner && !String.IsNullOrEmpty(run.ReadyUrl);
+        }
+
+        private static void ClearReadyUrl(BackendRun run)
+        {
+            if (run == null) return;
+            lock (run.OutputLock) run.ReadyUrl = "";
+        }
+
+        private static string RedactSensitiveOutput(string text)
+        {
+            if (String.IsNullOrEmpty(text)) return text ?? "";
+            return SensitiveQueryParameterRegex.Replace(text, "$1[REDACTED]");
         }
 
         /// <summary>
@@ -1730,6 +1816,17 @@ namespace DeepSeekHarnessDesktop
                         "。已拒绝直接附着。请结束该进程后重试，或重新启动桌面壳并在提示时确认附着。");
                 }
 
+                if (IsHttpUnauthorized(port, 500, cancellationToken))
+                {
+                    throw new InvalidOperationException(
+                        "端口 " + port.ToString() + " 上的外部 DSH Web 要求 BrowserAuth。\r\n\r\n" +
+                        "DesktopShell 无法安全读取非自己启动进程的 launch token，因此不会附着到该会话。" +
+                        "请结束该 DSH 后端后由 DesktopShell 启动，或继续在原浏览器中使用它。");
+                }
+
+                // 外部 alpha BrowserAuth 后端的 launch token 不会出现在本次进程输出中，
+                // 不能复用旧 run 的 token 尝试附着或导航。
+                ClearReadyUrl(CurrentRun);
                 WaitForBootReady(null, port, cancellationToken, false);
                 expectedStop = false;
                 BackendState = "Running";
@@ -1953,6 +2050,7 @@ namespace DeepSeekHarnessDesktop
                 }
                 run.BootReady = false;
                 run.State = "Stopped";
+                ClearReadyUrl(run);
                 if (IsCurrentRun(run))
                 {
                     OwnsBackend = false;
@@ -1996,7 +2094,7 @@ namespace DeepSeekHarnessDesktop
                         "。请查看日志：" + bootLogPath);
                 }
 
-                bool readyBannerSeen = run == null ? sawReadyBanner : run.SawReadyBanner;
+                bool readyBannerSeen = run == null ? sawReadyBanner : HasReadyBanner(run);
                 if (requireReadyBanner && !readyBannerSeen)
                 {
                     Thread.Sleep(120);
@@ -2004,7 +2102,7 @@ namespace DeepSeekHarnessDesktop
                     continue;
                 }
 
-                bool http200 = IsHttp200(port, 500, cancellationToken);
+                bool http200 = IsHttp200(run, port, 500, cancellationToken);
                 if (http200)
                 {
                     stable++;
@@ -2044,15 +2142,21 @@ namespace DeepSeekHarnessDesktop
                 bootLogPath);
         }
 
-        private bool IsHttp200(int port, int timeoutMs, CancellationToken cancellationToken)
+        private bool IsHttp200(BackendRun run, int port, int timeoutMs, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             HttpWebRequest request = null;
             try
             {
-                request = (HttpWebRequest)WebRequest.Create("http://127.0.0.1:" + port.ToString() + "/");
+                // BrowserAuth 的 ready URL 会先以 303 写入同源会话 Cookie，再抵达 200 的
+                // 干净根路径。每次探测使用独立 cookie jar，既不落盘也不共享到其它 run。
+                string readyUrl = GetReadyUrl(run, port);
+                request = (HttpWebRequest)WebRequest.Create(
+                    String.IsNullOrEmpty(readyUrl) ? DefaultWebUrl(port) : readyUrl);
                 request.Method = "GET";
-                request.AllowAutoRedirect = false;
+                request.AllowAutoRedirect = true;
+                request.MaximumAutomaticRedirections = 3;
+                request.CookieContainer = new CookieContainer();
                 request.KeepAlive = false;
                 request.Timeout = timeoutMs;
                 request.ReadWriteTimeout = timeoutMs;
@@ -2066,6 +2170,40 @@ namespace DeepSeekHarnessDesktop
                 HttpWebResponse response = ex.Response as HttpWebResponse;
                 if (response != null) response.Dispose();
                 return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 外部附着没有本次 dsh web banner，因而不可能安全获得 BrowserAuth token。
+        /// 401 时直接给出可操作说明，避免无意义地等到 BootReady 超时。
+        /// </summary>
+        private bool IsHttpUnauthorized(int port, int timeoutMs, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            HttpWebRequest request = null;
+            try
+            {
+                request = (HttpWebRequest)WebRequest.Create(DefaultWebUrl(port));
+                request.Method = "GET";
+                request.AllowAutoRedirect = false;
+                request.KeepAlive = false;
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                {
+                    return response.StatusCode == HttpStatusCode.Unauthorized;
+                }
+            }
+            catch (WebException ex)
+            {
+                HttpWebResponse response = ex.Response as HttpWebResponse;
+                if (response == null) return false;
+                try { return response.StatusCode == HttpStatusCode.Unauthorized; }
+                finally { response.Dispose(); }
             }
             catch
             {
@@ -2339,6 +2477,7 @@ namespace DeepSeekHarnessDesktop
             }
             run.BootReady = false;
             BootReady = false;
+            ClearReadyUrl(run);
 
             if (jobHandle != IntPtr.Zero)
             {
@@ -2428,6 +2567,7 @@ namespace DeepSeekHarnessDesktop
             run.BootReady = false;
             run.State = "Stopped";
             run.ExpectedStop = true;
+            ClearReadyUrl(run);
             if (IsCurrentRun(run))
             {
                 OwnsBackend = false;
@@ -2444,6 +2584,7 @@ namespace DeepSeekHarnessDesktop
         /// </summary>
         public void StopExternalBackend(int port)
         {
+            ClearReadyUrl(CurrentRun);
             if (!IsReady(port, 300)) return;
 
             int pid = FindListeningPid(port);
@@ -2540,15 +2681,27 @@ namespace DeepSeekHarnessDesktop
                 return;
             }
 
+            string readyUrl;
+            bool parsedReadyUrl = TryExtractReadyUrl(e.Data, run.Port, out readyUrl);
             CaptureOutput(run, "stdout", e.Data);
-            // DSH 官方 ready banner（如 "dsh web: http://127.0.0.1:3080"）来自本次自己
-            // 启动的进程树时是额外强信号；只记录到本 run，不取代 Job/PID 归属检查。
-            if (!run.SawReadyBanner && run.Port > 0 &&
-                e.Data.IndexOf("dsh web", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                (e.Data.IndexOf("127.0.0.1:" + run.Port.ToString(), StringComparison.OrdinalIgnoreCase) >= 0 ||
-                 e.Data.IndexOf("localhost:" + run.Port.ToString(), StringComparison.OrdinalIgnoreCase) >= 0))
+            // DSH 官方 ready banner 来自本次自己启动的进程树时是额外强信号；alpha 的
+            // BrowserAuth URL 同时是首次导航与 BootReady HTTP 探测的唯一可信 token 来源。
+            // 只保存经过 loopback/端口校验的 URL，且只接受本 run 的第一条有效 banner。
+            bool readyBannerAccepted = false;
+            if (parsedReadyUrl)
             {
-                run.SawReadyBanner = true;
+                lock (run.OutputLock)
+                {
+                    if (!run.SawReadyBanner)
+                    {
+                        run.ReadyUrl = readyUrl;
+                        run.SawReadyBanner = true;
+                        readyBannerAccepted = true;
+                    }
+                }
+            }
+            if (readyBannerAccepted)
+            {
                 lock (runLock)
                 {
                     if (Object.ReferenceEquals(currentRun, run)) sawReadyBanner = true;
@@ -2594,7 +2747,9 @@ namespace DeepSeekHarnessDesktop
         private void CaptureOutput(BackendRun run, string stream, string text)
         {
             if (run == null || text == null) return;
-            AppendLog(run, "[" + stream + "] " + text);
+            // dsh web alpha 的 ready banner 含一次性 BrowserAuth token。它可以用于当前
+            // WebView 的内存导航，但不能进入 dsh 日志、最近错误摘要或用户复制的诊断文本。
+            AppendLog(run, "[" + stream + "] " + RedactSensitiveOutput(text));
         }
 
         private void AppendLog(string text)
@@ -2718,6 +2873,7 @@ namespace DeepSeekHarnessDesktop
                 bool wasExpected = run.ExpectedStop;
                 string state = run.State ?? "Unknown";
                 bool wasBootReady = run.BootReady;
+                ClearReadyUrl(run);
                 bool current = false;
                 lock (runLock)
                 {
@@ -4346,6 +4502,76 @@ namespace DeepSeekHarnessDesktop
                 OnOverlayRetryHealth);
         }
 
+        // alpha/未来未测试 DSH 的插件 ABI 变化，常以 loader entry 导入/注册失败的形式出现。
+        // 这不是 DesktopShell 的 port/BootReady 协议问题；原 Profile 不应被自动删除、
+        // 禁用或原地“修复”。只在诊断文本有明确 API 失配证据时提供新隔离 Profile 的重试入口。
+        private static bool IsPluginLoaderApiMismatch(string summary)
+        {
+            if (String.IsNullOrWhiteSpace(summary)) return false;
+            string lower = summary.ToLowerInvariant();
+            bool loader = lower.IndexOf("loader entry", StringComparison.Ordinal) >= 0 ||
+                lower.IndexOf("plugin tree", StringComparison.Ordinal) >= 0;
+            bool apiMismatch =
+                lower.IndexOf("does not provide an export named", StringComparison.Ordinal) >= 0 ||
+                lower.IndexOf(" is not a function", StringComparison.Ordinal) >= 0;
+            return loader && apiMismatch;
+        }
+
+        private static bool IsIsolatedPreviewProfile(string profile)
+        {
+            return !String.IsNullOrWhiteSpace(profile) &&
+                profile.StartsWith("desktop-preview-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string AllocateIsolatedPreviewProfileName()
+        {
+            string version = activeRuntimeSettings == null ? "" : activeRuntimeSettings.dshVersion;
+            StringBuilder suffix = new StringBuilder();
+            bool previousDash = false;
+            foreach (char ch in (version ?? "").ToLowerInvariant())
+            {
+                if (Char.IsLetterOrDigit(ch))
+                {
+                    suffix.Append(ch);
+                    previousDash = false;
+                }
+                else if (!previousDash)
+                {
+                    suffix.Append('-');
+                    previousDash = true;
+                }
+            }
+            string versionPart = suffix.ToString().Trim('-');
+            if (String.IsNullOrWhiteSpace(versionPart)) versionPart = "unknown";
+            string stem = AppSettings.NormalizeProfileName("desktop-preview-" + versionPart);
+            if (stem == "web") stem = "desktop-preview";
+
+            string dshHome = Environment.GetEnvironmentVariable("DSH_HOME");
+            if (String.IsNullOrWhiteSpace(dshHome))
+            {
+                dshHome = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".dsh");
+            }
+            string profilesRoot = Path.Combine(dshHome, "profiles");
+            for (int i = 1; i <= 999; i++)
+            {
+                string candidate = i == 1 ? stem : stem + "-" + i.ToString();
+                string path = Path.Combine(profilesRoot, candidate);
+                if (!Directory.Exists(path) && !File.Exists(path))
+                    return candidate;
+            }
+            return stem + "-" + DateTime.UtcNow.Ticks.ToString();
+        }
+
+        private bool CanOfferIsolatedPreviewProfile(string recentSummary)
+        {
+            return activeRuntimeSettings != null &&
+                !DshProcessManager.IsTestedDshVersion(activeRuntimeSettings.dshVersion) &&
+                !IsIsolatedPreviewProfile(activeRuntimeSettings.profileName) &&
+                IsPluginLoaderApiMismatch(recentSummary);
+        }
+
         /// <summary>
         /// 启动失败的错误型覆盖层：标题 + 消息 + 可滚动异常详情 + 复制错误按钮，并按失败
         /// 阶段给出对应重试路径。缺少 WebView2 Runtime 时单独给出官方下载入口。
@@ -4411,9 +4637,9 @@ namespace DeepSeekHarnessDesktop
             }
 
             string details = ex.ToString();
+            string recentSummary = "";
             if (!missingWebView2)
             {
-                string recentSummary = "";
                 try { recentSummary = dsh.GetRecentFailureSummary(); } catch { }
                 if (!String.IsNullOrWhiteSpace(recentSummary) &&
                     recentSummary != "（没有捕获到后端 stdout/stderr。）")
@@ -4421,6 +4647,17 @@ namespace DeepSeekHarnessDesktop
                     message += "\r\n\r\n后端最后错误摘要：\r\n" + recentSummary;
                     details += "\r\n\r\n后端最近 stdout/stderr：\r\n" + recentSummary;
                 }
+            }
+
+            if (!missingWebView2 && CanOfferIsolatedPreviewProfile(recentSummary))
+            {
+                // 日志已证明是 DSH 插件 API 失配。用显式按钮让用户选择新的 Profile；
+                // 不移动、不禁用、不改写原 Profile，避免把预览失败变成用户数据损失。
+                HostLog.Line("START plugin-api-mismatch: offering isolated preview profile retry");
+                message += "\r\n\r\n检测到当前未测试 DSH 版本与此 Profile 中的第三方插件 API 不兼容。" +
+                    "\r\n点击下方按钮会创建并使用新的隔离 Preview Profile 重试；现有 Profile、插件、主题和会话不会被修改。";
+                primaryText = "使用隔离 Preview Profile 重试";
+                primaryHandler = OnOverlayUseIsolatedPreviewProfile;
             }
 
             ShowErrorOverlay(
@@ -4432,6 +4669,28 @@ namespace DeepSeekHarnessDesktop
                 primaryHandler,
                 "打开日志目录",
                 OnOverlayOpenLogs);
+        }
+
+        private async void OnOverlayUseIsolatedPreviewProfile(object sender, EventArgs e)
+        {
+            if (LifetimeCancelled || recoveryBusy) return;
+            try
+            {
+                string profile = AllocateIsolatedPreviewProfileName();
+                persistedSettings.profileName = profile;
+                activeRuntimeSettings.profileName = profile;
+                persistedSettings.Save(settingsPath);
+                HostLog.Line("PREVIEW isolated-profile selected profile=" + profile +
+                    " version=" + (activeRuntimeSettings.dshVersion ?? ""));
+                await StartAsync();
+            }
+            catch (Exception ex)
+            {
+                if (LifetimeCancelled) return;
+                startupFailureShown = false;
+                currentPhase = StartupPhase.Backend;
+                HandleStartupError(ex);
+            }
         }
 
         /// <summary>
@@ -5436,7 +5695,9 @@ namespace DeepSeekHarnessDesktop
 
         private string DshHomeUrl()
         {
-            return "http://127.0.0.1:" + activeRuntimeSettings.port.ToString() + "/";
+            // alpha BrowserAuth token 由 DshProcessManager 仅以内存形式保留；rc.2 与
+            // 外部附着继续回退到传统 loopback 根路径。
+            return dsh.GetWebUrl(activeRuntimeSettings.port);
         }
 
         private bool IsAllowedMainNavigation(string uriText)
@@ -5452,7 +5713,8 @@ namespace DeepSeekHarnessDesktop
             {
                 Uri uri = new Uri(uriText);
                 string host = uri.Host == null ? "" : uri.Host.ToLowerInvariant();
-                bool loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
+                bool loopback = host == "127.0.0.1" || host == "localhost" ||
+                    host == "::1" || host == "[::1]";
                 return uri.Scheme == Uri.UriSchemeHttp && loopback && uri.Port == activeRuntimeSettings.port;
             }
             catch

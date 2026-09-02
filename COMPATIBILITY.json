@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "defaultDshVersion": "0.1.1-rc.2",
   "minimumCompatibleDshVersion": "0.1.0-rc.7",
   "testedDshVersions": [
@@ -7,5 +7,21 @@
     "0.1.0-rc.8",
     "0.1.1-rc.1",
     "0.1.1-rc.2"
+  ],
+  "npxDshChannelOptions": [
+    {
+      "tag": "latest",
+      "label": "官方 latest（稳定通道）",
+      "note": "选择时实时查询 npm 官方 dist-tag 并解析为准确版本；不会静默自动升级。",
+      "preview": false,
+      "profileMode": "current"
+    },
+    {
+      "tag": "alpha",
+      "label": "官方 alpha（预览通道）",
+      "note": "选择时实时查询 npm 官方 alpha 标签；会使用新的隔离 Profile，不修改现有插件环境。",
+      "preview": true,
+      "profileMode": "isolated"
+    }
   ]
 }
