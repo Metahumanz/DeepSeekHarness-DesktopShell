@@ -118,9 +118,9 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Sentinel | 条件唤醒 | |
 | Liangshen | 量神 | |
 | Thought Buddy | Deep diving 状态条前的动态伙伴 | 与 Status Rotator 互斥 |
-| Agent Teams | 多 Agent 协作 | 会改变 Agent 行为 |
+| Agent Teams | 多 Agent 协作 | rc2 固定 `0.1.14`；会改变 Agent 行为 |
 
-内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。
+内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。Agent Teams 在生产 rc2 固定为 `0.1.14`；`0.1.15` 起要求 alpha 的 `uiConversation` 服务，不能在 rc2 Profile 中使用。
 需要追新版本可在向导的"额外插件"步骤粘贴自定义 spec。
 本机 `web` Profile（2026-08-24 快照）包含 26 个可移植推荐插件；清单中的 `Installed` 是本机已安装版本，仍不等同于兼容 PASS。rc2 版本的逐插件隔离 preflight 使用临时 `DSH_HOME`、临时 Profile、随机端口，并逐项完成安装、Web ready、HTTP 200、稳定 10 秒、正常退出和端口清理后才记为 PASS。
 `@yuxianglin/dsh-bridge-browser` 是本机 `link:` 依赖，不能移植到隔离 Profile，保留为 OAuth/浏览器桥接人工项。

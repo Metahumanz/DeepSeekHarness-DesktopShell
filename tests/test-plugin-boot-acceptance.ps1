@@ -87,7 +87,7 @@ Assert-True 'active catalog matches the real web Profile package set' (
     $catalog -match "Id='cost'.*dsh-cost-meter@\^1\.5\.42" -and
     $catalog -match "Id='thought-buddy'.*@dsh-plugin/dsh-thought-buddy@\^0\.2\.0" -and
     $catalog -match "Id='status-rotator'.*dsh-status-rotator@\^0\.6\.6" -and
-    $catalog -match "Id='agent-teams'.*@nanmicoder/dsh-agent-teams@\^0\.1\.13" -and
+    $catalog -match "Id='agent-teams'.*@nanmicoder/dsh-agent-teams@0\.1\.14" -and
     $catalog -notmatch "Id='model-picker'" -and
     $catalog -notmatch "Id='modlens'" -and
     $catalog -notmatch 'open-in-vscode'

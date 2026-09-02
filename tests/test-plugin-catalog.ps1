@@ -35,7 +35,8 @@ Assert-True 'current advanced versions are synchronized' (
     $catalog -match "cost-meter@\^1\.5\.42.*Installed='1\.5\.42'" -and
     $catalog -match "dream-skin@\^0\.4\.10.*Installed='0\.4\.10'" -and
     $catalog -match "liangshen@\^0\.3\.2.*Installed='0\.3\.2'")
-Assert-True 'agent-teams is advanced' ($catalog -match "Id='agent-teams'.*dsh-agent-teams@\^0\.1\.13.*Tier='advanced'.*Installed='0\.1\.13'")
+Assert-True 'agent-teams is advanced and pinned to the rc.2-compatible release' (
+    $catalog -match "Id='agent-teams'.*dsh-agent-teams@0\.1\.14.*Tier='advanced'.*Installed='0\.1\.14'")
 Assert-True 'stale/nonexistent historical entries are absent' (
     $catalog -notmatch 'dsh-remote' -and $catalog -notmatch 'open-in-vscode' -and
     $catalog -notmatch "Id='model-picker'" -and $catalog -notmatch "Id='modlens'" -and

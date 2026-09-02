@@ -427,7 +427,7 @@ function Invoke-PluginPreflight {
         [pscustomobject]@{ Name='dsh-sentinel'; Spec='dsh-sentinel@0.11.0' },
         [pscustomobject]@{ Name='@linxin666/dsh-liangshen'; Spec='@linxin666/dsh-liangshen@^0.3.2' },
         [pscustomobject]@{ Name='@dsh-plugin/dsh-thought-buddy'; Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Validation='thought-buddy' },
-        [pscustomobject]@{ Name='@nanmicoder/dsh-agent-teams'; Spec='@nanmicoder/dsh-agent-teams@^0.1.13' }
+        [pscustomobject]@{ Name='@nanmicoder/dsh-agent-teams'; Spec='@nanmicoder/dsh-agent-teams@0.1.14' }
     )
     $failed = 0
     foreach ($plugin in $plugins) {

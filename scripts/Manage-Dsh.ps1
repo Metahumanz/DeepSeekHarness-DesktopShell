@@ -136,7 +136,7 @@ $PluginCatalog = @(
     [pscustomobject]@{ No=23; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@(); Installed='0.11.0' },
     [pscustomobject]@{ No=24; Id='liangshen';     Name='量神';                       Spec='@linxin666/dsh-liangshen@^0.3.2'; Tier='advanced'; Allow=@(); Installed='0.3.2' },
     [pscustomobject]@{ No=25; Id='thought-buddy'; Name='Thought Buddy';              Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Tier='advanced'; Allow=@(); Installed='0.2.0'; Package='@dsh-plugin/dsh-thought-buddy'; ExclusiveGroup='thinking-status-ui'; Note='与 Status Rotator 互斥；会改变 Deep diving 状态条内容与头像' },
-    [pscustomobject]@{ No=26; Id='agent-teams';   Name='Agent Teams';                Spec='@nanmicoder/dsh-agent-teams@^0.1.13'; Tier='advanced'; Allow=@(); Installed='0.1.13'; Note='高级功能：多 Agent 协作，会改变 Agent 行为' }
+    [pscustomobject]@{ No=26; Id='agent-teams';   Name='Agent Teams';                Spec='@nanmicoder/dsh-agent-teams@0.1.14'; Tier='advanced'; Allow=@(); Installed='0.1.14'; Note='高级功能：多 Agent 协作，会改变 Agent 行为；生产 rc.2 固定 0.1.14，0.1.15 起要求 0.1.2-alpha.2 的 uiConversation 服务' }
 )
 
 function Read-Default([string]$prompt, [string]$default) {

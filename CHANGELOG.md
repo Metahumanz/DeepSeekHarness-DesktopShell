@@ -7,6 +7,7 @@
 ## 未发布
 
 - **rc.2 Sidebar QA 回归修复**：生产插件目录和 rc.2 验收改为固定 npm 精确版 `dsh-sidebar-qa@0.4.0`。上游 `0.5.0` 依赖 DSH `0.1.2-alpha.1` 引入的 `remote.session`，在 rc.2 会保持 pending 并让页面显示插件加载失败；不再跟随 GitHub HEAD。
+- **rc.2 Agent Teams 回归修复**：生产插件目录和 rc.2 验收改为固定 npm 精确版 `@nanmicoder/dsh-agent-teams@0.1.14`。上游 `0.1.15` 起要求 `0.1.2-alpha.2` 的 `uiConversation` 服务，在 rc.2 会保持 pending 并让页面显示插件加载失败；不再使用会漂移到 alpha 的范围版本。
 - **npx 通道选择**：管理器和首次向导改为编号选项，不再要求手输版本号；除生产默认和历史已测版本外，新增官方 `latest` / `alpha` dist-tag 选项。标签在选择时实时解析成准确版本而非在代码中逐个维护，rc.2 仍保持生产默认。
 - **预览 Profile 隔离与取消语义**：`alpha` 通道会生成新的隔离 Profile，不修改原有插件、主题或会话；未来未测试 DSH 若在插件 loader 阶段出现明确 API 失配，启动页提供同样的隔离 Profile 重试入口。首次安装中取消版本/Profile 选择会干净退出，不再被上层误报为“安装核心失败”。
 - **alpha BrowserAuth 适配**：从本次自有 DSH 的 loopback ready banner 提取并校验临时 URL，完成 `303 → Cookie → 200` BootReady 探测并用于 WebView2 首次导航；token 只保存在对应 backend run 的内存中，后端日志和错误摘要统一脱敏。外部已运行的 BrowserAuth DSH 因无法安全取得 launch token，会明确提示改由 DesktopShell 启动。
