@@ -104,39 +104,39 @@ $defaultProfilePnpmVersion = '10.33.2'
 #   - 未带 tag/commit 的 GitHub Spec 必须标记 Floating=$true：安装时会解析上游默认分支，
 #     不是不可变版本；有正式 release tag 时优先使用 release tag。
 #   - 对 DesktopShell 有兼容修复依赖的插件（Cost Meter / Sentinel）保持已审核版本，不裸跟 latest。
-#   - 下表按本机真实 web Profile（C:\Users\metahumanz\.dsh\profiles\web\package.json，2026-08-24）同步；
-#     Installed 只是本机快照，不等于已经完成 rc2 BootReady 兼容认证。
+#   - 下表是 DSH 0.1.1-rc.2 的已审计候选；Installed 表示目录目标版本，
+#     不表示用户真实 Profile 已自动安装，也不替代实际 BootReady 验证。
 #   - 本机 link:C:\Users\metahumanz\.dsh\dsh-browser\... 的 bridge-browser 是本地集成依赖，
 #     不放入可移植推荐目录，也不在隔离 preflight 中伪造安装。
 $PluginCatalog = @(
     # ---- 核心推荐 ----
-    [pscustomobject]@{ No=1;  Id='market';        Name='插件市场';                  Spec='dshmarket@1.21.2'; Tier='core'; Allow=@(); Installed='1.21.2' },
-    [pscustomobject]@{ No=2;  Id='sidebar';       Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@^0.15.2'; Tier='core'; Allow=@('node-pty'); Installed='0.15.2'; PostInstall='ConfigureBetterSidebar'; Note='按本机 web Profile 使用 0.15.2；插件快照不改变 default rc.2 / minimum rc.7' },
-    [pscustomobject]@{ No=3;  Id='skills';        Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.24'; Tier='core'; Allow=@(); Installed='0.1.24' },
-    [pscustomobject]@{ No=4;  Id='at-file';       Name='@file 文件引用';            Spec='github:omdsh-dev/dsh-at-file'; Tier='core'; Allow=@(); Installed='0.6.8'; Floating=$true },
+    [pscustomobject]@{ No=1;  Id='market';        Name='插件市场';                  Spec='dshmarket@1.41.0'; Tier='core'; Allow=@(); Installed='1.41.0' },
+    [pscustomobject]@{ No=2;  Id='sidebar';       Name='Better Sidebar 工作台';     Spec='dsh-better-sidebar@0.17.1'; Tier='core'; Allow=@('node-pty'); Installed='0.17.1'; PostInstall='ConfigureBetterSidebar'; Note='0.17.1 已在 rc.2 隔离预检通过；0.18.0 起要求 DSH 0.1.2-rc.1+' },
+    [pscustomobject]@{ No=3;  Id='skills';        Name='Skills Manager';            Spec='@michengai/dsh-skills-manager@0.1.38'; Tier='core'; Allow=@(); Installed='0.1.38' },
+    [pscustomobject]@{ No=4;  Id='at-file';       Name='@file 文件引用';            Spec='github:omdsh-dev/dsh-at-file#v0.7.0'; Tier='core'; Allow=@(); Installed='0.7.0' },
     [pscustomobject]@{ No=5;  Id='rewind';        Name='历史消息回退/重跑';         Spec='github:XSJUSTC/dsh-rewind'; Tier='core'; Allow=@(); Installed='2.1.1'; Floating=$true },
     # ---- 体验增强 ----
-    [pscustomobject]@{ No=6;  Id='file-mentions'; Name='文件路径点击/提及';         Spec='git+https://github.com/a903067276-rgb/dsh-file-mentions.git'; Tier='enhanced'; Allow=@(); Installed='1.0.9'; Floating=$true },
-    [pscustomobject]@{ No=7;  Id='collapse';      Name='Tool/Think 自动折叠';       Spec='github:a179-sanae/dsh-auto-collapse'; Tier='enhanced'; Allow=@(); Installed='0.1.4'; Floating=$true },
+    [pscustomobject]@{ No=6;  Id='file-mentions'; Name='文件路径点击/提及';         Spec='github:a903067276-rgb/dsh-file-mentions#v1.0.13'; Tier='enhanced'; Allow=@(); Installed='1.0.13' },
+    [pscustomobject]@{ No=7;  Id='collapse';      Name='Tool/Think 自动折叠';       Spec='github:a179-sanae/dsh-auto-collapse#v0.1.5'; Tier='enhanced'; Allow=@(); Installed='0.1.5' },
     [pscustomobject]@{ No=8;  Id='tidy';          Name='Codex 风格对话排版';        Spec='dsh-chat-tidy@^0.2.0'; Tier='enhanced'; Allow=@(); Installed='0.2.0' },
-    [pscustomobject]@{ No=9;  Id='outline';       Name='对话侧边大纲';              Spec='github:EnkiduGilgamesh/dsh-codex-side-outline'; Tier='enhanced'; Allow=@(); Installed='1.0.0'; Floating=$true },
+    [pscustomobject]@{ No=9;  Id='outline';       Name='对话侧边大纲';              Spec='github:EnkiduGilgamesh/dsh-codex-side-outline#v1.1.1'; Tier='enhanced'; Allow=@(); Installed='1.1.1' },
     [pscustomobject]@{ No=10; Id='archive';       Name='Better Archive';            Spec='git+https://github.com/huahai0202/dsh-better-archive.git'; Tier='enhanced'; Allow=@(); Installed='0.3.1'; Floating=$true },
-    [pscustomobject]@{ No=11; Id='video';         Name='视频预览';                  Spec='dsh-video-preview@^0.1.1'; Tier='enhanced'; Allow=@(); Installed='0.1.1' },
+    [pscustomobject]@{ No=11; Id='video';         Name='视频预览';                  Spec='dsh-video-preview@0.1.4'; Tier='enhanced'; Allow=@(); Installed='0.1.4' },
     [pscustomobject]@{ No=12; Id='git-remotes';   Name='Git 远程仓库工具';          Spec='github:yq04/dsh-git-remotes'; Tier='enhanced'; Allow=@(); Installed='0.1.0'; Floating=$true },
-    [pscustomobject]@{ No=13; Id='notification';  Name='通知增强';                  Spec='git+https://github.com/omdsh-dev/dsh-notification.git'; Tier='enhanced'; Allow=@(); Installed='0.1.3'; Floating=$true },
+    [pscustomobject]@{ No=13; Id='notification';  Name='通知增强';                  Spec='github:omdsh-dev/dsh-notification#v0.1.4'; Tier='enhanced'; Allow=@(); Installed='0.1.4' },
     [pscustomobject]@{ No=14; Id='open-in';       Name='在 VS Code/终端中打开';     Spec='dsh-open-in@^0.1.1'; Tier='enhanced'; Allow=@(); Installed='0.1.1' },
     [pscustomobject]@{ No=15; Id='sidebar-qa';    Name='Sidebar QA';                Spec='dsh-sidebar-qa@0.4.0'; Tier='enhanced'; Allow=@(); Installed='0.4.0'; Note='生产 rc.2 固定 npm 精确版 0.4.0：v0.5.0 起依赖 0.1.2-alpha.1 的 remote.session，不能用于 rc.2' },
     [pscustomobject]@{ No=16; Id='sidebar-office'; Name='Better Sidebar Office';      Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.2'; Tier='enhanced'; Allow=@(); Installed='0.1.2' },
     [pscustomobject]@{ No=17; Id='archify';       Name='Archify DSH';                Spec='@tt-a1i/archify-dsh@^0.1.0'; Tier='enhanced'; Allow=@(); Installed='0.1.0' },
-    [pscustomobject]@{ No=18; Id='status-rotator'; Name='Status Rotator';             Spec='dsh-status-rotator@^0.6.6'; Tier='enhanced'; Allow=@(); Installed='0.6.6'; Package='dsh-status-rotator'; PostInstall='ConfigureStatusRotator'; ExclusiveGroup='thinking-status-ui'; Recommended=$true; Note='思考状态体验增强首选：只改展示层；初次配置默认关闭渐变' },
-    [pscustomobject]@{ No=19; Id='context';       Name='Context Insight';            Spec='dsh-context@^0.29.0'; Tier='enhanced'; Allow=@(); Installed='0.29.0' },
+    [pscustomobject]@{ No=18; Id='status-rotator'; Name='Status Rotator';             Spec='dsh-status-rotator@0.10.0'; Tier='enhanced'; Allow=@(); Installed='0.10.0'; Package='dsh-status-rotator'; PostInstall='ConfigureStatusRotator'; ExclusiveGroup='thinking-status-ui'; Recommended=$true; Note='思考状态体验增强首选：专项预检通过，初次配置默认关闭渐变' },
+    [pscustomobject]@{ No=19; Id='context';       Name='Context Insight';            Spec='dsh-context@0.41.3'; Tier='enhanced'; Allow=@(); Installed='0.41.3' },
     # ---- 高级/实验（默认不装） ----
     [pscustomobject]@{ No=20; Id='auto-mode';     Name='Auto Mode';                 Spec='@nanmicoder/dsh-auto-mode@^0.1.5'; Tier='advanced'; Allow=@(); Installed='0.1.5' },
-    [pscustomobject]@{ No=21; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter@^1.5.42'; Tier='advanced'; Allow=@(); Installed='1.5.42'; Note='统计参考，不等于官方账单；按本机 web Profile 声明 ^1.5.42，当前安装 1.5.42' },
-    [pscustomobject]@{ No=22; Id='dream-skin';    Name='Dream Skin 主题';           Spec='dsh-dream-skin@^0.4.10'; Tier='advanced'; Allow=@(); Installed='0.4.10'; Note='本机 web Profile 实际安装 0.4.10，保留 sticky restore / host-backed marker 检查' },
+    [pscustomobject]@{ No=21; Id='cost';          Name='Cost Meter';                Spec='dsh-cost-meter@1.7.10'; Tier='advanced'; Allow=@(); Installed='1.7.10'; Note='统计参考，不等于官方账单；1.7.10 已在 DSH 0.1.1-rc.2 隔离 BootReady 预检通过，使用精确版本避免静默漂移' },
+    [pscustomobject]@{ No=22; Id='dream-skin';    Name='Dream Skin 主题';           Spec='dsh-dream-skin@8.30.1'; Tier='advanced'; Allow=@(); Installed='8.30.1'; Note='8.30.1 已通过 rc.2 BootReady，保留 sticky restore / host-backed 持久化能力检测' },
     [pscustomobject]@{ No=23; Id='sentinel';      Name='Sentinel 条件唤醒';         Spec='dsh-sentinel@0.11.0'; Tier='advanced'; Allow=@(); Installed='0.11.0' },
-    [pscustomobject]@{ No=24; Id='liangshen';     Name='量神';                       Spec='@linxin666/dsh-liangshen@^0.3.2'; Tier='advanced'; Allow=@(); Installed='0.3.2' },
-    [pscustomobject]@{ No=25; Id='thought-buddy'; Name='Thought Buddy';              Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Tier='advanced'; Allow=@(); Installed='0.2.0'; Package='@dsh-plugin/dsh-thought-buddy'; ExclusiveGroup='thinking-status-ui'; Note='与 Status Rotator 互斥；会改变 Deep diving 状态条内容与头像' },
+    [pscustomobject]@{ No=24; Id='liangshen';     Name='量神';                       Spec='@linxin666/dsh-liangshen@0.3.14'; Tier='advanced'; Allow=@(); Installed='0.3.14' },
+    [pscustomobject]@{ No=25; Id='thought-buddy'; Name='Thought Buddy';              Spec='@dsh-plugin/dsh-thought-buddy@0.3.3'; Tier='advanced'; Allow=@(); Installed='0.3.3'; Package='@dsh-plugin/dsh-thought-buddy'; ExclusiveGroup='thinking-status-ui'; Note='与 Status Rotator 互斥；会改变 Deep diving 状态条内容与头像' },
     [pscustomobject]@{ No=26; Id='agent-teams';   Name='Agent Teams';                Spec='@nanmicoder/dsh-agent-teams@0.1.14'; Tier='advanced'; Allow=@(); Installed='0.1.14'; Note='高级功能：多 Agent 协作，会改变 Agent 行为；生产 rc.2 固定 0.1.14，0.1.15 起要求 0.1.2-alpha.2 的 uiConversation 服务' }
 )
 
@@ -1150,17 +1150,17 @@ function Invoke-PluginPostInstall([string]$profile, [object]$plugin) {
     }
 }
 
-# Dream Skin 持久化修复检测：上游修复版与旧 npm 0.3.0 的 package.json 版本号完全相同
-# （都是 0.3.0），单看版本号分不出来——必须检查源码里的两个能力 marker：
-#   'dsh-dream-skin: sticky skin restore'  （sticky restore 加固）
-#   '/dream-skin/api'                       （host-backed 持久化接口）
-# 两个都存在才算“已修”，缺任意一个都按旧实现处理。
+# Dream Skin 的持久化能力不能仅靠 semver 判断：0.4.x 和 8.x 使用了不同的
+# sticky-restore 文本标识，但都应当同时拥有 sticky restore 与 host-backed API。
+# 保留旧标识可正确识别已安装的历史修复版，新增标识覆盖已预检的 8.x 实现。
 function Test-DreamSkinPersistenceFix([string]$profile) {
     $client = Join-Path $dshHome ("profiles\{0}\node_modules\dsh-dream-skin\lib\client.js" -f $profile)
     if (-not (Test-Path -LiteralPath $client -PathType Leaf)) { return $false }
     try {
         $text = Get-Content -LiteralPath $client -Raw -Encoding UTF8
-        return ($text.Contains('dsh-dream-skin: sticky skin restore') -and $text.Contains('/dream-skin/api'))
+        $hasStickyRestore = $text.Contains('dsh-dream-skin: sticky skin restore') -or
+            $text.Contains('dsh-dream-skin: sticky skin + built-in restore')
+        return ($hasStickyRestore -and $text.Contains('/dream-skin/api'))
     } catch { return $false }
 }
 
@@ -1177,8 +1177,8 @@ function Install-Plugins([string]$profile, [object[]]$selected) {
     if ($dreamSkin -and -not (Test-DreamSkinPersistenceFix $profile)) {
         $dreamSpec = [string]$dreamSkin.Spec
         if ($NonInteractive) {
-            Warn "Dream Skin：Profile 中检测到旧 0.3.0 实现（无持久化修复 marker），将替换为 $dreamSpec（含持久化修复）。"
-        } elseif (Read-YesNo ("检测到 Dream Skin 0.3.0 旧实现，存在重启后第三方皮肤回退问题。是否升级到 {0}（含持久化修复）？" -f $dreamSpec) $true) {
+            Warn "Dream Skin：Profile 中检测到缺少持久化能力的旧实现，将替换为 $dreamSpec（含持久化修复）。"
+        } elseif (Read-YesNo ("检测到 Dream Skin 旧实现，存在重启后第三方皮肤回退问题。是否升级到 {0}（含持久化修复）？" -f $dreamSpec) $true) {
             Ok ("确认升级 Dream Skin 到 {0}。" -f $dreamSpec)
         } else {
             $selected = @($selected | Where-Object { $_.Id -ne 'dream-skin' })
@@ -1262,7 +1262,7 @@ function Show-Diagnostics([string]$profile) {
         if ($code -ne 0) { Warn 'plugin list 返回非 0。' }
     } catch { Warn $_.Exception.Message }
 
-    # Dream Skin 持久化修复状态：版本号分不出新旧（都是 0.3.0），必须查能力 marker
+    # Dream Skin 持久化修复状态：不同主版本的 marker 文本不同，必须查能力而非只看版本号。
     $dreamSkinDir = Join-Path $dshHome "profiles\$profile\node_modules\dsh-dream-skin"
     if (Test-Path -LiteralPath $dreamSkinDir -PathType Container) {
         if (Test-DreamSkinPersistenceFix $profile) {
@@ -1270,7 +1270,7 @@ function Show-Diagnostics([string]$profile) {
         } else {
             $dreamCatalogEntry = @($PluginCatalog | Where-Object { $_.Id -eq 'dream-skin' } | Select-Object -First 1)
             $dreamSpec = if ($dreamCatalogEntry.Count -gt 0) { [string]$dreamCatalogEntry[0].Spec } else { '目录中的当前版本' }
-            Warn "Dream Skin：检测到旧 0.3.0 实现，建议升级（管理器重装 Dream Skin 插件即可替换为 $dreamSpec）"
+            Warn "Dream Skin：检测到缺少持久化能力的旧实现，建议升级（管理器重装 Dream Skin 插件即可替换为 $dreamSpec）"
         }
     }
 }

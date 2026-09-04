@@ -190,7 +190,8 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 ## 安全设计
 
 当前维护基线见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)；历史审计记录见
-[docs/AUDIT.md](docs/AUDIT.md)。摘要：
+[docs/AUDIT.md](docs/AUDIT.md)；rc.2 插件升级筛选与隔离验证见
+[docs/PLUGIN_RC2_UPDATE_AUDIT.md](docs/PLUGIN_RC2_UPDATE_AUDIT.md)。摘要：
 
 - **安装目录所有权**：`.dsh-desktop-shell-root` 标记；非空且非本产品目录拒绝安装；**程序目录** Preflight→Stage→Initialize→Commit 事务式提交（升级保留旧 exe 回滚，失败可恢复旧安装；首次向导对 DSH_HOME 的初始化不在回滚范围）；卸载前再次验证
 - **卸载守卫**：DSH_HOME 危险路径双向检查；完整卸载先确认并停止外部 DSH，停止失败降级为仅卸载壳；延迟自删除脚本执行前第三次验证标记
@@ -240,6 +241,7 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.8`�
 │                           #   启动参数 / 端口归属 / 宿主日志 / 壳运行期 / 重验证 / 构建接线
 ├── .github/workflows/      # CI 与 GitHub Release 工作流
 ├── docs/CURRENT_STATUS.md  # 当前维护、兼容与验证基线
+├── docs/PLUGIN_RC2_UPDATE_AUDIT.md # rc.2 插件升级与预检记录
 ├── docs/AUDIT.md           # 历史安全审计记录（v1.0.4 快照）
 ├── install-latest.bat        # 双击入口：从 GitHub 下载 latest Release 安装
 ├── install-from-source.bat   # 双击入口：从当前 checkout 源码安装

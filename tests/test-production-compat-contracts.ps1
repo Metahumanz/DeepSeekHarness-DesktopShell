@@ -44,6 +44,35 @@ function Write-LedgerFixture([string]$dshHome, [string]$json) {
     return $path
 }
 
+function Write-LegacyCostMeterSourceFixture([string]$dshHome) {
+    $pluginDir = Join-Path $dshHome 'profiles\web\node_modules\dsh-cost-meter\lib'
+    New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $pluginDir 'index.js'), @'
+ctx.on('llm/stream'
+if (usage !== null) { // DSH Desktop compat: ignore synthetic ModLens wrapper
+  ledger.account(
+}
+'@, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $pluginDir 'backfill.js'), @'
+// DSH Desktop compat: ignore synthetic ModLens wrapper in backfill replay
+'@, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Write-WrapperAwareCostMeterSourceFixture([string]$dshHome) {
+    $pluginDir = Join-Path $dshHome 'profiles\web\node_modules\dsh-cost-meter\lib'
+    New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $pluginDir 'index.js'), @'
+if (isWrapperProviderId(sampleProvider)) {
+  effectiveProvider = wrapperUpstreamProvider(sampleProvider) ?? sampleProvider
+}
+'@, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $pluginDir 'backfill.js'), @'
+if (isWrapperProviderId(sampleProvider)) {
+  effectiveProvider = wrapperUpstreamProvider(sampleProvider) ?? sampleProvider
+}
+'@, [System.Text.UTF8Encoding]::new($false))
+}
+
 $fixture = @'
 {
   "days": {
@@ -183,6 +212,7 @@ $pluginCompatClass
     try {
         $normalHome = Join-Path $base 'normal-dsh-home'
         $normalLedger = Write-LedgerFixture $normalHome $fixture
+        Write-LegacyCostMeterSourceFixture $normalHome
         $env:DSH_HOME = $normalHome
         $normalLogs = Join-Path $base 'normal-logs'
         $normalOutput = & $ledgerHarnessExe $base $normalLogs 2>&1 | Out-String
@@ -202,6 +232,7 @@ $pluginCompatClass
         $largePayload = [string]::new([char]'x', (2 * 1024 * 1024) + 4096)
         $largeFixture = '{"metadata":"' + $largePayload + '",' + $fixture.Trim().Substring(1)
         $largeLedger = Write-LedgerFixture $largeHome $largeFixture
+        Write-LegacyCostMeterSourceFixture $largeHome
         Assert-True 'large ledger exceeds JavaScriptSerializer default 2 MiB threshold' (
             ([System.IO.File]::ReadAllText($largeLedger).Length -gt (2 * 1024 * 1024)))
         $env:DSH_HOME = $largeHome
@@ -214,6 +245,20 @@ $pluginCompatClass
             $largeFixed.metadata.Length -eq $largePayload.Length -and
             @($largeFixed.days.'2026-08-19'.byProviderModel.PSObject.Properties.Name |
                 Where-Object { $_ -match '^(deepseek-modlens:|modlens-)' }).Count -eq 0)
+
+        $modernHome = Join-Path $base 'wrapper-aware-dsh-home'
+        $modernLedger = Write-LedgerFixture $modernHome $fixture
+        Write-WrapperAwareCostMeterSourceFixture $modernHome
+        $env:DSH_HOME = $modernHome
+        $modernLogs = Join-Path $base 'wrapper-aware-logs'
+        $modernOutput = & $ledgerHarnessExe $base $modernLogs 2>&1 | Out-String
+        Write-Host $modernOutput
+        Assert-True 'native wrapper-aware Cost Meter skips legacy ledger deletion' (
+            $modernOutput -match 'PENDING=0')
+        $modernFixed = Get-Content -LiteralPath $modernLedger -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True 'native wrapper-aware ledger retains provider buckets for upstream migration' (
+            @($modernFixed.days.'2026-08-19'.byProviderModel.PSObject.Properties.Name |
+                Where-Object { $_ -match '^(deepseek-modlens:|modlens-)' }).Count -eq 3)
     }
     finally {
         if ($hadDshHome) { $env:DSH_HOME = $previousDshHome }

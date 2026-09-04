@@ -1,6 +1,7 @@
 ﻿param(
     [string]$LedgerPath = '',
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$ForceLegacyCleanup
 )
 
 <#
@@ -11,8 +12,10 @@
     删除所有 provider 键为 `deepseek-modlens:*` 或 `modlens-*:*` 的计费桶
     （日级 + 会话级），并从日/会话合计中扣减对应 token 与金额。
     修改前自动备份为 ledger.json.before-modlens-clean-<时间戳>.bak。
-    桌面壳每次启动时（PluginCompat 兼容修复）也会自动执行同样的清理，
-    因此本脚本主要用于立即修复当前账本。
+    当前上游 Cost Meter 会把包装 provider 改挂到语义上游并做去重；对新版账本
+    盲删这些键可能丢失 reseller-only 路由。因此本脚本默认只分析，真实写入
+    必须显式传入 -ForceLegacyCleanup，并且仅适用于已确认受影响的旧版账本。
+    DesktopShell 的自动路径也只会在当前安装源码可证明为旧布局时执行清理。
 
     注意：正在运行中的 DSH 后端在内存中持有账本，关停时会写回。
     立即生效需要重启桌面壳；此后每次启动都会自动保持干净。
@@ -20,7 +23,7 @@
 .EXAMPLE
     .\scripts\Repair-CostMeterLedger.ps1
     .\scripts\Repair-CostMeterLedger.ps1 -DryRun
-    .\scripts\Repair-CostMeterLedger.ps1 -LedgerPath D:\backup\ledger.json
+    .\scripts\Repair-CostMeterLedger.ps1 -LedgerPath D:\backup\ledger.json -ForceLegacyCleanup
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -126,6 +129,12 @@ if (-not $changed) {
 if ($DryRun) {
     Say "DryRun：将移除 $removedBuckets 个桶（$removedCalls 次调用，金额 $removedCost），未写入。"
     exit 0
+}
+
+if (-not $ForceLegacyCleanup) {
+    Warn '未写入：新版 Cost Meter 的 wrapper provider 可能是有效路由。仅在确认账本来自受影响旧版后，才使用 -ForceLegacyCleanup。'
+    Warn '建议先运行 -DryRun 并保留自动生成的备份。'
+    exit 2
 }
 
 # 写入前重新汇总所有被修改节点的 totals（顺带归一化旧账本）

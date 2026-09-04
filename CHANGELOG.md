@@ -9,6 +9,9 @@
 - **CI 去重**：PowerShell 7 保留全部 40 项源码门禁；Windows PowerShell 5.1 改为“解析全部脚本 + 7 项宿主兼容回归”，不再重复运行同一批 C# / 静态结构测试。`Build-Release` 继续作为 ZIP 完整文件清单的唯一权威校验点；普通 CI 不再重复解包或上传无人消费的发布工件，Release 发布 Job 仅在跨 Job 下载后复核 SHA256。
 - **兼容修复契约**：新增生产 `PluginCompat` 账本修复、超出默认 JSON 大小的账本，以及 C#/卸载器端口命令行边界匹配的回归覆盖。
 - **插件来源透明度**：未带 tag/commit 的 GitHub 目录项明确标记为浮动引用，并在展示与安装前提示其不可复现边界；新增当前状态页，历史审计页改为 v1.0.4 快照定位。
+- **rc.2 插件升级审计**：以隔离 `DSH_HOME`/Profile/随机端口逐项验证 15 个新版或 release tag，并验证核心三插件组合；通过项更新为精确 npm 版本或 GitHub tag，剩余 3 个无 tag GitHub 来源继续显式标记为浮动。
+- **Cost Meter 迁移收口**：新版上游已原生处理 wrapper provider 重映射与去重；自动账本清理改为仅在可证明的旧版源码布局下执行，手工迁移默认 DryRun 风格的拒绝写入，需显式 `-ForceLegacyCleanup` 才会修改旧账本。
+- **Dream Skin 8.x**：目录更新到已隔离启动验证的 `8.30.1`；持久化检测同时兼容历史和新版 sticky-restore marker，人工 Windows 验收表同步为当前 spec。
 
 ## v1.0.8（Windows PowerShell 5.1 发布门禁修复）
 

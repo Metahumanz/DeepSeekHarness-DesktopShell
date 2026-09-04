@@ -472,7 +472,7 @@ namespace DeepSeekHarnessDesktop
                 if (RepairSentinel(dshHome, profile, log, apply)) pending++;
                 if (RepairCostMeterModLens(dshHome, profile, log, apply)) pending++;
                 if (RepairCostMeterBackfill(dshHome, profile, log, apply)) pending++;
-                if (RepairCostMeterLedger(dshHome, log, apply)) pending++;
+                if (RepairCostMeterLedger(dshHome, profile, log, apply)) pending++;
                 log.AppendLine(apply
                     ? ("Applied repairs: " + pending)
                     : ("Pending repairs (skipped): " + pending));
@@ -641,6 +641,15 @@ namespace DeepSeekHarnessDesktop
                     return false;
                 }
 
+                // Newer upstream releases remap wrapper samples to the semantic
+                // provider and deduplicate them in a time window. Applying the
+                // legacy skip patch would drop valid reseller-only usage.
+                if (HasNativeCostMeterWrapperDedup(source))
+                {
+                    log.AppendLine("Cost meter backfill: upstream wrapper-aware de-dup active; no action.");
+                    return false;
+                }
+
                 string anchor = "    const atMs = Number(event.time)";
                 int at = source.IndexOf(anchor, StringComparison.Ordinal);
                 if (at < 0)
@@ -678,8 +687,14 @@ namespace DeepSeekHarnessDesktop
         /// 并从日/会话合计中扣减对应 token 与金额；修改前自动备份。
         /// 与 scripts/Repair-CostMeterLedger.ps1 逻辑一致，桌面壳每次启动时执行。
         /// </summary>
-        private static bool RepairCostMeterLedger(string dshHome, StringBuilder log, bool apply)
+        private static bool RepairCostMeterLedger(string dshHome, string profileName, StringBuilder log, bool apply)
         {
+            if (!HasLegacyCostMeterModLensLayout(dshHome, profileName))
+            {
+                log.AppendLine("Cost meter ledger: affected legacy source not proven; left untouched.");
+                return false;
+            }
+
             string path = Path.Combine(dshHome, "storages", "cost-meter", "ledger.json");
             if (!File.Exists(path))
             {
@@ -793,6 +808,43 @@ namespace DeepSeekHarnessDesktop
                 log.AppendLine("Cost meter ledger: repair failed: " + ex.Message);
             }
             return false;
+        }
+
+        private static bool HasLegacyCostMeterModLensLayout(string dshHome, string profileName)
+        {
+            string path = Path.Combine(dshHome, "profiles", profileName, "node_modules",
+                "dsh-cost-meter", "lib", "index.js");
+            if (!File.Exists(path)) return false;
+
+            try
+            {
+                // Do not touch a ledger unless a normal-sized, affected legacy
+                // source layout is still provable beside it.
+                FileInfo info = new FileInfo(path);
+                if (info.Length > 4L * 1024L * 1024L) return false;
+                string source = File.ReadAllText(path, Encoding.UTF8);
+                if (HasNativeCostMeterWrapperDedup(source)) return false;
+
+                int handler = source.IndexOf("ctx.on('llm/stream'", StringComparison.Ordinal);
+                if (handler < 0)
+                    handler = source.IndexOf("ctx.on(\"llm/stream\"", StringComparison.Ordinal);
+                if (handler < 0) return false;
+
+                int account = source.IndexOf("ledger.account(", handler, StringComparison.Ordinal);
+                int condition = source.IndexOf("if (usage !== null) {", handler, StringComparison.Ordinal);
+                return account >= 0 && condition >= handler && condition < account;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasNativeCostMeterWrapperDedup(string source)
+        {
+            if (String.IsNullOrEmpty(source)) return false;
+            return source.IndexOf("isWrapperProviderId(sampleProvider)", StringComparison.Ordinal) >= 0 &&
+                source.IndexOf("wrapperUpstreamProvider(sampleProvider)", StringComparison.Ordinal) >= 0;
         }
 
         private static int RemoveSyntheticLedgerBuckets(Dictionary<string, object> parent,
@@ -1925,10 +1977,11 @@ namespace DeepSeekHarnessDesktop
 
             cancellationToken.ThrowIfCancellationRequested();
             ProcessStartInfo psi = BuildStartInfo(command, arguments, workingDirectory);
-            string oldPath = psi.EnvironmentVariables["PATH"] ?? Environment.GetEnvironmentVariable("PATH") ?? "";
-            string commandDir = Path.GetDirectoryName(command) ?? "";
-            if (!String.IsNullOrWhiteSpace(commandDir)) psi.EnvironmentVariables["PATH"] = commandDir + ";" + oldPath;
-            psi.EnvironmentVariables["DSH_DESKTOP_DSH_VERSION"] = effectiveVersion;
+            // Do not materialize or rewrite EnvironmentVariables here. On some
+            // Windows hosts the inherited block exposes both Path and PATH; .NET
+            // Framework then throws while constructing its case-sensitive map.
+            // The resolved command is already launched by full path, so inheriting
+            // the native environment unchanged is both sufficient and safer.
             // 注意：不为常驻 DSH 进程设置 GIT_CONFIG_* rewrite——
             // 那会污染整个 DSH 进程树（Agent/终端/子进程执行 git@github.com:... 时被
             // 强制改成 https，破坏本应正常的 SSH 私有仓库认证）。
