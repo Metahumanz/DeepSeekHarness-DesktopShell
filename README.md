@@ -120,7 +120,7 @@ UI 与操作效率增强，不装也不影响 DSH 核心：
 | Thought Buddy | Deep diving 状态条前的动态伙伴 | 与 Status Rotator 互斥 |
 | Agent Teams | 多 Agent 协作 | rc2 固定 `0.1.14`；会改变 Agent 行为 |
 
-内置推荐采用选择性 pin：已确认兼容的新版使用 npm range 或 GitHub release tag；未验证新版或与 DesktopShell 兼容修复有依赖的插件保持已审核版本。Agent Teams 在生产 rc2 固定为 `0.1.14`；`0.1.15` 起要求 alpha 的 `uiConversation` 服务，不能在 rc2 Profile 中使用。
+内置目录会区分来源：精确 npm 版本、npm range、GitHub release tag，以及明确标为“GitHub 浮动引用”的默认分支 spec。浮动引用会在安装时解析上游当前默认分支，**不是不可变兼容版本**；需要可复现安装时，请在向导的“额外插件”步骤提供精确 tag/commit spec，并先运行隔离 preflight。Agent Teams 在生产 rc2 固定为 `0.1.14`；`0.1.15` 起要求 alpha 的 `uiConversation` 服务，不能在 rc2 Profile 中使用。
 需要追新版本可在向导的"额外插件"步骤粘贴自定义 spec。
 本机 `web` Profile（2026-08-24 快照）包含 26 个可移植推荐插件；清单中的 `Installed` 是本机已安装版本，仍不等同于兼容 PASS。rc2 版本的逐插件隔离 preflight 使用临时 `DSH_HOME`、临时 Profile、随机端口，并逐项完成安装、Web ready、HTTP 200、稳定 10 秒、正常退出和端口清理后才记为 PASS。
 `@yuxianglin/dsh-bridge-browser` 是本机 `link:` 依赖，不能移植到隔离 Profile，保留为 OAuth/浏览器桥接人工项。
@@ -189,12 +189,13 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 ## 安全设计
 
-完整记录见 [docs/AUDIT.md](docs/AUDIT.md)，摘要：
+当前维护基线见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)；历史审计记录见
+[docs/AUDIT.md](docs/AUDIT.md)。摘要：
 
 - **安装目录所有权**：`.dsh-desktop-shell-root` 标记；非空且非本产品目录拒绝安装；**程序目录** Preflight→Stage→Initialize→Commit 事务式提交（升级保留旧 exe 回滚，失败可恢复旧安装；首次向导对 DSH_HOME 的初始化不在回滚范围）；卸载前再次验证
 - **卸载守卫**：DSH_HOME 危险路径双向检查；完整卸载先确认并停止外部 DSH，停止失败降级为仅卸载壳；延迟自删除脚本执行前第三次验证标记
 - **端口/进程**：只信任回环 DSH 源；端口占用先查 PID+命令行，非 DSH 进程拒绝附着/强杀；Job Object 回收自家后端；运行方式（自动/现有 dsh/仅 npx）持久化双端一致
-- **发布链**：一键安装对 Release 资产做 SHA256 完整性校验（防下载损坏/资产错配）；插件推荐采用选择性 pin
+- **发布链**：一键安装对 Release 资产做 SHA256 完整性校验（防下载损坏/资产错配）；插件来源类型会在管理器中明示
 - **页面边界**：主导航回环白名单；外链 http/https 白名单，其余协议弹确认；DevTools 默认关闭
 
 ## 从源码构建
@@ -209,7 +210,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
 **发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
-回归测试在 `tests\`：PowerShell 7 运行全部 39 项；Windows PowerShell 5.1 解析全部脚本，
+回归测试在 `tests\`：PowerShell 7 运行全部 40 项；Windows PowerShell 5.1 解析全部脚本，
 并运行 7 项真实覆盖宿主差异的兼容回归。CI 每次 push/PR 自动运行。
 插件完整 BootReady 验收是独立 release preflight，不在日常插件安装流程中启动用户 Profile。
 
@@ -218,7 +219,7 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.8`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
-1. 校验输入版本 == 根目录 `VERSION`，然后运行 PowerShell 7 全量回归（39 项）及
+1. 校验输入版本 == 根目录 `VERSION`，然后运行 PowerShell 7 全量回归（40 项）及
    Windows PowerShell 5.1 兼容套件（7 项，另解析全部脚本）
 2. `Build-Release -Version`（仅 x64）；该步骤按完整期望清单解包自校验 ZIP，并生成 SHA256
 3. 发布 Job 下载工件后仅复核 ZIP 与 `SHA256SUMS.txt` 的哈希一致性
@@ -234,11 +235,12 @@ GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.8`�
 ├── assets/                 # 图标（源自官方 favicon.svg）
 ├── scripts/                # 安装 / 管理 / 卸载 / 发布 / 修复脚本
 ├── src/                    # C# 桌面宿主源码（窗口/WebView2/进程托管/兼容修复）
-├── tests/                  # 回归测试（39 项）：安装所有权 / 卸载守卫 / 账本正则 / 版本门槛 /
+├── tests/                  # 回归测试（40 项）：安装所有权 / 卸载守卫 / 账本修复 / 版本门槛 /
 │                           #   生命周期 / 托盘句柄 / WebView 恢复 / 进程有界探测 / 设置快照 /
 │                           #   启动参数 / 端口归属 / 宿主日志 / 壳运行期 / 重验证 / 构建接线
 ├── .github/workflows/      # CI 与 GitHub Release 工作流
-├── docs/AUDIT.md           # 安全审计记录
+├── docs/CURRENT_STATUS.md  # 当前维护、兼容与验证基线
+├── docs/AUDIT.md           # 历史安全审计记录（v1.0.4 快照）
 ├── install-latest.bat        # 双击入口：从 GitHub 下载 latest Release 安装
 ├── install-from-source.bat   # 双击入口：从当前 checkout 源码安装
 ├── LICENSE                 # MIT

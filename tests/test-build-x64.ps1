@@ -53,7 +53,10 @@ $requiredPs51Tests = @(
 )
 
 Assert-True 'verify exposes separate Full and Ps51Compat suites' ($verify -match "ValidateSet\('Full', 'Ps51Compat'\)" -and $fullSuiteMatch.Success -and $ps51SuiteMatch.Success)
-Assert-True "Full suite retains all 39 regression tests (got: $($fullSuiteTests.Count))" ($fullSuiteTests.Count -eq 39)
+Assert-True "Full suite retains all 40 regression tests (got: $($fullSuiteTests.Count))" ($fullSuiteTests.Count -eq 40)
+Assert-True 'production compatibility contract test stays in the Full suite' (
+    $fullSuiteTests -contains 'test-production-compat-contracts.ps1' -and
+    $ps51SuiteTests -notcontains 'test-production-compat-contracts.ps1')
 Assert-True "Ps51Compat retains exactly 7 host-sensitive tests (got: $($ps51SuiteTests.Count))" (
     $ps51SuiteTests.Count -eq $requiredPs51Tests.Count -and
     @($requiredPs51Tests | Where-Object { $ps51SuiteTests -notcontains $_ }).Count -eq 0)

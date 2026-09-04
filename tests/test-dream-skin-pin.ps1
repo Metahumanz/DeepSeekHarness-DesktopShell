@@ -2,6 +2,7 @@
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $manage = Join-Path $repo 'scripts\Manage-Dsh.ps1'
 $text = [System.IO.File]::ReadAllText($manage)
+$acceptance = [System.IO.File]::ReadAllText((Join-Path $repo 'docs\DREAM_SKIN_ACCEPTANCE.md'))
 
 $fail = 0
 function Assert-True([string]$label, [bool]$condition) {
@@ -14,6 +15,14 @@ Assert-True "catalog no longer pins dsh-dream-skin@0.3.0" ($text -notmatch 'dsh-
 Assert-True "dream-skin uses npm ^0.4.10" ($text -match 'dsh-dream-skin@\^0\.4\.10')
 Assert-True "old pinned dream-skin commit removed" ($text -notmatch '28497f5294ba20f44acf8eecc62891297d38fc24')
 Assert-True "no 40-char dream-skin commit pinned" ($text -notmatch 'dsh-dream-skin/archive/[0-9a-f]{40}\.tar\.gz')
+Assert-True 'Dream Skin prompt derives its target from the catalog spec' (
+    $text -match '\$dreamSpec = \[string\]\$dreamSkin\.Spec' -and
+    $text -match '替换为 \$dreamSpec')
+Assert-True 'diagnostics no longer advertise stale npm ^0.4.5' ($text -notmatch 'npm \^0\.4\.5')
+Assert-True 'current manual acceptance matches catalog choice and spec' (
+    $acceptance -match '\*\*22\. Dream Skin 主题\*\*' -and
+    $acceptance -match 'dsh-dream-skin@\^0\.4\.10' -and
+    $acceptance -notmatch '选 \*\*14\. Dream Skin 主题\*\*')
 
 # ---- 2. 旧实现 marker 检测函数存在且检查两个能力 marker ----
 Assert-True "Test-DreamSkinPersistenceFix defined" ($text -match 'function Test-DreamSkinPersistenceFix')

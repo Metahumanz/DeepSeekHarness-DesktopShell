@@ -17,7 +17,7 @@ $entries = @([regex]::Matches($catalog, "No=\d+;\s+Id='[^']+'"))
 Assert-True 'catalog has 26 current portable entries' ($entries.Count -eq 26)
 Assert-True 'core/enhanced/advanced tiers are all retained' (
     $catalog -match "Tier='core'" -and $catalog -match "Tier='enhanced'" -and $catalog -match "Tier='advanced'")
-Assert-True 'catalog has no implicit latest install' ($catalog -notmatch '@latest')
+Assert-True 'catalog has no unqualified npm @latest install' ($catalog -notmatch '@latest')
 Assert-True 'current core versions are synchronized' (
     $catalog -match "dshmarket@1\.21\.2.*Installed='1\.21\.2'" -and
     $catalog -match "dsh-better-sidebar@\^0\.15\.2.*Installed='0\.15\.2'" -and
@@ -43,6 +43,16 @@ Assert-True 'stale/nonexistent historical entries are absent' (
     $catalog -notmatch 'dsh-bridge-browser')
 Assert-True 'local-only bridge remains documented outside portable catalog' (
     $manage -match 'link:' -and $manage -match 'bridge-browser')
+
+$gitSourceLines = @($catalog -split "\r?\n" | Where-Object {
+    $_ -match "Spec='(?:github:|git\+https://github\.com/)"
+})
+$unmarkedFloatingSources = @($gitSourceLines | Where-Object { $_ -notmatch 'Floating=\$true' })
+Assert-True 'all eight floating GitHub specs are explicitly marked' (
+    $gitSourceLines.Count -eq 8 -and $unmarkedFloatingSources.Count -eq 0)
+Assert-True 'catalog and installation path disclose floating GitHub refs' (
+    $manage -match '\$p\.Floating -eq \$true' -and
+    $manage -match '\$floatingSources\.Count -gt 0')
 
 if ($fail -eq 0) { Write-Host 'PLUGIN CATALOG TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

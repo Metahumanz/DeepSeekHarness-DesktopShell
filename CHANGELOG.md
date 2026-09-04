@@ -1,12 +1,14 @@
 # Changelog
 
-本项目的用户可见变更记录。安全边界与修复细节见 [docs/AUDIT.md](docs/AUDIT.md)。
+本项目的用户可见变更记录。当前维护基线见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)，历史安全审计记录见 [docs/AUDIT.md](docs/AUDIT.md)。
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
 ## 未发布
 
-- **CI 去重**：PowerShell 7 保留全部 39 项源码门禁；Windows PowerShell 5.1 改为“解析全部脚本 + 7 项宿主兼容回归”，不再重复运行同一批 C# / 静态结构测试。`Build-Release` 继续作为 ZIP 完整文件清单的唯一权威校验点；普通 CI 不再重复解包或上传无人消费的发布工件，Release 发布 Job 仅在跨 Job 下载后复核 SHA256。
+- **CI 去重**：PowerShell 7 保留全部 40 项源码门禁；Windows PowerShell 5.1 改为“解析全部脚本 + 7 项宿主兼容回归”，不再重复运行同一批 C# / 静态结构测试。`Build-Release` 继续作为 ZIP 完整文件清单的唯一权威校验点；普通 CI 不再重复解包或上传无人消费的发布工件，Release 发布 Job 仅在跨 Job 下载后复核 SHA256。
+- **兼容修复契约**：新增生产 `PluginCompat` 账本修复、超出默认 JSON 大小的账本，以及 C#/卸载器端口命令行边界匹配的回归覆盖。
+- **插件来源透明度**：未带 tag/commit 的 GitHub 目录项明确标记为浮动引用，并在展示与安装前提示其不可复现边界；新增当前状态页，历史审计页改为 v1.0.4 快照定位。
 
 ## v1.0.8（Windows PowerShell 5.1 发布门禁修复）
 

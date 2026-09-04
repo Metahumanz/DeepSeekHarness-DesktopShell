@@ -436,6 +436,9 @@ namespace DeepSeekHarnessDesktop
         private const string SentinelRightId = "id: \"dsh-sentinel\"";
         private const string CostMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper";
         private const string BackfillMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper in backfill replay";
+        // JavaScriptSerializer 的默认 MaxJsonLength 只有约 2 MiB。账本是用户数据，
+        // 允许合理增长，但仍保留明确上限，避免损坏/异常大的文件耗尽宿主内存。
+        private const int MaxLedgerJsonChars = 16 * 1024 * 1024;
 
         /// <summary>
         /// 兼容修复入口。apply=false 时只做只读检测并返回待修复项数量（不写任何文件），
@@ -686,16 +689,32 @@ namespace DeepSeekHarnessDesktop
 
             try
             {
+                FileInfo ledgerInfo = new FileInfo(path);
+                // UTF-8 每个 .NET 字符最多占 3 字节，另预留 BOM；在读入前就拒绝必然超限的文件。
+                if (ledgerInfo.Length > (long)MaxLedgerJsonChars * 3L + 3L)
+                {
+                    log.AppendLine("Cost meter ledger: file exceeds safety byte limit; left untouched.");
+                    return false;
+                }
+
+                string ledgerText = File.ReadAllText(path, Encoding.UTF8);
+                if (ledgerText.Length > MaxLedgerJsonChars)
+                {
+                    log.AppendLine("Cost meter ledger: " + ledgerText.Length +
+                        " chars exceeds safety limit " + MaxLedgerJsonChars + "; left untouched.");
+                    return false;
+                }
+
                 JavaScriptSerializer serializer = new JavaScriptSerializer();
+                serializer.MaxJsonLength = MaxLedgerJsonChars;
                 Dictionary<string, object> ledger;
                 try
                 {
-                    ledger = serializer.Deserialize<Dictionary<string, object>>(
-                        File.ReadAllText(path, Encoding.UTF8));
+                    ledger = serializer.Deserialize<Dictionary<string, object>>(ledgerText);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    log.AppendLine("Cost meter ledger: unparseable; left untouched.");
+                    log.AppendLine("Cost meter ledger: unparseable (" + ex.Message + "); left untouched.");
                     return false;
                 }
 
@@ -2375,7 +2394,7 @@ namespace DeepSeekHarnessDesktop
             // 调用方知道端口时：必须匹配当前端口，防止误判其它 DSH 实例
             if (port > 0)
             {
-                if (!Regex.IsMatch(lower, @"--port\s+" + port.ToString())) return false;
+                if (!Regex.IsMatch(lower, @"--port\s+" + port.ToString() + @"(?=\s|$)")) return false;
             }
             return true;
         }

@@ -64,11 +64,11 @@ function Test-SyntheticKey([string]$key) {
 # （替代“总计减合成桶”的减法——旧账本本身已不一致时也能恢复一致）。
 function Set-NodeTotals($node) {
     if (-not $node.byProviderModel) { return }
-    $input = 0.0; $output = 0.0; $cacheRead = 0.0; $cacheWrite = 0.0
+    $inputTokens = 0.0; $output = 0.0; $cacheRead = 0.0; $cacheWrite = 0.0
     $reasoning = 0.0; $calls = 0; $cost = 0.0
     foreach ($k in @($node.byProviderModel.PSObject.Properties.Name)) {
         $b = $node.byProviderModel.$k
-        $input += [double]$b.input
+        $inputTokens += [double]$b.input
         $output += [double]$b.output
         $cacheRead += [double]$b.cacheRead
         $cacheWrite += [double]$b.cacheWrite
@@ -76,7 +76,7 @@ function Set-NodeTotals($node) {
         $calls += [int]$b.calls
         $cost += [double]$b.cost
     }
-    $node.input = $input
+    $node.input = $inputTokens
     $node.output = $output
     $node.cacheRead = $cacheRead
     $node.cacheWrite = $cacheWrite
