@@ -27,7 +27,7 @@ Assert-True "Get-DshVersionFromNpx surfaces npm log path" ($manage -match 'log o
 
 # ---- 3. 根 VERSION 与 release.yml 默认一致 ----
 $versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
-Assert-True "root VERSION is 1.0.9 (got: $versionText)" ($versionText -eq '1.0.9')
+Assert-True "root VERSION is 1.0.10 (got: $versionText)" ($versionText -eq '1.0.10')
 Assert-True "release.yml default matches VERSION" ($releaseYml -match ("default: '" + [regex]::Escape($versionText) + "'"))
 
 # ---- 4. COMPATIBILITY.json 自洽 ----

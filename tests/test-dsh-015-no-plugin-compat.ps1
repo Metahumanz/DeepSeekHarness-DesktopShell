@@ -30,7 +30,8 @@ Assert-True 'empty-profile guard requires only core bundles' (
     $genericSmoke.Contains("'@deepseek-ai/dsh-base'") -and
     $genericSmoke.Contains("'@deepseek-ai/dsh-web-app'"))
 Assert-True 'manual acceptance document states the no-plugin boundary' (
-    $manual.Contains('0.1.5-rc.1') -and $manual.Contains('无插件'))
+    $manual.Contains('# DSH 0.1.5-rc.1') -and
+    $manual.Contains('Test-Dsh015NoPluginLocal.ps1'))
 
 if ($fail -eq 0) { Write-Host 'DSH 0.1.5 NO-PLUGIN COMPAT TESTS PASSED' }
 else { Write-Host "FAILURES: $fail" }
