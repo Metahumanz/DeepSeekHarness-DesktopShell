@@ -189,22 +189,61 @@ function Test-ProcessAlive([int]$processId) {
 
 function Quote-WindowsArgument([string]$value) {
     if ($null -eq $value -or $value.Length -eq 0) { return '""' }
-    if ($value -notmatch '[\s"]') { return $value }
+    if ($value -notmatch '[\s"&|<>()^]') { return $value }
     return '"' + $value.Replace('"', '\"') + '"'
 }
 
 function New-LaunchSpec([string]$executable, [string[]]$arguments) {
     $argumentText = (($arguments | ForEach-Object { Quote-WindowsArgument ([string]$_) }) -join ' ')
+    $commandText = '"' + $executable.Replace('"', '\"') + '"'
+    if ($argumentText) { $commandText += ' ' + $argumentText }
     $extension = [IO.Path]::GetExtension($executable).ToLowerInvariant()
     if ($extension -in @('.cmd', '.bat')) {
         return [pscustomobject]@{
             FileName = (Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe')
             Arguments = '/d /s /c ""' + $executable + '" ' + $argumentText + '"'
+            Command = $commandText
         }
     }
     return [pscustomobject]@{
         FileName = $executable
         Arguments = $argumentText
+        Command = $commandText
+    }
+}
+
+function Start-RedirectedProcess(
+    [object]$launch,
+    [string]$workingDirectory,
+    [string]$stdoutPath,
+    [string]$stderrPath
+) {
+    # Do not use Start-Process here. Windows PowerShell 5.1 materializes a
+    # case-sensitive environment map for it, which can fail when a host exposes
+    # both Path and PATH. Let cmd inherit the native environment unchanged and
+    # perform file redirection inside that shell.
+    [IO.File]::WriteAllText($stdoutPath, '', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($stderrPath, '', [Text.UTF8Encoding]::new($false))
+    $comSpec = [Environment]::GetEnvironmentVariable('ComSpec')
+    if ([string]::IsNullOrWhiteSpace($comSpec)) { $comSpec = 'cmd.exe' }
+    $stdoutArgument = '"' + $stdoutPath.Replace('"', '""') + '"'
+    $stderrArgument = '"' + $stderrPath.Replace('"', '""') + '"'
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $comSpec
+    $psi.Arguments = '/d /s /c "' + ([string]$launch.Command) +
+        ' 1>' + $stdoutArgument + ' 2>' + $stderrArgument + '"'
+    $psi.WorkingDirectory = $workingDirectory
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    try {
+        if (-not $process.Start()) { throw "进程无法启动：$($launch.FileName)" }
+        return $process
+    }
+    catch {
+        try { $process.Dispose() } catch { }
+        throw
     }
 }
 
@@ -301,9 +340,7 @@ function Start-CapturedProcess(
     [string]$stderrPath,
     [int]$timeoutMs
 ) {
-    $started = Start-Process -FilePath $launch.FileName -ArgumentList $launch.Arguments `
-        -WorkingDirectory $workingDirectory -WindowStyle Hidden `
-        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+    $started = Start-RedirectedProcess $launch $workingDirectory $stdoutPath $stderrPath
     try {
         if (-not $started.WaitForExit($timeoutMs)) {
             Stop-ProcessTree $started
@@ -532,9 +569,7 @@ try {
     $webArgs = New-DshArguments @('--profile', $profile, '--port', ([string]$port))
     if (Test-DshNoOpenSupport $profile $tempHome) { $webArgs += '--no-open' }
     $webLaunch = New-LaunchSpec $executable $webArgs
-    $webProcess = Start-Process -FilePath $webLaunch.FileName -ArgumentList $webLaunch.Arguments `
-        -WorkingDirectory $tempHome -WindowStyle Hidden -RedirectStandardOutput $stdoutPath `
-        -RedirectStandardError $stderrPath -PassThru
+    $webProcess = Start-RedirectedProcess $webLaunch $tempHome $stdoutPath $stderrPath
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $readyUrl = ''
@@ -565,9 +600,7 @@ try {
                     throw 'Status Rotator 重启前端口未能安全释放。'
                 }
                 try { $webProcess.Dispose() } catch { }
-                $webProcess = Start-Process -FilePath $webLaunch.FileName -ArgumentList $webLaunch.Arguments `
-                    -WorkingDirectory $tempHome -WindowStyle Hidden -RedirectStandardOutput $stdoutPath `
-                    -RedirectStandardError $stderrPath -PassThru
+                $webProcess = Start-RedirectedProcess $webLaunch $tempHome $stdoutPath $stderrPath
                 $restartDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
                 $restartReady = $false
                 $restartUrl = ''

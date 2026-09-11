@@ -54,7 +54,12 @@ $j.days.'2026-08-19'.sessions[0].input = 888
 $j.days.'2026-08-19'.sessions[0].calls = 888
 $j.days.'2026-08-19'.sessions[0].cost = 888
 [System.IO.File]::WriteAllText($dirty, ($j | ConvertTo-Json -Depth 100), [System.Text.UTF8Encoding]::new($false))
-$out2 = & $hostExe -NoProfile -File $repair -LedgerPath $dirty 2>&1 | Out-String
+$beforeUnforced = Get-Content -LiteralPath $dirty -Raw -Encoding UTF8
+$unforcedOutput = & $hostExe -NoProfile -File $repair -LedgerPath $dirty 2>&1 | Out-String
+if ($LASTEXITCODE -ne 2) { $fail++; 'FAILED: unforced legacy cleanup must refuse to write' }
+if ($unforcedOutput -notmatch '未写入') { $fail++; 'FAILED: unforced cleanup did not explain refusal' }
+if ((Get-Content -LiteralPath $dirty -Raw -Encoding UTF8) -ne $beforeUnforced) { $fail++; 'FAILED: unforced cleanup changed the ledger' }
+$out2 = & $hostExe -NoProfile -File $repair -LedgerPath $dirty -ForceLegacyCleanup 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0) { $fail++; 'FAILED: dirty repair exit != 0' }
 $fixed = Get-Content -LiteralPath $dirty -Raw -Encoding UTF8 | ConvertFrom-Json
 $day = $fixed.days.'2026-08-19'

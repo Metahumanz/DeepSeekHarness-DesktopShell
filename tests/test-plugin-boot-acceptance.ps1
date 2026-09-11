@@ -80,13 +80,23 @@ Assert-True 'dsh-remote is absent from the active recommendation catalog' (
     $catalog -notmatch 'dsh-remote' -and
     $catalog -match 'No=25; Id=\x27thought-buddy\x27' -and
     $catalog -match 'No=26; Id=\x27agent-teams\x27')
-Assert-True 'active catalog matches the real web Profile package set' (
-    $catalog -match "Id='market'.*dshmarket@1\.21\.2" -and
-    $catalog -match "Id='sidebar'.*dsh-better-sidebar@\^0\.15\.2" -and
+Assert-True 'active catalog keeps the audited rc2 plugin set and pins the validated Cost Meter release' (
+    $catalog -match "Id='market'.*dshmarket@1\.41\.0" -and
+    $catalog -match "Id='sidebar'.*dsh-better-sidebar@0\.17\.1" -and
+    $catalog -match "Id='skills'.*@michengai/dsh-skills-manager@0\.1\.38" -and
+    $catalog -match "Id='at-file'.*github:omdsh-dev/dsh-at-file#v0\.7\.0" -and
+    $catalog -match "Id='file-mentions'.*github:a903067276-rgb/dsh-file-mentions#v1\.0\.13" -and
+    $catalog -match "Id='collapse'.*github:a179-sanae/dsh-auto-collapse#v0\.1\.5" -and
     $catalog -match "Id='rewind'.*github:XSJUSTC/dsh-rewind" -and
-    $catalog -match "Id='cost'.*dsh-cost-meter@\^1\.5\.42" -and
-    $catalog -match "Id='thought-buddy'.*@dsh-plugin/dsh-thought-buddy@\^0\.2\.0" -and
-    $catalog -match "Id='status-rotator'.*dsh-status-rotator@\^0\.6\.6" -and
+    $catalog -match "Id='outline'.*github:EnkiduGilgamesh/dsh-codex-side-outline#v1\.1\.1" -and
+    $catalog -match "Id='video'.*dsh-video-preview@0\.1\.4" -and
+    $catalog -match "Id='notification'.*github:omdsh-dev/dsh-notification#v0\.1\.4" -and
+    $catalog -match "Id='cost'.*dsh-cost-meter@1\.7\.10" -and
+    $catalog -match "Id='dream-skin'.*dsh-dream-skin@8\.30\.1" -and
+    $catalog -match "Id='liangshen'.*@linxin666/dsh-liangshen@0\.3\.14" -and
+    $catalog -match "Id='thought-buddy'.*@dsh-plugin/dsh-thought-buddy@0\.3\.3" -and
+    $catalog -match "Id='status-rotator'.*dsh-status-rotator@0\.10\.0" -and
+    $catalog -match "Id='context'.*dsh-context@0\.41\.3" -and
     $catalog -match "Id='agent-teams'.*@nanmicoder/dsh-agent-teams@0\.1\.14" -and
     $catalog -notmatch "Id='model-picker'" -and
     $catalog -notmatch "Id='modlens'" -and

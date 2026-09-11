@@ -13,6 +13,12 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
+function Quote-ProcessArgument([string]$value) {
+    if ($null -eq $value -or $value.Length -eq 0) { return '""' }
+    if ($value -notmatch '[\s"&|<>()^]') { return $value }
+    return '"' + $value.Replace('"', '\"') + '"'
+}
+
 function Test-PortOpen([int]$candidatePort) {
     $client = New-Object System.Net.Sockets.TcpClient
     try {
@@ -74,21 +80,34 @@ while ($true) {
         '-RunnerMode', 'command', '-DshPath', $fakeDsh,
         '-StableSeconds', '2', '-TimeoutSeconds', '15'
     )
-    $preflightProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $preflightArgs `
-        -WorkingDirectory $base -WindowStyle Hidden -RedirectStandardOutput $preflightStdout `
-        -RedirectStandardError $preflightStderr -PassThru
+    # Avoid Start-Process: Windows PowerShell 5.1 can fail while materializing
+    # a case-sensitive child environment on hosts exposing both Path and PATH.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell.exe'
+    $psi.Arguments = (($preflightArgs | ForEach-Object { Quote-ProcessArgument ([string]$_) }) -join ' ')
+    $psi.WorkingDirectory = $base
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $preflightProcess = New-Object System.Diagnostics.Process
+    $preflightProcess.StartInfo = $psi
+    if (-not $preflightProcess.Start()) { throw '无法启动 preflight cleanup harness 子进程。' }
+    $stdoutTask = $preflightProcess.StandardOutput.ReadToEndAsync()
+    $stderrTask = $preflightProcess.StandardError.ReadToEndAsync()
     $completed = $preflightProcess.WaitForExit(30000)
     if (-not $completed) {
         & taskkill.exe /PID $preflightProcess.Id /T /F 2>$null | Out-Null
+        $preflightProcess.WaitForExit(5000) | Out-Null
         $code = 124
     }
     else {
         try { $preflightProcess.Refresh() } catch { }
         $code = [int]$preflightProcess.ExitCode
     }
+    try { $output = $stdoutTask.GetAwaiter().GetResult() } catch { $output = '' }
+    try { $errorOutput = $stderrTask.GetAwaiter().GetResult() } catch { $errorOutput = '' }
     try { $preflightProcess.Dispose() } catch { }
-    $output = if (Test-Path -LiteralPath $preflightStdout) { Get-Content -LiteralPath $preflightStdout -Raw } else { '' }
-    $errorOutput = if (Test-Path -LiteralPath $preflightStderr) { Get-Content -LiteralPath $preflightStderr -Raw } else { '' }
     if ($errorOutput) { $output += "`r`n" + $errorOutput }
     foreach ($line in @($output -split "`r?`n" | Where-Object { $_ -match '^(PLUGIN PREFLIGHT|PLUGIN BOOT|PASS|FAIL)' })) {
         Write-Host $line

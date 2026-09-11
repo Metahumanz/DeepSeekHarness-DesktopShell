@@ -1,12 +1,13 @@
 {
   "schemaVersion": 3,
-  "defaultDshVersion": "0.1.1-rc.2",
+  "defaultDshVersion": "0.1.5-rc.1",
   "minimumCompatibleDshVersion": "0.1.0-rc.7",
   "testedDshVersions": [
     "0.1.0-rc.7",
     "0.1.0-rc.8",
     "0.1.1-rc.1",
-    "0.1.1-rc.2"
+    "0.1.1-rc.2",
+    "0.1.5-rc.1"
   ],
   "npxDshChannelOptions": [
     {

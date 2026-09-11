@@ -132,7 +132,7 @@ function Test-LikelyDshCommandLine([string]$cmd, [int]$port = -1) {
     $hasProfile = $lower -match '--profile\s+[a-z0-9_-]+'
     if (-not ($hasWebSub -or $hasProfile)) { return $false }
     if ($port -gt 0) {
-        if ($lower -notmatch ('--port\s+' + [regex]::Escape([string]$port))) { return $false }
+        if ($lower -notmatch ('--port\s+' + [regex]::Escape([string]$port) + '(?=\s|$)')) { return $false }
     }
     return $true
 }

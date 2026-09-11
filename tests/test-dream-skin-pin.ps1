@@ -2,6 +2,7 @@
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $manage = Join-Path $repo 'scripts\Manage-Dsh.ps1'
 $text = [System.IO.File]::ReadAllText($manage)
+$acceptance = [System.IO.File]::ReadAllText((Join-Path $repo 'docs\DREAM_SKIN_ACCEPTANCE.md'))
 
 $fail = 0
 function Assert-True([string]$label, [bool]$condition) {
@@ -9,18 +10,27 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
-# ---- 1. Dream Skin 已切换到本机真实 Profile 使用的 npm 0.4.10，按能力/最低版本策略判断 ----
+# ---- 1. Dream Skin uses the rc2-preflighted 8.30.1 release. ----
 Assert-True "catalog no longer pins dsh-dream-skin@0.3.0" ($text -notmatch 'dsh-dream-skin@0\.3\.0')
-Assert-True "dream-skin uses npm ^0.4.10" ($text -match 'dsh-dream-skin@\^0\.4\.10')
+Assert-True "dream-skin uses npm 8.30.1" ($text -match 'dsh-dream-skin@8\.30\.1')
 Assert-True "old pinned dream-skin commit removed" ($text -notmatch '28497f5294ba20f44acf8eecc62891297d38fc24')
 Assert-True "no 40-char dream-skin commit pinned" ($text -notmatch 'dsh-dream-skin/archive/[0-9a-f]{40}\.tar\.gz')
+Assert-True 'Dream Skin prompt derives its target from the catalog spec' (
+    $text -match '\$dreamSpec = \[string\]\$dreamSkin\.Spec' -and
+    $text -match '替换为 \$dreamSpec')
+Assert-True 'diagnostics no longer advertise stale npm ^0.4.5' ($text -notmatch 'npm \^0\.4\.5')
+Assert-True 'current manual acceptance matches catalog choice and spec' (
+    $acceptance -match '\*\*22\. Dream Skin 主题\*\*' -and
+    $acceptance -match 'dsh-dream-skin@8\.30\.1' -and
+    $acceptance -notmatch '选 \*\*14\. Dream Skin 主题\*\*')
 
-# ---- 2. 旧实现 marker 检测函数存在且检查两个能力 marker ----
+# ---- 2. The capability detector accepts both verified sticky-restore markers. ----
 Assert-True "Test-DreamSkinPersistenceFix defined" ($text -match 'function Test-DreamSkinPersistenceFix')
-Assert-True "checks sticky skin restore marker" ($text -match 'dsh-dream-skin: sticky skin restore')
+Assert-True "checks legacy sticky skin restore marker" ($text -match 'dsh-dream-skin: sticky skin restore')
+Assert-True "checks current sticky skin restore marker" ($text -match 'dsh-dream-skin: sticky skin \+ built-in restore')
 Assert-True "checks /dream-skin/api marker" ($text -match '(/dream-skin/api)')
 Assert-True "diagnostics report fixed state" ($text -match 'Dream Skin：持久化修复已安装')
-Assert-True "diagnostics warn old implementation" ($text -match '检测到旧 0\.3\.0 实现')
+Assert-True "diagnostics warn legacy implementation" ($text -match '检测到缺少持久化能力的旧实现')
 
 # ---- 3. 行为矩阵：AST 提取产品函数本体（注入 $dshHome），用假 client.js 验证 ----
 $tokens = @(); $parseErrors = @()
@@ -42,6 +52,10 @@ try {
     [System.IO.File]::WriteAllText($client, "// dsh-dream-skin: sticky skin restore`r`n// /dream-skin/api`r`n", [System.Text.UTF8Encoding]::new($false))
     $got = & $fixFn 'web' $base
     Assert-True "both markers -> fixed (got=$got)" ($got -eq $true)
+
+    [System.IO.File]::WriteAllText($client, "// dsh-dream-skin: sticky skin + built-in restore`r`n// /dream-skin/api`r`n", [System.Text.UTF8Encoding]::new($false))
+    $got = & $fixFn 'web' $base
+    Assert-True "current markers -> fixed (got=$got)" ($got -eq $true)
 
     [System.IO.File]::WriteAllText($client, "// dsh-dream-skin: sticky skin restore`r`n", [System.Text.UTF8Encoding]::new($false))
     $got = & $fixFn 'web' $base

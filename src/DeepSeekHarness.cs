@@ -436,6 +436,9 @@ namespace DeepSeekHarnessDesktop
         private const string SentinelRightId = "id: \"dsh-sentinel\"";
         private const string CostMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper";
         private const string BackfillMarker = "DSH Desktop compat: ignore synthetic ModLens wrapper in backfill replay";
+        // JavaScriptSerializer 的默认 MaxJsonLength 只有约 2 MiB。账本是用户数据，
+        // 允许合理增长，但仍保留明确上限，避免损坏/异常大的文件耗尽宿主内存。
+        private const int MaxLedgerJsonChars = 16 * 1024 * 1024;
 
         /// <summary>
         /// 兼容修复入口。apply=false 时只做只读检测并返回待修复项数量（不写任何文件），
@@ -469,7 +472,7 @@ namespace DeepSeekHarnessDesktop
                 if (RepairSentinel(dshHome, profile, log, apply)) pending++;
                 if (RepairCostMeterModLens(dshHome, profile, log, apply)) pending++;
                 if (RepairCostMeterBackfill(dshHome, profile, log, apply)) pending++;
-                if (RepairCostMeterLedger(dshHome, log, apply)) pending++;
+                if (RepairCostMeterLedger(dshHome, profile, log, apply)) pending++;
                 log.AppendLine(apply
                     ? ("Applied repairs: " + pending)
                     : ("Pending repairs (skipped): " + pending));
@@ -638,6 +641,15 @@ namespace DeepSeekHarnessDesktop
                     return false;
                 }
 
+                // Newer upstream releases remap wrapper samples to the semantic
+                // provider and deduplicate them in a time window. Applying the
+                // legacy skip patch would drop valid reseller-only usage.
+                if (HasNativeCostMeterWrapperDedup(source))
+                {
+                    log.AppendLine("Cost meter backfill: upstream wrapper-aware de-dup active; no action.");
+                    return false;
+                }
+
                 string anchor = "    const atMs = Number(event.time)";
                 int at = source.IndexOf(anchor, StringComparison.Ordinal);
                 if (at < 0)
@@ -675,8 +687,14 @@ namespace DeepSeekHarnessDesktop
         /// 并从日/会话合计中扣减对应 token 与金额；修改前自动备份。
         /// 与 scripts/Repair-CostMeterLedger.ps1 逻辑一致，桌面壳每次启动时执行。
         /// </summary>
-        private static bool RepairCostMeterLedger(string dshHome, StringBuilder log, bool apply)
+        private static bool RepairCostMeterLedger(string dshHome, string profileName, StringBuilder log, bool apply)
         {
+            if (!HasLegacyCostMeterModLensLayout(dshHome, profileName))
+            {
+                log.AppendLine("Cost meter ledger: affected legacy source not proven; left untouched.");
+                return false;
+            }
+
             string path = Path.Combine(dshHome, "storages", "cost-meter", "ledger.json");
             if (!File.Exists(path))
             {
@@ -686,16 +704,32 @@ namespace DeepSeekHarnessDesktop
 
             try
             {
+                FileInfo ledgerInfo = new FileInfo(path);
+                // UTF-8 每个 .NET 字符最多占 3 字节，另预留 BOM；在读入前就拒绝必然超限的文件。
+                if (ledgerInfo.Length > (long)MaxLedgerJsonChars * 3L + 3L)
+                {
+                    log.AppendLine("Cost meter ledger: file exceeds safety byte limit; left untouched.");
+                    return false;
+                }
+
+                string ledgerText = File.ReadAllText(path, Encoding.UTF8);
+                if (ledgerText.Length > MaxLedgerJsonChars)
+                {
+                    log.AppendLine("Cost meter ledger: " + ledgerText.Length +
+                        " chars exceeds safety limit " + MaxLedgerJsonChars + "; left untouched.");
+                    return false;
+                }
+
                 JavaScriptSerializer serializer = new JavaScriptSerializer();
+                serializer.MaxJsonLength = MaxLedgerJsonChars;
                 Dictionary<string, object> ledger;
                 try
                 {
-                    ledger = serializer.Deserialize<Dictionary<string, object>>(
-                        File.ReadAllText(path, Encoding.UTF8));
+                    ledger = serializer.Deserialize<Dictionary<string, object>>(ledgerText);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    log.AppendLine("Cost meter ledger: unparseable; left untouched.");
+                    log.AppendLine("Cost meter ledger: unparseable (" + ex.Message + "); left untouched.");
                     return false;
                 }
 
@@ -774,6 +808,43 @@ namespace DeepSeekHarnessDesktop
                 log.AppendLine("Cost meter ledger: repair failed: " + ex.Message);
             }
             return false;
+        }
+
+        private static bool HasLegacyCostMeterModLensLayout(string dshHome, string profileName)
+        {
+            string path = Path.Combine(dshHome, "profiles", profileName, "node_modules",
+                "dsh-cost-meter", "lib", "index.js");
+            if (!File.Exists(path)) return false;
+
+            try
+            {
+                // Do not touch a ledger unless a normal-sized, affected legacy
+                // source layout is still provable beside it.
+                FileInfo info = new FileInfo(path);
+                if (info.Length > 4L * 1024L * 1024L) return false;
+                string source = File.ReadAllText(path, Encoding.UTF8);
+                if (HasNativeCostMeterWrapperDedup(source)) return false;
+
+                int handler = source.IndexOf("ctx.on('llm/stream'", StringComparison.Ordinal);
+                if (handler < 0)
+                    handler = source.IndexOf("ctx.on(\"llm/stream\"", StringComparison.Ordinal);
+                if (handler < 0) return false;
+
+                int account = source.IndexOf("ledger.account(", handler, StringComparison.Ordinal);
+                int condition = source.IndexOf("if (usage !== null) {", handler, StringComparison.Ordinal);
+                return account >= 0 && condition >= handler && condition < account;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasNativeCostMeterWrapperDedup(string source)
+        {
+            if (String.IsNullOrEmpty(source)) return false;
+            return source.IndexOf("isWrapperProviderId(sampleProvider)", StringComparison.Ordinal) >= 0 &&
+                source.IndexOf("wrapperUpstreamProvider(sampleProvider)", StringComparison.Ordinal) >= 0;
         }
 
         private static int RemoveSyntheticLedgerBuckets(Dictionary<string, object> parent,
@@ -1344,9 +1415,9 @@ namespace DeepSeekHarnessDesktop
         private static void EnsureCompatibilityLoaded()
         {
             if (defaultDshVersionCache != null) return;
-            defaultDshVersionCache = "0.1.1-rc.2";
+            defaultDshVersionCache = "0.1.5-rc.1";
             minimumCompatibleDshVersionCache = "0.1.0-rc.7";
-            testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8", "0.1.1-rc.1", "0.1.1-rc.2" };
+            testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8", "0.1.1-rc.1", "0.1.1-rc.2", "0.1.5-rc.1" };
             try
             {
                 string compatPath = Path.Combine(
@@ -1906,10 +1977,11 @@ namespace DeepSeekHarnessDesktop
 
             cancellationToken.ThrowIfCancellationRequested();
             ProcessStartInfo psi = BuildStartInfo(command, arguments, workingDirectory);
-            string oldPath = psi.EnvironmentVariables["PATH"] ?? Environment.GetEnvironmentVariable("PATH") ?? "";
-            string commandDir = Path.GetDirectoryName(command) ?? "";
-            if (!String.IsNullOrWhiteSpace(commandDir)) psi.EnvironmentVariables["PATH"] = commandDir + ";" + oldPath;
-            psi.EnvironmentVariables["DSH_DESKTOP_DSH_VERSION"] = effectiveVersion;
+            // Do not materialize or rewrite EnvironmentVariables here. On some
+            // Windows hosts the inherited block exposes both Path and PATH; .NET
+            // Framework then throws while constructing its case-sensitive map.
+            // The resolved command is already launched by full path, so inheriting
+            // the native environment unchanged is both sufficient and safer.
             // 注意：不为常驻 DSH 进程设置 GIT_CONFIG_* rewrite——
             // 那会污染整个 DSH 进程树（Agent/终端/子进程执行 git@github.com:... 时被
             // 强制改成 https，破坏本应正常的 SSH 私有仓库认证）。
@@ -2375,7 +2447,7 @@ namespace DeepSeekHarnessDesktop
             // 调用方知道端口时：必须匹配当前端口，防止误判其它 DSH 实例
             if (port > 0)
             {
-                if (!Regex.IsMatch(lower, @"--port\s+" + port.ToString())) return false;
+                if (!Regex.IsMatch(lower, @"--port\s+" + port.ToString() + @"(?=\s|$)")) return false;
             }
             return true;
         }
@@ -2941,7 +3013,7 @@ namespace DeepSeekHarnessDesktop
 
         /// <summary>
         /// 探测当前 runner 的 DSH CLI 是否支持 --no-open。
-        /// rc.8、rc.1 与 rc.2 是已真实确认支持 --no-open 的版本，直接命中已知能力并缓存，不再启动 --help 探测。
+        /// rc.8、0.1.1 的 rc.1/rc.2 与 0.1.5-rc.1 是已真实确认支持 --no-open 的版本，直接命中已知能力并缓存，不再启动 --help 探测。
         /// rc.7 与未来未知版本继续按实际 --help 输出探测；探测失败保守返回 false（不加参数）。
         /// 同一 key 在本次 DesktopShell 生命周期内只探测一次。
         /// </summary>
@@ -2953,11 +3025,12 @@ namespace DeepSeekHarnessDesktop
             if (supportsNoOpenCache.HasValue && cliCapabilityKey == key)
                 return supportsNoOpenCache.Value;
 
-            // 已知能力短路：rc.8、rc.1 与 rc.2 已确认支持 --no-open，不需要为探测再启动一次 npx/dsh。
+            // 已知能力短路：rc.8、0.1.1 的 rc.1/rc.2 与 0.1.5-rc.1 已确认支持 --no-open，不需要为探测再启动一次 npx/dsh。
             bool knownNoOpen =
                 String.Equals(version, "0.1.0-rc.8", StringComparison.OrdinalIgnoreCase) ||
                 String.Equals(version, "0.1.1-rc.1", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(version, "0.1.1-rc.2", StringComparison.OrdinalIgnoreCase);
+                String.Equals(version, "0.1.1-rc.2", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(version, "0.1.5-rc.1", StringComparison.OrdinalIgnoreCase);
             if (knownNoOpen)
             {
                 cliCapabilityKey = key;
