@@ -5,7 +5,7 @@
 
 ## 发布与 DSH 兼容基线
 
-- DesktopShell 版本：`1.0.9`（唯一来源：根目录 `VERSION`）。
+- DesktopShell 版本：`1.0.10`（唯一来源：根目录 `VERSION`）。
 - 默认 DSH：`0.1.5-rc.1`；最低兼容 DSH：`0.1.0-rc.7`。
 - 已列入测试基线：`0.1.0-rc.7`、`0.1.0-rc.8`、`0.1.1-rc.1`、`0.1.1-rc.2`、`0.1.5-rc.1`。
 - 版本和通道元数据的唯一来源是 `COMPATIBILITY.json`。`latest`/`alpha` 仅在用户主动选择时解析，

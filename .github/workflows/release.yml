@@ -1,7 +1,7 @@
 name: Release
 
 # 发布 GitHub Release：
-# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.9）
+# - 手动触发：Actions → Release → Run workflow，输入版本号（如 1.0.10）
 #   （tag 已存在时校验其必须指向当前 HEAD，否则拒绝发布；Release 已存在直接失败）
 # - 或推送 v* tag 自动触发（版本号取 tag，去掉 v 前缀）
 # - 版本单一来源门禁：无论哪种触发方式，版本号必须等于仓库根目录 VERSION 文件，
@@ -13,7 +13,7 @@ name: Release
 #
 # 冻结策略（2026-08-19 起）：已发布的 tag 不再覆盖发布——本工作流不再删除已有 Release；
 # 若对某个已发布 tag 重新构建会因 Release 已存在而失败，这是有意行为。
-# 后续修复请发新版本（如 v1.0.9）。
+# 后续修复请发新版本（如 v1.0.10）。
 #
 # 结构：build job 只读验证+构建（无写权限）；publish job 持有 contents:write，
 # 负责打 tag 与创建 Release。所有 Actions 钉 commit SHA。
@@ -22,9 +22,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. 1.0.9)'
+        description: 'Version to release (e.g. 1.0.10)'
         required: true
-        default: '1.0.9'
+        default: '1.0.10'
   push:
     tags:
       - 'v*'
@@ -169,11 +169,11 @@ jobs:
             同时匹配才继续）。
             本发布包面向 Windows 10/11 **x64**（WebView2Loader 为 win-x64 变体）。
 
-            **v1.0.9 发布摘要**：DSH 0.1.5-rc.1 无插件基线与发布门禁更新
-            - 新设置默认使用官方 `latest` 的精确版本 DSH 0.1.5-rc.1，并保留既有设置与 Profile，不自动迁移第三方插件
-            - 新增隔离无插件验收：仅接受空 Profile，检查核心 bundle、`--no-open`、ready URL、HTTP 200 与稳定运行
-            - 0.1.5-rc.1 加入已测版本与 `--no-open` 能力表；历史 rc.2 插件审计不被宣称为 0.1.5 兼容
-            - PowerShell 7 完整回归门禁增至 41 项；发布包继续固定 Windows x64 和 WebView2 SDK 1.0.4078.44
+            **v1.0.10 发布摘要**：Windows PowerShell 5.1 发布门禁修复
+            - 无插件验收脚本改用 ASCII 文档锚点，避免 Windows PowerShell 5.1 将 UTF-8 无 BOM 的中文字节误识别为字符串引号
+            - 保留 DSH 0.1.5-rc.1 无插件基线：默认版本、核心 bundle、`--no-open`、ready URL、HTTP 200 和稳定运行验证均不变
+            - 历史 rc.2 插件审计不被宣称为 DSH 0.1.5 兼容；第三方插件仍应在隔离 Profile 中单独预检
+            - PowerShell 7 全量 41 项与 Windows PowerShell 5.1 宿主兼容门禁均在发布前执行；发布包继续固定 Windows x64 和 WebView2 SDK 1.0.4078.44
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true

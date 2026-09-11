@@ -40,7 +40,7 @@ Assert-True 'rc2 attachment/image regression is explicit and DesktopShell image 
 Assert-True 'isolated preflight uses rc2 no-open and separate validation modes' (
     $preflight.Contains("'0.1.1-rc.2'") -and $preflight.Contains("'status-rotator'") -and
     $preflight.Contains("'thought-buddy'"))
-Assert-True 'VERSION is 1.0.9' ($version -eq '1.0.9')
+Assert-True 'VERSION is 1.0.10' ($version -eq '1.0.10')
 
 if ($fail -eq 0) { Write-Host 'DSH RC2 COMPAT TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })
