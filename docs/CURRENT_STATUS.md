@@ -1,19 +1,21 @@
 # 当前状态与维护基线
 
-> 更新日期：2026-09-04。本页描述此仓库工作树的维护基线；第三方插件和 npm dist-tag 会随上游变化，
+> 更新日期：2026-09-11。本页描述此仓库工作树的维护基线；第三方插件和 npm dist-tag 会随上游变化，
 > 因此不把本页视为对未来上游版本的兼容承诺。
 
 ## 发布与 DSH 兼容基线
 
-- DesktopShell 版本：`1.0.8`（唯一来源：根目录 `VERSION`）。
-- 默认 DSH：`0.1.1-rc.2`；最低兼容 DSH：`0.1.0-rc.7`。
-- 已列入测试基线：`0.1.0-rc.7`、`0.1.0-rc.8`、`0.1.1-rc.1`、`0.1.1-rc.2`。
+- DesktopShell 版本：`1.0.9`（唯一来源：根目录 `VERSION`）。
+- 默认 DSH：`0.1.5-rc.1`；最低兼容 DSH：`0.1.0-rc.7`。
+- 已列入测试基线：`0.1.0-rc.7`、`0.1.0-rc.8`、`0.1.1-rc.1`、`0.1.1-rc.2`、`0.1.5-rc.1`。
 - 版本和通道元数据的唯一来源是 `COMPATIBILITY.json`。`latest`/`alpha` 仅在用户主动选择时解析，
   不会静默改写现有 Profile。
+- `0.1.5-rc.1` 仅通过全新、无插件 `web` Profile 的 CLI/Web 基线。它确认核心 bundle、`--no-open`、
+  ready URL、HTTP 200 和稳定运行；不包含第三方插件、既有 Profile 迁移或主题/会话回归。
 
 ## 验证边界
 
-- PowerShell 7 运行全部 **40** 项源码回归；Windows PowerShell 5.1 解析全部脚本，并运行 7 项
+- PowerShell 7 运行全部 **41** 项源码回归；Windows PowerShell 5.1 解析全部脚本，并运行 7 项
   宿主兼容回归。
 - 自动化覆盖源码和可隔离行为；托盘、WebView2、连续重启和 Dream Skin 的视觉恢复仍须在真实 Windows
   桌面按 [Dream Skin 人工验收表](DREAM_SKIN_ACCEPTANCE.md) 记录。
@@ -25,6 +27,9 @@
 
 管理器当前提供 26 项可移植推荐插件。`Installed` 表示目录中已审计的目标版本；它不会自动改动真实
 Profile，也不等同于用户机器上的安装状态。
+
+该目录的逐插件结论仍是历史 rc.2 审计，不应视为 `0.1.5-rc.1` 兼容声明。需要在 0.1.5 上使用插件时，
+应先新建隔离 Profile 并运行对应插件的 BootReady preflight。
 
 - 精确 npm 版本和带版本的 npm spec 由目录明确声明。
 - 目录优先采用已隔离验证的精确 npm 版本或 GitHub release tag，避免未来发布静默改变结果。
@@ -38,5 +43,6 @@ Profile，也不等同于用户机器上的安装状态。
 - [AUDIT.md](AUDIT.md)：v1.0.4 的历史审计快照，保留旧版本风险和修复记录。
 - [DREAM_SKIN_ACCEPTANCE.md](DREAM_SKIN_ACCEPTANCE.md)：当前 Dream Skin 的人工 Windows 验收清单。
 - [PLUGIN_RC2_UPDATE_AUDIT.md](PLUGIN_RC2_UPDATE_AUDIT.md)：当前 rc.2 插件升级筛选、隔离验证和排除项。
+- [DSH_015_NO_PLUGIN_ACCEPTANCE.md](DSH_015_NO_PLUGIN_ACCEPTANCE.md)：`0.1.5-rc.1` 的无插件 CLI/Web 验收边界与复跑命令。
 - [DSH_ALPHA_PREVIEW_COMPATIBILITY.md](DSH_ALPHA_PREVIEW_COMPATIBILITY.md)：alpha 通道的历史/预览快照，
   不是生产兼容声明。

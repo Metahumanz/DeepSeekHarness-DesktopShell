@@ -15,7 +15,7 @@ function Assert-True([string]$label, [bool]$condition) {
 }
 
 Assert-True 'testedDshVersions contains rc2' (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.2' }).Count -gt 0)
-Assert-True 'default switches to rc2 after live acceptance' ($compat.defaultDshVersion -eq '0.1.1-rc.2')
+Assert-True 'rc2 remains a historical tested baseline' (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.2' }).Count -gt 0)
 Assert-True 'minimum remains rc.7' ($compat.minimumCompatibleDshVersion -eq '0.1.0-rc.7')
 Assert-True 'C# fallback list contains rc2' ($cs.Contains('"0.1.1-rc.2"'))
 Assert-True 'C# known no-open table contains rc2' ($cs.Contains('String.Equals(version, "0.1.1-rc.2"'))
@@ -40,7 +40,7 @@ Assert-True 'rc2 attachment/image regression is explicit and DesktopShell image 
 Assert-True 'isolated preflight uses rc2 no-open and separate validation modes' (
     $preflight.Contains("'0.1.1-rc.2'") -and $preflight.Contains("'status-rotator'") -and
     $preflight.Contains("'thought-buddy'"))
-Assert-True 'VERSION is 1.0.8' ($version -eq '1.0.8')
+Assert-True 'VERSION is 1.0.9' ($version -eq '1.0.9')
 
 if ($fail -eq 0) { Write-Host 'DSH RC2 COMPAT TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

@@ -19,9 +19,9 @@ DesktopShell不是DSH的替代实现：
 - 启动失败诊断：分阶段宿主日志（`logs\desktop-shell.log`）+ 可复制错误详情
 - 安全的端口/进程识别和卸载边界
 
-> DesktopShell v1.0.8（DSH 通道选择与 alpha Preview 运行时适配；发布状态以 GitHub Release 为准） · DSH 0.1.1-rc.2（默认；最低兼容版本为 rc.7；rc.7 / rc.8 / rc1 / rc2 已列入测试基线）；未来 DSH 按 CLI 能力 best-effort 兼容
+> DesktopShell v1.0.9（DSH 0.1.5-rc.1 无插件基线；发布状态以 GitHub Release 为准） · DSH 0.1.5-rc.1（默认；最低兼容版本为 rc.7；rc.7 / rc.8 / 0.1.1 rc.1 / rc.2 / 0.1.5 rc.1 已列入测试基线）；未来 DSH 按 CLI 能力 best-effort 兼容
 
-> 生产路径继续固定 rc.2。`alpha` 仅使用新建隔离 Profile：BrowserAuth 启动握手已适配，21 项 Preview 插件基线可启动；Better Sidebar、Auto Collapse、Agent Teams、Open In 及其依赖仍不属于 alpha 兼容范围。
+> `0.1.5-rc.1` 只完成**全新无插件 Profile**基线：不迁移既有插件、主题或会话，也不把历史 rc.2 插件目录宣称为 0.1.5 兼容。现有设置不会被版本默认值覆盖；需要保留旧插件环境时，请继续使用其原有 DSH 版本或先在隔离 Profile 验证。
 
 ## 安装
 
@@ -41,8 +41,8 @@ Node.js不需要提前准备。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.8/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.8
+irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1.0.9/scripts/Install-FromGitHub.ps1 -OutFile "$env:TEMP\install-dsh.ps1"
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.9
 ```
 
 > 必须显式传 `-Owner` / `-Repo` / `-Tag`：脚本被单独下载到临时目录时，
@@ -54,7 +54,7 @@ irm https://raw.githubusercontent.com/metahumanz/DeepSeekHarness-DesktopShell/v1
 #### 无人值守安装
 
 ```powershell
-& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.8 `
+& "$env:TEMP\install-dsh.ps1" -Owner metahumanz -Repo DeepSeekHarness-DesktopShell -Tag v1.0.9 `
     -NoWizard -NoShortcuts -NoLaunch
 ```
 
@@ -137,6 +137,14 @@ Status Rotator 是思考/运行状态增强的默认建议，只改展示层；T
 **新 Profile 的默认选项是 0（纯 DSH，不安装社区插件）**——按一路 Enter 不会执行第三方代码；
 需要插件时输入 1（核心推荐）或更高选项。
 
+`0.1.5-rc.1` 的无插件本地验收可运行：
+
+```powershell
+.\scripts\Test-Dsh015NoPluginLocal.ps1
+```
+
+它强制使用临时 `DSH_HOME`，并在启动后确认 Profile 只有 `dsh-base` / `dsh-web-app` 两个核心 bundle、没有用户依赖或补丁；详细范围见 [DSH 0.1.5 无插件验收](docs/DSH_015_NO_PLUGIN_ACCEPTANCE.md)。
+
 ## 第一次启动
 
 - DesktopShell 启动后会等待 DSH Web 就绪，窗口直接显示官方 DeepSeek Harness 界面
@@ -206,21 +214,21 @@ DSH_HOME 等于/包含用户主目录、系统目录、程序目录等危险路�
 ```powershell
 .\scripts\Install-Desktop.ps1    # 源码安装：csc 编译 + 向导
 .\scripts\Build-Release.ps1      # 构建发布 zip（WebView2 固定 1.0.4078.44）
-.\scripts\Build-Release.ps1 -Version 1.0.8
+.\scripts\Build-Release.ps1 -Version 1.0.9
 ```
 
 需要 Windows 自带 .NET Framework `csc.exe` 与网络（下载固定版本 WebView2 SDK）。
 **发布包仅支持 x64**：`Build-Release` 的 `-Arch` 固定为 `x64`（不再接受 arm64/x86）。
-回归测试在 `tests\`：PowerShell 7 运行全部 40 项；Windows PowerShell 5.1 解析全部脚本，
+回归测试在 `tests\`：PowerShell 7 运行全部 41 项；Windows PowerShell 5.1 解析全部脚本，
 并运行 7 项真实覆盖宿主差异的兼容回归。CI 每次 push/PR 自动运行。
 插件完整 BootReady 验收是独立 release preflight，不在日常插件安装流程中启动用户 Profile。
 
 ## Release 流程
 
-GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.8`，必须与根目录
+GitHub Actions → **Release → Run workflow**，输入版本号（如 `1.0.9`，必须与根目录
 `VERSION` 文件一致，否则门禁直接失败）：
 
-1. 校验输入版本 == 根目录 `VERSION`，然后运行 PowerShell 7 全量回归（40 项）及
+1. 校验输入版本 == 根目录 `VERSION`，然后运行 PowerShell 7 全量回归（41 项）及
    Windows PowerShell 5.1 兼容套件（7 项，另解析全部脚本）
 2. `Build-Release -Version`（仅 x64）；该步骤按完整期望清单解包自校验 ZIP，并生成 SHA256
 3. 发布 Job 下载工件后仅复核 ZIP 与 `SHA256SUMS.txt` 的哈希一致性
