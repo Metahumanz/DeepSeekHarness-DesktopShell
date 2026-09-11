@@ -43,12 +43,12 @@ $legacyRuntimeDir = Join-Path $dshHome 'runtime'
 # - minimumCompatibleDshVersion：明确过旧的版本下限，低于它不应继续尝试。
 # - testedDshVersions：实际验证过的版本，只用于日志/提示，不作为未来版本硬白名单。
 # 兼容旧 schema v1：只有 verifiedDshVersion 时，默认/最低/测试都回落到该版本。
-$DefaultDshVersion = '0.1.1-rc.2'
+$DefaultDshVersion = '0.1.5-rc.1'
 $MinimumCompatibleDshVersion = '0.1.0-rc.7'
-$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')
+$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2', '0.1.5-rc.1')
 $NpxDshChannelOptions = @()
 # 已实际确认支持 --no-open 的版本；未知版本仍由 DesktopShell 在启动时探测 --help。
-$KnownNoOpenDshVersions = @('0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')
+$KnownNoOpenDshVersions = @('0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2', '0.1.5-rc.1')
 $compatPath = Join-Path $desktopDir 'COMPATIBILITY.json'
 if (Test-Path -LiteralPath $compatPath -PathType Leaf) {
     try {

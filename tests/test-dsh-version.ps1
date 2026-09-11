@@ -19,7 +19,7 @@ if ($funcs.Count -ne $names.Count) {
 }
 $text = (@($funcs) | ForEach-Object { $_.Extent.Text }) -join "`n"
 $MinimumCompatibleDshVersion = '0.1.0-rc.7'   # 函数引用的脚本级变量，测试侧提供
-$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2')
+$TestedDshVersions = @('0.1.0-rc.7', '0.1.0-rc.8', '0.1.1-rc.1', '0.1.1-rc.2', '0.1.5-rc.1')
 . ([scriptblock]::Create($text))          # 点源：把函数定义进当前作用域
 
 $fail = 0
@@ -50,6 +50,7 @@ Assert-Equal "support rc.7"               (Test-DshVersionSupported '0.1.0-rc.7'
 Assert-Equal "support rc.8"               (Test-DshVersionSupported '0.1.0-rc.8') $true
 Assert-Equal "support rc1"                 (Test-DshVersionSupported '0.1.1-rc.1') $true
 Assert-Equal "support rc2"                 (Test-DshVersionSupported '0.1.1-rc.2') $true
+Assert-Equal "support 0.1.5 rc1"           (Test-DshVersionSupported '0.1.5-rc.1') $true
 Assert-Equal "support future rc.9"        (Test-DshVersionSupported '0.1.0-rc.9') $true
 Assert-Equal "support 0.1.0 release"      (Test-DshVersionSupported '0.1.0') $true
 Assert-Equal "support 0.2.0"              (Test-DshVersionSupported '0.2.0') $true
@@ -62,6 +63,7 @@ Assert-Equal "tested rc.7"                (Test-DshVersionTested '0.1.0-rc.7') $
 Assert-Equal "tested rc.8"                (Test-DshVersionTested '0.1.0-rc.8') $true
 Assert-Equal "tested rc1"                 (Test-DshVersionTested '0.1.1-rc.1') $true
 Assert-Equal "tested rc2"                 (Test-DshVersionTested '0.1.1-rc.2') $true
+Assert-Equal "tested 0.1.5 rc1"           (Test-DshVersionTested '0.1.5-rc.1') $true
 Assert-Equal "tested rc.9"                (Test-DshVersionTested '0.1.0-rc.9') $false
 Assert-Equal "tested 1.0.0"               (Test-DshVersionTested '1.0.0') $false
 

@@ -8,6 +8,7 @@ param(
     [string]$AppExe = '',
     [switch]$LaunchDesktopShell,
     [switch]$RunPlugins,
+    [switch]$RequireNoUserPlugins,
     [switch]$KeepTemp,
     [string]$WebProfileDshHome = '',
     [int]$TimeoutSeconds = 60,
@@ -236,6 +237,55 @@ function Test-Http200([string]$url) {
     }
 }
 
+function Assert-NoUserPlugins([string]$dshHome) {
+    $profileRoot = Join-Path $dshHome 'profiles\web'
+    $manifestPath = Join-Path $profileRoot 'package.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "No-plugin check failed: profile manifest was not created: $manifestPath"
+    }
+
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "No-plugin check failed: profile manifest is not valid JSON: $manifestPath"
+    }
+
+    $dependencies = @()
+    if ($null -ne $manifest.dependencies) {
+        $dependencies = @($manifest.dependencies.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    }
+    if ($dependencies.Count -ne 0) {
+        throw ('No-plugin check failed: unexpected Profile dependencies: ' + ($dependencies -join ', '))
+    }
+
+    if ($null -eq $manifest.dsh -or $null -eq $manifest.dsh.profile) {
+        throw 'No-plugin check failed: DSH profile bundle metadata is missing.'
+    }
+    $bundles = @($manifest.dsh.profile.bundles | ForEach-Object { [string]$_ })
+    $expectedBundles = @('@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app')
+    $unexpectedBundles = @($bundles | Where-Object { $expectedBundles -notcontains $_ })
+    $missingBundles = @($expectedBundles | Where-Object { $bundles -notcontains $_ })
+    if ($bundles.Count -ne $expectedBundles.Count -or $unexpectedBundles.Count -ne 0 -or $missingBundles.Count -ne 0) {
+        throw ('No-plugin check failed: expected only core bundles [' +
+            ($expectedBundles -join ', ') + '], got [' + ($bundles -join ', ') + '].')
+    }
+
+    $patchPath = Join-Path $profileRoot 'cordis.patch.yml'
+    if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) {
+        throw "No-plugin check failed: profile patch file was not created: $patchPath"
+    }
+    $effectivePatchLines = @(
+        Get-Content -LiteralPath $patchPath |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -and -not $_.StartsWith('#') })
+    if ($effectivePatchLines.Count -ne 1 -or $effectivePatchLines[0] -ne '[]') {
+        throw "No-plugin check failed: profile patch layer is not empty: $patchPath"
+    }
+
+    Ok 'fresh Profile contains only DSH core bundles and no user plugins'
+}
+
 function Invoke-CliSmoke {
     $cliHome = Join-Path $sessionRoot 'cli-dsh-home'
     New-Item -ItemType Directory -Force -Path $cliHome | Out-Null
@@ -297,6 +347,7 @@ function Invoke-CliSmoke {
             }
             Start-Sleep -Seconds 1
         }
+        if ($RequireNoUserPlugins) { Assert-NoUserPlugins $webHome }
         Ok ("CLI --no-open ready URL + HTTP 200 + stable {0}s on port {1}" -f $StableSeconds, $probePort)
     }
     finally {
@@ -332,7 +383,7 @@ function Start-IsolatedDesktopShell {
     if (-not $AppExe -and
         [IO.Path]::GetFullPath($sourceExe) -ieq [IO.Path]::GetFullPath($installedExe) -and
         -not (Test-Path -LiteralPath $patchedCandidate -PathType Leaf)) {
-        throw 'No v1.0.8 candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient for this DesktopShell acceptance run.'
+        throw 'No v1.0.9 candidate EXE was found; pass -AppExe explicitly. The installed older EXE is not sufficient for this DesktopShell acceptance run.'
     }
     $sourceDir = Split-Path -Parent $sourceExe
     $guiDir = Join-Path $sessionRoot 'desktop-shell'

@@ -1415,9 +1415,9 @@ namespace DeepSeekHarnessDesktop
         private static void EnsureCompatibilityLoaded()
         {
             if (defaultDshVersionCache != null) return;
-            defaultDshVersionCache = "0.1.1-rc.2";
+            defaultDshVersionCache = "0.1.5-rc.1";
             minimumCompatibleDshVersionCache = "0.1.0-rc.7";
-            testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8", "0.1.1-rc.1", "0.1.1-rc.2" };
+            testedDshVersionsCache = new List<string> { "0.1.0-rc.7", "0.1.0-rc.8", "0.1.1-rc.1", "0.1.1-rc.2", "0.1.5-rc.1" };
             try
             {
                 string compatPath = Path.Combine(
@@ -3013,7 +3013,7 @@ namespace DeepSeekHarnessDesktop
 
         /// <summary>
         /// 探测当前 runner 的 DSH CLI 是否支持 --no-open。
-        /// rc.8、rc.1 与 rc.2 是已真实确认支持 --no-open 的版本，直接命中已知能力并缓存，不再启动 --help 探测。
+        /// rc.8、0.1.1 的 rc.1/rc.2 与 0.1.5-rc.1 是已真实确认支持 --no-open 的版本，直接命中已知能力并缓存，不再启动 --help 探测。
         /// rc.7 与未来未知版本继续按实际 --help 输出探测；探测失败保守返回 false（不加参数）。
         /// 同一 key 在本次 DesktopShell 生命周期内只探测一次。
         /// </summary>
@@ -3025,11 +3025,12 @@ namespace DeepSeekHarnessDesktop
             if (supportsNoOpenCache.HasValue && cliCapabilityKey == key)
                 return supportsNoOpenCache.Value;
 
-            // 已知能力短路：rc.8、rc.1 与 rc.2 已确认支持 --no-open，不需要为探测再启动一次 npx/dsh。
+            // 已知能力短路：rc.8、0.1.1 的 rc.1/rc.2 与 0.1.5-rc.1 已确认支持 --no-open，不需要为探测再启动一次 npx/dsh。
             bool knownNoOpen =
                 String.Equals(version, "0.1.0-rc.8", StringComparison.OrdinalIgnoreCase) ||
                 String.Equals(version, "0.1.1-rc.1", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(version, "0.1.1-rc.2", StringComparison.OrdinalIgnoreCase);
+                String.Equals(version, "0.1.1-rc.2", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(version, "0.1.5-rc.1", StringComparison.OrdinalIgnoreCase);
             if (knownNoOpen)
             {
                 cliCapabilityKey = key;

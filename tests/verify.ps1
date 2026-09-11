@@ -5,7 +5,7 @@
 )
 
 # 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
-# Full：全部脚本解析检查、PSScriptAnalyzer(Error)、40 项回归测试。
+# Full：全部脚本解析检查、PSScriptAnalyzer(Error)、41 项回归测试。
 # Ps51Compat：全部脚本解析检查 + 7 项 Windows PowerShell 5.1 宿主兼容回归。
 # 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
 # 注意：托盘、WebView2、连续重启、Dream Skin 真实恢复属于人工 Windows 验收
@@ -19,6 +19,7 @@ $fullTests = @(
     'test-npx-version-parser.ps1',
     'test-dsh-version.ps1',
     'test-rc2-compat.ps1',
+    'test-dsh-015-no-plugin-compat.ps1',
     'test-runner-mode.ps1',
     'test-repair-regex.ps1',
     'test-production-compat-contracts.ps1',
