@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "targetDshVersion": "0.1.5-rc.2",
+  "profile": "web",
+  "status": "PASS",
+  "stage": "settings",
+  "checks": {
+    "webView2": true,
+    "mainUi": true,
+    "refresh": true,
+    "settings": true,
+    "pluginState": true
+  }
+}

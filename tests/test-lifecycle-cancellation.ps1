@@ -152,7 +152,7 @@ class Harness
         startCanceller.Start();
         try
         {
-            startManager.EnsureStarted(startPort, baseDir, logsDir, "0.1.0-rc.7", "web", dshPath, "command", false, startCts.Token);
+            startManager.EnsureStarted(startPort, baseDir, logsDir, "0.1.5-rc.2", "web", dshPath, "command", false, startCts.Token);
             Assert(false, "start cancellation throws");
         }
         catch (OperationCanceledException) { Assert(true, "start cancellation throws normally"); }
@@ -173,7 +173,7 @@ class Harness
         HostLog.Initialize(logsDir, "lifecycle-cancel-restart");
         DshProcessManager restartManager = new DshProcessManager();
         DshProcessManager.BackendStartResult initial = restartManager.EnsureStarted(
-            restartPort, baseDir, logsDir, "0.1.0-rc.7", "web", dshPath, "command", false);
+            restartPort, baseDir, logsDir, "0.1.5-rc.2", "web", dshPath, "command", false);
         Assert(initial != null && restartManager.OwnsBackend, "restart setup backend starts");
         restartManager.StopOwnedBackend();
         File.WriteAllText(delayFile, "5000");
@@ -184,7 +184,7 @@ class Harness
         restartCanceller.Start();
         try
         {
-            restartManager.RestartBackend(restartPort, baseDir, logsDir, "0.1.0-rc.7", "web", dshPath, "command", false, restartCts.Token);
+            restartManager.RestartBackend(restartPort, baseDir, logsDir, "0.1.5-rc.2", "web", dshPath, "command", false, restartCts.Token);
             Assert(false, "restart cancellation throws");
         }
         catch (OperationCanceledException) { Assert(true, "restart cancellation throws normally"); }
@@ -203,7 +203,7 @@ class Harness
         int launchesBefore = LaunchCount(logsDir);
         try
         {
-            restartManager.EnsureStarted(restartPort, baseDir, logsDir, "0.1.0-rc.7", "web", dshPath, "command", false, restartCts.Token);
+            restartManager.EnsureStarted(restartPort, baseDir, logsDir, "0.1.5-rc.2", "web", dshPath, "command", false, restartCts.Token);
         }
         catch (OperationCanceledException) { }
         Assert(LaunchCount(logsDir) == launchesBefore, "cancelled lifetime prevents subsequent start");

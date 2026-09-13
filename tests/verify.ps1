@@ -5,7 +5,7 @@
 )
 
 # 统一验证门禁：CI 与 Release 工作流共用（避免两份测试列表漂移）。
-# Full：全部脚本解析检查、PSScriptAnalyzer(Error)、41 项回归测试。
+# Full：全部脚本解析检查、PSScriptAnalyzer(Error)、43 项回归测试。
 # Ps51Compat：全部脚本解析检查 + 7 项 Windows PowerShell 5.1 宿主兼容回归。
 # 可用当前宿主（pwsh 或 Windows PowerShell 5.1）运行；子进程用同一宿主本体。
 # 注意：托盘、WebView2、连续重启、Dream Skin 真实恢复属于人工 Windows 验收
@@ -37,6 +37,7 @@ $fullTests = @(
     'test-backend-generation-race.ps1',
     'test-plugin-boot-acceptance.ps1',
     'test-plugin-catalog.ps1',
+    'test-plugin-ecosystem-scanner.ps1',
     'test-status-rotator-config.ps1',
     'test-plugin-exclusive-group.ps1',
     'test-plugin-preflight-cleanup.ps1',
@@ -50,6 +51,7 @@ $fullTests = @(
     'test-settings-runtime-snapshot.ps1',
     'test-dialog-owner.ps1',
     'test-webview-unresponsive.ps1',
+    'test-webview2-acceptance.ps1',
     'test-owned-health-identity.ps1',
     'test-dpi-manifest.ps1',
     'test-web-context-menu-lifecycle.ps1',

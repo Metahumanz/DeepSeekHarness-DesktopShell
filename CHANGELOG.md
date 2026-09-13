@@ -4,6 +4,13 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.11（DSH 0.1.5-rc.2 DesktopShell 与真实插件生态适配）
+
+- **固定 rc.2 核心目标**：默认和已测 DSH 升级为精确 `0.1.5-rc.2`，`--no-open` 能力表同步更新；`latest` 保留为用户主动选择的可选通道，绝不自动成为推荐版本。
+- **BrowserAuth / BootReady**：保留现有完整 ready URL 提取、loopback/端口校验和仅内存 token 处理；为 rc.2 补充基线测试。WebView2 首次导航必须使用本次 DSH 输出的完整 token URL，端口监听不再被当作 ready，外部进程不能复用旧 token。
+- **动态插件生态**：新增扫描器，从真实 Profile、已安装包、patch、Cordis 服务注入/提供、peerDependencies 和 npm/GitHub 上游元数据生成矩阵与依赖图。静态插件目录不再声称某版本兼容。
+- **依赖与预检**：插件模型增加 `DependsOn`、`RequiresService`、`HostRange`、反向依赖和安装顺序。连锁卸载与 DSH 升级阻断均以图为依据。新的 rc.2 preflight 先跑纯净基线，再按依赖顺序对每个实际父链检查 plugin tree、HTTP、真实 WebView2、刷新、设置页、重启和完整组合；Git 依赖从 `pnpm-lock.yaml` 读取精确 commit。提交快照中真实 `web` Profile 的 12 个插件和完整组合均通过，且无 failed/pending；`PASS / WARN / BLOCKED / UNKNOWN` 不再由版本号猜测。
+
 ## v1.0.10（Windows PowerShell 5.1 发布门禁修复）
 
 - **PowerShell 5.1 解析兼容**：无插件验收脚本不再用 UTF-8 无 BOM 文件中的中文字符串作为 PowerShell 字面量断言，改用同一验收文档的 ASCII 标题与复跑脚本锚点。这样既保留“文档明确给出无插件边界”的门禁，也避免 Windows PowerShell 5.1 按本地 ANSI 代码页解析时把 UTF-8 字节误认作引号。此前 `v1.0.9` tag 的远端构建因此未生成 Release；遵循不可变标签策略，以本补丁版本重新发布。

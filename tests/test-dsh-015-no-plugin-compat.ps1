@@ -13,14 +13,17 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
-Assert-True 'default is the tested 0.1.5 rc1 baseline' ($compat.defaultDshVersion -eq '0.1.5-rc.1')
-Assert-True 'tested versions include 0.1.5 rc1' (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.5-rc.1' }).Count -eq 1)
-Assert-True 'C# fallback includes 0.1.5 rc1' ($cs.Contains('defaultDshVersionCache = "0.1.5-rc.1"'))
-Assert-True 'C# known no-open capability includes 0.1.5 rc1' ($cs.Contains('String.Equals(version, "0.1.5-rc.1"'))
-Assert-True 'manager fallback includes 0.1.5 rc1' ($manage.Contains("`$DefaultDshVersion = '0.1.5-rc.1'"))
-Assert-True 'manager known no-open capability includes 0.1.5 rc1' ($manage.Contains("'0.1.5-rc.1'"))
+Assert-True 'default is the tested 0.1.5 rc2 baseline' ($compat.defaultDshVersion -eq '0.1.5-rc.2')
+Assert-True 'tested versions include 0.1.5 rc2' (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.5-rc.2' }).Count -eq 1)
+Assert-True 'C# fallback includes 0.1.5 rc2' ($cs.Contains('defaultDshVersionCache = "0.1.5-rc.2"'))
+Assert-True 'C# known no-open capability includes 0.1.5 rc2' ($cs.Contains('String.Equals(version, "0.1.5-rc.2"'))
+Assert-True 'manager fallback includes 0.1.5 rc2' ($manage.Contains("`$DefaultDshVersion = '0.1.5-rc.2'"))
+Assert-True 'manager known no-open capability includes 0.1.5 rc2' ($manage.Contains("'0.1.5-rc.2'"))
 
-Assert-True 'no-plugin wrapper pins the exact target version' ($noPluginSmoke.Contains("DshVersion = '0.1.5-rc.1'"))
+Assert-True 'no-plugin wrapper pins and enforces the exact target version' (
+    $noPluginSmoke.Contains("DshVersion = '0.1.5-rc.2'") -and
+    $noPluginSmoke.Contains("if (`$DshVersion -ne '0.1.5-rc.2')") -and
+    $noPluginSmoke.Contains('核心无插件验收只接受固定目标 DSH 0.1.5-rc.2。'))
 Assert-True 'no-plugin wrapper enables the empty-profile guard' ($noPluginSmoke.Contains('RequireNoUserPlugins = $true'))
 Assert-True 'no-plugin wrapper has no existing-profile input' ($noPluginSmoke -notmatch 'WebProfileDshHome')
 Assert-True 'generic smoke exposes the empty-profile guard' ($genericSmoke -match '\[switch\]\$RequireNoUserPlugins')
@@ -30,7 +33,7 @@ Assert-True 'empty-profile guard requires only core bundles' (
     $genericSmoke.Contains("'@deepseek-ai/dsh-base'") -and
     $genericSmoke.Contains("'@deepseek-ai/dsh-web-app'"))
 Assert-True 'manual acceptance document states the no-plugin boundary' (
-    $manual.Contains('# DSH 0.1.5-rc.1') -and
+    $manual.Contains('# DSH 0.1.5-rc.2') -and
     $manual.Contains('Test-Dsh015NoPluginLocal.ps1'))
 
 if ($fail -eq 0) { Write-Host 'DSH 0.1.5 NO-PLUGIN COMPAT TESTS PASSED' }

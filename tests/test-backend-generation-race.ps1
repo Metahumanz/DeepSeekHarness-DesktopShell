@@ -159,7 +159,7 @@ class GenerationRaceHarness
         try
         {
             DshProcessManager.BackendStartResult oldResult = manager.EnsureStarted(
-                oldPort, baseDir, logsDir, "0.1.0-rc.7", "old", dshPath, "command", false);
+                oldPort, baseDir, logsDir, "0.1.5-rc.2", "old", dshPath, "command", false);
             object oldRun = CurrentRun(manager);
             long oldGeneration = Generation(oldRun);
             int oldWrapper = oldResult.WrapperPid;
@@ -169,7 +169,7 @@ class GenerationRaceHarness
             // No artificial wait: stop the old real process and immediately start the new real process.
             manager.StopOwnedBackend();
             DshProcessManager.BackendStartResult newResult = manager.EnsureStarted(
-                newPort, baseDir, logsDir, "0.1.0-rc.7", "new", dshPath, "command", false);
+                newPort, baseDir, logsDir, "0.1.5-rc.2", "new", dshPath, "command", false);
             object newRun = CurrentRun(manager);
             long newGeneration = Generation(newRun);
             Assert(newResult.BootReady && manager.BootReady, "new backend reaches BootReady immediately after old stop");
@@ -205,7 +205,7 @@ class GenerationRaceHarness
                 manager.StopOwnedBackend();
                 cyclePort = FreePort();
                 DshProcessManager.BackendStartResult cycleResult = manager.EnsureStarted(
-                    cyclePort, baseDir, logsDir, "0.1.0-rc.7", "cycle" + cycle.ToString(),
+                    cyclePort, baseDir, logsDir, "0.1.5-rc.2", "cycle" + cycle.ToString(),
                     dshPath, "command", false);
                 int count = WaitForRunCountAtMost(manager, 2, 3000);
                 if (count > maxRunCount) maxRunCount = count;

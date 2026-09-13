@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$DshVersion = '0.1.1-rc.2',
+    [string]$DshVersion = '0.1.5-rc.2',
     [ValidateSet('npx', 'command', 'auto')]
     [string]$PluginRunnerMode = 'npx',
     [string]$PluginDshPath = '',

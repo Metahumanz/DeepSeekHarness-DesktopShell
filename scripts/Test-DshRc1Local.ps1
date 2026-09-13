@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$DshVersion = '0.1.1-rc.2',
+    [string]$DshVersion = '0.1.5-rc.2',
     [ValidateSet('npx', 'command', 'auto')]
     [string]$PluginRunnerMode = 'npx',
     [string]$PluginDshPath = '',
@@ -149,7 +149,7 @@ function Start-DshServer([int]$port, [string]$dshHome) {
     $stdoutPath = Join-Path $sessionRoot ('dsh-' + $port.ToString() + '.stdout.log')
     $stderrPath = Join-Path $sessionRoot ('dsh-' + $port.ToString() + '.stderr.log')
     $argumentLine = '/d /s /c "npx -y @deepseek-ai/dsh@' + $DshVersion +
-        ' --profile web --port ' + $port.ToString() + ' --no-open"'
+        ' --profile web --no-open --port ' + $port.ToString() + '"'
     $comSpec = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
     $oldDshHome = $env:DSH_HOME
     try {
@@ -451,58 +451,20 @@ function Start-IsolatedDesktopShell {
 }
 
 function Invoke-PluginPreflight {
-    $preflight = Join-Path $repoRoot 'scripts\Test-PluginBootPreflight.ps1'
-    $plugins = @(
-        [pscustomobject]@{ Name='dshmarket'; Spec='dshmarket@1.21.2' },
-        [pscustomobject]@{ Name='dsh-better-sidebar'; Spec='dsh-better-sidebar@^0.15.2' },
-        [pscustomobject]@{ Name='@michengai/dsh-skills-manager'; Spec='@michengai/dsh-skills-manager@0.1.24' },
-        [pscustomobject]@{ Name='dsh-at-file'; Spec='github:omdsh-dev/dsh-at-file' },
-        [pscustomobject]@{ Name='@xsj/dsh-rewind'; Spec='github:XSJUSTC/dsh-rewind' },
-        [pscustomobject]@{ Name='dsh-file-mentions'; Spec='git+https://github.com/a903067276-rgb/dsh-file-mentions.git' },
-        [pscustomobject]@{ Name='dsh-auto-collapse'; Spec='github:a179-sanae/dsh-auto-collapse' },
-        [pscustomobject]@{ Name='dsh-chat-tidy'; Spec='dsh-chat-tidy@^0.2.0' },
-        [pscustomobject]@{ Name='dsh-codex-side-outline'; Spec='github:EnkiduGilgamesh/dsh-codex-side-outline' },
-        [pscustomobject]@{ Name='dsh-better-archive'; Spec='git+https://github.com/huahai0202/dsh-better-archive.git' },
-        [pscustomobject]@{ Name='dsh-video-preview'; Spec='dsh-video-preview@^0.1.1' },
-        [pscustomobject]@{ Name='dsh-git-remotes'; Spec='github:yq04/dsh-git-remotes' },
-        [pscustomobject]@{ Name='dsh-notification'; Spec='git+https://github.com/omdsh-dev/dsh-notification.git' },
-        [pscustomobject]@{ Name='dsh-open-in'; Spec='dsh-open-in@^0.1.1' },
-        [pscustomobject]@{ Name='dsh-sidebar-qa'; Spec='dsh-sidebar-qa@0.4.0' },
-        [pscustomobject]@{ Name='@huanlin/dsh-plugin-better-sidebar-plugin-office'; Spec='@huanlin/dsh-plugin-better-sidebar-plugin-office@^0.1.2' },
-        [pscustomobject]@{ Name='@tt-a1i/archify-dsh'; Spec='@tt-a1i/archify-dsh@^0.1.0' },
-        [pscustomobject]@{ Name='dsh-status-rotator'; Spec='dsh-status-rotator@^0.6.6'; Validation='status-rotator' },
-        [pscustomobject]@{ Name='dsh-context'; Spec='dsh-context@^0.29.0' },
-        [pscustomobject]@{ Name='@nanmicoder/dsh-auto-mode'; Spec='@nanmicoder/dsh-auto-mode@^0.1.5' },
-        [pscustomobject]@{ Name='dsh-cost-meter'; Spec='dsh-cost-meter@^1.5.42' },
-        [pscustomobject]@{ Name='dsh-dream-skin'; Spec='dsh-dream-skin@^0.4.10' },
-        [pscustomobject]@{ Name='dsh-sentinel'; Spec='dsh-sentinel@0.11.0' },
-        [pscustomobject]@{ Name='@linxin666/dsh-liangshen'; Spec='@linxin666/dsh-liangshen@^0.3.2' },
-        [pscustomobject]@{ Name='@dsh-plugin/dsh-thought-buddy'; Spec='@dsh-plugin/dsh-thought-buddy@^0.2.0'; Validation='thought-buddy' },
-        [pscustomobject]@{ Name='@nanmicoder/dsh-agent-teams'; Spec='@nanmicoder/dsh-agent-teams@0.1.14' }
-    )
-    $failed = 0
-    foreach ($plugin in $plugins) {
-        Say "Plugin preflight: $($plugin.Name) [$($plugin.Spec)]"
-        try {
-            $validation = if ($plugin.Validation) { [string]$plugin.Validation } else { 'standard' }
-            $preflightArgs = @{
-                PluginSpec = @([string]$plugin.Spec)
-                DshVersion = $DshVersion
-                Validation = $validation
-                StableSeconds = 10
-                RunnerMode = $PluginRunnerMode
-            }
-            if ($PluginDshPath) { $preflightArgs.DshPath = $PluginDshPath }
-            & $preflight @preflightArgs
-            if ($LASTEXITCODE -ne 0) { throw "exit code $LASTEXITCODE" }
-            Ok $plugin.Name
-        }
-        catch {
-            $failed++
-            Warn ("FAILED {0}: {1}" -f $plugin.Name, $_.Exception.Message)
-        }
+    if ($DshVersion -ne '0.1.5-rc.2') {
+        throw '当前插件生态 preflight 只允许固定目标 0.1.5-rc.2。'
     }
-    if ($failed -gt 0) { throw "$failed plugin preflight run(s) failed; classify plugin vs host failures." }
+    $ecosystemPreflight = Join-Path $repoRoot 'scripts\Test-DshPluginEcosystemPreflight.ps1'
+    $targetHome = if ($WebProfileDshHome) {
+        $WebProfileDshHome
+    } elseif ($env:DSH_HOME) {
+        $env:DSH_HOME
+    } else {
+        Join-Path ([Environment]::GetFolderPath('UserProfile')) '.dsh'
+    }
+    Say "Plugin ecosystem preflight uses actual Profile metadata: $targetHome"
+    & $ecosystemPreflight -DshHome $targetHome -DshVersion $DshVersion -TimeoutSeconds ([Math]::Max(120, $TimeoutSeconds)) -StableSeconds 10
+    if ($LASTEXITCODE -ne 0) { throw "生态 preflight 返回 exit code $LASTEXITCODE" }
 }
 
 try {

@@ -10,19 +10,20 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
-# ---- 1. Dream Skin uses the rc2-preflighted 8.30.1 release. ----
-Assert-True "catalog no longer pins dsh-dream-skin@0.3.0" ($text -notmatch 'dsh-dream-skin@0\.3\.0')
-Assert-True "dream-skin uses npm 8.30.1" ($text -match 'dsh-dream-skin@8\.30\.1')
+# ---- 1. Dream Skin is selected from the scanned exact install spec, never a historical catalog pin. ----
+Assert-True "manager has no hard-coded Dream Skin install spec" ($text -notmatch 'dsh-dream-skin@')
 Assert-True "old pinned dream-skin commit removed" ($text -notmatch '28497f5294ba20f44acf8eecc62891297d38fc24')
 Assert-True "no 40-char dream-skin commit pinned" ($text -notmatch 'dsh-dream-skin/archive/[0-9a-f]{40}\.tar\.gz')
-Assert-True 'Dream Skin prompt derives its target from the catalog spec' (
-    $text -match '\$dreamSpec = \[string\]\$dreamSkin\.Spec' -and
-    $text -match '替换为 \$dreamSpec')
+Assert-True 'Dream Skin uses the same dynamic install spec as every scanned package' (
+    $text -match 'Spec\s*=\s*\[string\]\$item\.installSpec' -and
+    $text -match 'InstallSpec\s*=\s*\[string\]\$item\.installSpec' -and
+    $text -match '\[string\]\$plugin\.InstallSpec')
 Assert-True 'diagnostics no longer advertise stale npm ^0.4.5' ($text -notmatch 'npm \^0\.4\.5')
-Assert-True 'current manual acceptance matches catalog choice and spec' (
-    $acceptance -match '\*\*22\. Dream Skin 主题\*\*' -and
-    $acceptance -match 'dsh-dream-skin@8\.30\.1' -and
-    $acceptance -notmatch '选 \*\*14\. Dream Skin 主题\*\*')
+Assert-True 'manual acceptance requires the live matrix rather than a catalog number or version' (
+    $acceptance -match 'Scan-DshPluginEcosystem\.ps1' -and
+    $acceptance -match 'PLUGIN_COMPATIBILITY_MATRIX\.md' -and
+    $acceptance -notmatch 'dsh-dream-skin@8\.30\.1' -and
+    $acceptance -notmatch '\*\*22\. Dream Skin 主题\*\*')
 
 # ---- 2. The capability detector accepts both verified sticky-restore markers. ----
 Assert-True "Test-DreamSkinPersistenceFix defined" ($text -match 'function Test-DreamSkinPersistenceFix')

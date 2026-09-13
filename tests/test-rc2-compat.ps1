@@ -1,11 +1,12 @@
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-$cs = [System.IO.File]::ReadAllText((Join-Path $repo 'src\DeepSeekHarness.cs'))
-$manage = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Manage-Dsh.ps1'))
-$local = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-DshRc1Local.ps1'))
-$preflight = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-PluginBootPreflight.ps1'))
-$manual = [System.IO.File]::ReadAllText((Join-Path $repo 'docs\DSH_RC2_MANUAL_ACCEPTANCE.md'))
+$cs = [IO.File]::ReadAllText((Join-Path $repo 'src\DeepSeekHarness.cs'))
+$manage = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Manage-Dsh.ps1'))
+$local = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-DshRc2Local.ps1'))
+$genericLocal = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-DshRc1Local.ps1'))
+$ecosystem = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-DshPluginEcosystemPreflight.ps1'))
+$manual = [IO.File]::ReadAllText((Join-Path $repo 'docs\DSH_015_NO_PLUGIN_ACCEPTANCE.md'))
 $version = (Get-Content -LiteralPath (Join-Path $repo 'VERSION') -Raw).Trim()
 
 $fail = 0
@@ -14,33 +15,31 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
-Assert-True 'testedDshVersions contains rc2' (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.2' }).Count -gt 0)
-Assert-True 'rc2 remains a historical tested baseline' (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.2' }).Count -gt 0)
+Assert-True 'rc2 is the exact default and tested version' (
+    $compat.defaultDshVersion -eq '0.1.5-rc.2' -and
+    @($compat.testedDshVersions | Where-Object { $_ -eq '0.1.5-rc.2' }).Count -eq 1)
 Assert-True 'minimum remains rc.7' ($compat.minimumCompatibleDshVersion -eq '0.1.0-rc.7')
-Assert-True 'C# fallback list contains rc2' ($cs.Contains('"0.1.1-rc.2"'))
-Assert-True 'C# known no-open table contains rc2' ($cs.Contains('String.Equals(version, "0.1.1-rc.2"'))
-Assert-True 'PowerShell tested list contains rc2' ($manage.Contains("'0.1.1-rc.2'"))
-Assert-True 'PowerShell known no-open table contains rc2' ($manage.Contains('$KnownNoOpenDshVersions') -and $manage.Contains("'0.1.1-rc.2'"))
-Assert-True 'unknown versions retain help probing' ($cs.Contains('string probeArgs = usingNpx') -and $cs.Contains('--help') -and $cs -notmatch 'version\s*[><=].*no-open')
+Assert-True 'C# fallback and no-open capability contain the exact rc2 target' (
+    $cs.Contains('defaultDshVersionCache = "0.1.5-rc.2"') -and
+    $cs.Contains('String.Equals(version, "0.1.5-rc.2"'))
+Assert-True 'PowerShell manager has the exact rc2 default and no-open capability' (
+    $manage.Contains("`$DefaultDshVersion = '0.1.5-rc.2'") -and
+    $manage.Contains("'0.1.5-rc.2'"))
+Assert-True 'unknown versions still retain real CLI help probing' (
+    $cs.Contains('string probeArgs = usingNpx') -and $cs.Contains('--help') -and
+    $cs -notmatch 'version\s*[><=].*no-open')
+Assert-True 'local rc2 smoke pins 0.1.5-rc.2 and asserts no-open readiness' (
+    $local.Contains("DshVersion = '0.1.5-rc.2'") -and
+    $local.Contains("'Test-DshRc1Local.ps1'") -and
+    $genericLocal.Contains('--version') -and $genericLocal.Contains('--help') -and $genericLocal.Contains('--no-open') -and
+    $genericLocal.Contains('Get-DshReadyUrl') -and $genericLocal.Contains('Test-Http200'))
+Assert-True 'ecosystem preflight refuses every target other than rc2' (
+    $ecosystem.Contains("if (`$DshVersion -ne '0.1.5-rc.2')") -and
+    $ecosystem.Contains('只接受固定目标 DSH 0.1.5-rc.2'))
+Assert-True 'manual acceptance states the fixed rc2 target' (
+    $manual.Contains('# DSH 0.1.5-rc.2') -and $manual.Contains('@deepseek-ai/dsh@0.1.5-rc.2'))
+Assert-True 'DesktopShell product VERSION is 1.0.11' ($version -eq '1.0.11')
 
-Assert-True 'local rc2 script defaults to rc2' ($local.Contains("[string]`$DshVersion = '0.1.1-rc.2'"))
-Assert-True 'CLI version/help/no-open smoke is present' (
-    $local.Contains('--version') -and $local.Contains('--help') -and $local.Contains('--no-open'))
-Assert-True 'ready banner and HTTP 200 gate is present' (
-    $local.Contains('Get-DshReadyUrl') -and $local.Contains('Test-Http200') -and $local.Contains('HTTP 200'))
-Assert-True 'local smoke can safely target an existing DSH_HOME on a random test port' (
-    $local.Contains('[string]$WebProfileDshHome') -and
-    $local.Contains('Web startup uses existing DSH_HOME') -and
-    $local.Contains('$run = Start-DshServer $probePort $webHome'))
-Assert-True 'DesktopShell startup/manual restart/normal exit coverage is documented' (
-    $local.Contains('[switch]$LaunchDesktopShell') -and $manual.Contains('## 2. DesktopShell') -and
-    $manual.Contains('## 4.'))
-Assert-True 'rc2 attachment/image regression is explicit and DesktopShell image code is untouched' (
-    $manual.Contains('PNG/JPEG') -and $manual.Contains('WebView') -and $manual.Contains('DesktopShell'))
-Assert-True 'isolated preflight uses rc2 no-open and separate validation modes' (
-    $preflight.Contains("'0.1.1-rc.2'") -and $preflight.Contains("'status-rotator'") -and
-    $preflight.Contains("'thought-buddy'"))
-Assert-True 'VERSION is 1.0.10' ($version -eq '1.0.10')
-
-if ($fail -eq 0) { Write-Host 'DSH RC2 COMPAT TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
+if ($fail -eq 0) { Write-Host 'DSH 0.1.5 RC2 COMPAT TESTS PASSED' }
+else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

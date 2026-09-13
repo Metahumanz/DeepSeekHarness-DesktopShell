@@ -53,7 +53,7 @@ $requiredPs51Tests = @(
 )
 
 Assert-True 'verify exposes separate Full and Ps51Compat suites' ($verify -match "ValidateSet\('Full', 'Ps51Compat'\)" -and $fullSuiteMatch.Success -and $ps51SuiteMatch.Success)
-Assert-True "Full suite retains all 41 regression tests (got: $($fullSuiteTests.Count))" ($fullSuiteTests.Count -eq 41)
+Assert-True "Full suite retains all 43 regression tests (got: $($fullSuiteTests.Count))" ($fullSuiteTests.Count -eq 43)
 Assert-True 'production compatibility contract test stays in the Full suite' (
     $fullSuiteTests -contains 'test-production-compat-contracts.ps1' -and
     $ps51SuiteTests -notcontains 'test-production-compat-contracts.ps1')
@@ -65,6 +65,15 @@ Assert-True 'both workflows run only the PS 5.1 compatibility suite' ($ciYml -ma
 
 # Build-Release 是 ZIP 文件清单的唯一权威校验点；CI 不再重复解包，普通 CI 也不上传无人消费的工件。
 Assert-True 'Build-Release owns exact package-manifest verification' ($buildRelease -match '\$ExpectedPackageFiles = @\(' -and $buildRelease -match '\$missing = @\(' -and $buildRelease -match '\$unexpected = @\(')
+Assert-True 'release and source installer ship dynamic ecosystem management scripts together' (
+    $buildRelease.Contains("'Scan-DshPluginEcosystem.cjs'") -and
+    $buildRelease.Contains("'Scan-DshPluginEcosystem.ps1'") -and
+    $buildRelease.Contains("'Test-PluginBootPreflight.ps1'") -and
+    $buildRelease.Contains("'Test-DshPluginEcosystemPreflight.ps1'") -and
+    $buildRelease.Contains("'Test-DshWebView2Acceptance.ps1'") -and
+    $installDesktop.Contains("'scripts\Scan-DshPluginEcosystem.cjs'") -and
+    $installDesktop.Contains("'scripts\Test-DshPluginEcosystemPreflight.ps1'") -and
+    $installDesktop.Contains("'scripts\Test-DshWebView2Acceptance.ps1'"))
 Assert-True 'CI no longer repeats ZIP extraction or uploads unused release artifacts' ($ciYml -notmatch 'Verify zip content|Expand-Archive|actions/upload-artifact')
 Assert-True 'release build no longer repeats package extraction' ($releaseYml -notmatch 'Verify package contents|Expand-Archive')
 $downloadIndex = $releaseYml.IndexOf('Download release artifacts', [System.StringComparison]::Ordinal)
@@ -75,7 +84,7 @@ Assert-True 'release verifies the downloaded artifact hash after the cross-job d
     $releaseYml -match 'SHA256SUMS\.txt')
 
 # ---- 5. 根目录版本文件与兼容基线内容自洽 ----
-Assert-True "root VERSION is 1.0.10 (got: $versionText)" ($versionText -eq '1.0.10')
+Assert-True "root VERSION is 1.0.11 (got: $versionText)" ($versionText -eq '1.0.11')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True "COMPATIBILITY.json defaultDshVersion is a valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "COMPATIBILITY.json minimumCompatibleDshVersion is a valid semver (got: $($compat.minimumCompatibleDshVersion))" ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
