@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-13T03:12:00.0709451Z",
+  "targetDshVersion": "0.1.5-rc.2",
+  "profile": "web",
+  "results": [
+    {
+      "package": "@dsh-plugin/dsh-loader",
+      "version": "1.3.5",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "@dsh-plugin/dsh-loader@1.3.5",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "webServer"
+      ]
+    },
+    {
+      "package": "@michengai/dsh-skills-manager",
+      "version": "0.1.50",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "@michengai/dsh-skills-manager@0.1.50",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "locale",
+        "sessions",
+        "skills",
+        "slots",
+        "tools",
+        "webRuntime",
+        "webServer"
+      ]
+    },
+    {
+      "package": "@xsj/dsh-rewind",
+      "version": "2.1.2",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "github:XSJUSTC/dsh-rewind#299b1b486b6af88f5db570f0d86bf9f8e7490bcf",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "agents",
+        "sessions",
+        "slots",
+        "webServer"
+      ]
+    },
+    {
+      "package": "dsh-better-archive",
+      "version": "0.7.7",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "github:huahai0202/dsh-better-archive#deef9769843dea67764bdc323e89eee2553c4d5b",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "locale",
+        "sessionPersistence",
+        "sessions",
+        "slots",
+        "webServer",
+        "workspaceRegistry"
+      ]
+    },
+    {
+      "package": "dsh-context",
+      "version": "0.50.0",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "dsh-context@0.50.0",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "locale",
+        "sessionProjections",
+        "slots"
+      ]
+    },
+    {
+      "package": "dsh-cost-meter",
+      "version": "1.7.21",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "dsh-cost-meter@1.7.21",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": []
+    },
+    {
+      "package": "dsh-dream-skin",
+      "version": "9.10.0",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "dsh-dream-skin@9.10.0",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "locale",
+        "slots",
+        "theme",
+        "webRuntime",
+        "webServer"
+      ]
+    },
+    {
+      "package": "dsh-notification",
+      "version": "0.1.4",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "github:omdsh-dev/dsh-notification#675aab9b43d5011738feb6185281596c0365ccba",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "invariants",
+        "locale",
+        "sessionProjections",
+        "sessions",
+        "slots"
+      ]
+    },
+    {
+      "package": "dsh-sentinel",
+      "version": "0.11.1",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "dsh-sentinel@0.11.1",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "agentDefaultModel",
+        "agents",
+        "locale",
+        "slots",
+        "tools"
+      ]
+    },
+    {
+      "package": "dshmarket",
+      "version": "1.45.1",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "dshmarket@1.45.1",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "locale",
+        "slots",
+        "theme"
+      ]
+    },
+    {
+      "package": "@tt-a1i/archify-dsh",
+      "version": "0.1.0",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "@tt-a1i/archify-dsh@0.1.0",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": []
+    },
+    {
+      "package": "dsh-status-rotator",
+      "version": "0.17.2",
+      "targetDshVersion": "0.1.5-rc.2",
+      "installSpec": "dsh-status-rotator@0.17.2",
+      "status": "PASS",
+      "reason": "依赖链隔离 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+      "checks": {
+        "bootReady": true,
+        "pluginTree": true,
+        "http": true,
+        "restart": true,
+        "webView2": true,
+        "refresh": true,
+        "settings": true
+      },
+      "dependsOn": [],
+      "requiresService": [
+        "locale",
+        "slots"
+      ]
+    }
+  ],
+  "fullCombination": {
+    "status": "PASS",
+    "reason": "完整组合 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。",
+    "checks": {
+      "bootReady": true,
+      "pluginTree": true,
+      "http": true,
+      "restart": true,
+      "webView2": true,
+      "refresh": true,
+      "settings": true
+    }
+  }
+}

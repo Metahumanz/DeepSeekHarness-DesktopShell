@@ -12,7 +12,7 @@
 
 - `npx -y @deepseek-ai/dsh@0.1.1-rc.2 --version` 输出 rc.2；
 - `--profile web --help` 含 `--port` 和 `--no-open`；
-- `--profile web --port <随机端口> --no-open`；
+- `--profile web --no-open --port <随机端口>`；
 - 输出 `dsh web: http://127.0.0.1:<端口>` ready banner；
 - HTTP 200，连续稳定运行至少 10 秒；
 - 正常退出后精确测试端口释放。

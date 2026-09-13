@@ -72,6 +72,11 @@ $ExpectedPackageFiles = @(
     'DeepSeekHarness-Dark.ico',
     'DeepSeekHarness.svg',
     'Manage-Dsh.ps1',
+    'Scan-DshPluginEcosystem.cjs',
+    'Scan-DshPluginEcosystem.ps1',
+    'Test-PluginBootPreflight.ps1',
+    'Test-DshPluginEcosystemPreflight.ps1',
+    'Test-DshWebView2Acceptance.ps1',
     'Uninstall-DesktopShell.ps1',
     'Install-Release.ps1',
     'Repair-CostMeterLedger.ps1',
@@ -226,6 +231,11 @@ using System.Reflection;
             Copy-Item -LiteralPath (Join-Path $repoRoot "assets\$asset") -Destination (Join-Path $appDir $asset) -Force
         }
         Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Manage-Dsh.ps1') -Destination (Join-Path $appDir 'Manage-Dsh.ps1') -Force
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Scan-DshPluginEcosystem.cjs') -Destination (Join-Path $appDir 'Scan-DshPluginEcosystem.cjs') -Force
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Scan-DshPluginEcosystem.ps1') -Destination (Join-Path $appDir 'Scan-DshPluginEcosystem.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Test-PluginBootPreflight.ps1') -Destination (Join-Path $appDir 'Test-PluginBootPreflight.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Test-DshPluginEcosystemPreflight.ps1') -Destination (Join-Path $appDir 'Test-DshPluginEcosystemPreflight.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Test-DshWebView2Acceptance.ps1') -Destination (Join-Path $appDir 'Test-DshWebView2Acceptance.ps1') -Force
         Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Uninstall-DesktopShell.ps1') -Destination (Join-Path $appDir 'Uninstall-DesktopShell.ps1') -Force
         Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Install-Release.ps1') -Destination (Join-Path $appDir 'Install-Release.ps1') -Force
         Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Repair-CostMeterLedger.ps1') -Destination (Join-Path $appDir 'Repair-CostMeterLedger.ps1') -Force

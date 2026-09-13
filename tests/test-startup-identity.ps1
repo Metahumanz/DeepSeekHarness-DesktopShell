@@ -92,7 +92,7 @@ namespace Harness
                 {
                     Stopwatch sw = Stopwatch.StartNew();
                     DeepSeekHarnessDesktop.DshProcessManager.BackendStartResult r =
-                        mgrA.EnsureStarted(portA, baseDir, logsA, "0.1.0-rc.7", "web",
+                        mgrA.EnsureStarted(portA, baseDir, logsA, "0.1.5-rc.2", "web",
                             Path.Combine(dshDir, "dsh.cmd"), "command", false);
                     sw.Stop();
                     Assert(r != null && r.ListenerPid > 0,
@@ -152,7 +152,7 @@ namespace Harness
                 t.Start();
                 try
                 {
-                    mgrB.EnsureStarted(bPort, baseDir, logsB, "0.1.0-rc.7", "web",
+                    mgrB.EnsureStarted(bPort, baseDir, logsB, "0.1.5-rc.2", "web",
                         Path.Combine(plainDir, "dummy.cmd"), "command", false);
                     Assert(false, "B: must refuse foreign listener");
                 }

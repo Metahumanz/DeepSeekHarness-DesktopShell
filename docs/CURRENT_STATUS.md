@@ -1,48 +1,46 @@
 # 当前状态与维护基线
 
-> 更新日期：2026-09-11。本页描述此仓库工作树的维护基线；第三方插件和 npm dist-tag 会随上游变化，
-> 因此不把本页视为对未来上游版本的兼容承诺。
+> 更新日期：2026-09-13。本页描述此工作树；第三方插件与 npm dist-tag 会随上游变化，因此不对未来上游版本作兼容承诺。
 
 ## 发布与 DSH 兼容基线
 
-- DesktopShell 版本：`1.0.10`（唯一来源：根目录 `VERSION`）。
-- 默认 DSH：`0.1.5-rc.1`；最低兼容 DSH：`0.1.0-rc.7`。
-- 已列入测试基线：`0.1.0-rc.7`、`0.1.0-rc.8`、`0.1.1-rc.1`、`0.1.1-rc.2`、`0.1.5-rc.1`。
-- 版本和通道元数据的唯一来源是 `COMPATIBILITY.json`。`latest`/`alpha` 仅在用户主动选择时解析，
-  不会静默改写现有 Profile。
-- `0.1.5-rc.1` 仅通过全新、无插件 `web` Profile 的 CLI/Web 基线。它确认核心 bundle、`--no-open`、
-  ready URL、HTTP 200 和稳定运行；不包含第三方插件、既有 Profile 迁移或主题/会话回归。
+- DesktopShell 版本：`1.0.11`（唯一来源：根目录 `VERSION`）。
+- 默认 DSH：`0.1.5-rc.2`；最低兼容 DSH：`0.1.0-rc.7`。
+- 已列入测试基线：`0.1.0-rc.7`、`0.1.0-rc.8`、`0.1.1-rc.1`、`0.1.1-rc.2`、`0.1.5-rc.1`、`0.1.5-rc.2`。
+- 版本和通道元数据唯一来源是 `COMPATIBILITY.json`。`latest`/`alpha` 仅在用户主动选择时解析；它们不会静默改写既有 Profile，也不能自动成为推荐版本。
+- `0.1.5-rc.2` 已通过全新、无插件 `web` Profile 的 CLI/Web 基线：核心 bundle、`--no-open`、完整 ready URL、BrowserAuth HTTP 200 与稳定运行。
+
+## BootReady 与 WebView2 边界
+
+- DesktopShell 只接受本次自有 DSH 进程输出的完整 loopback ready URL；首次导航不拼接固定 `http://127.0.0.1:3080/`。
+- BootReady 同时需要本次进程的 ready banner、经过 BrowserAuth 的 HTTP 成功和稳定采样；端口监听不是就绪证明。
+- token 保持内存态，敏感 query 会在日志、错误消息和预检结果中脱敏。没有本次 token 的外部 DSH 进程不能被当成可认证的自有会话复用。
+- `Test-DshWebView2Acceptance.ps1` 用真实 WinForms/WebView2 对本次 DSH 输出的完整 token URL 导航，验证主界面、刷新、设置入口与插件健康文本；它不打印 URL、token 或页面正文。插件 `PASS` 必须包含此证据和独立的后端重启证据。
+
+## 插件生态与预检
+
+插件矩阵不再来自仓库硬编码目录。管理器和扫描器从当前 `~/.dsh/profiles/web` 的 `package.json`、已安装包、`cordis.patch.yml`、`dsh.client.inject`、Cordis `inject`/`provide` 以及上游 npm/GitHub 元数据生成机器可读图。
+
+```powershell
+.\scripts\Scan-DshPluginEcosystem.ps1 -DshVersion 0.1.5-rc.2 -OutputMarkdown docs\PLUGIN_COMPATIBILITY_MATRIX.md
+.\scripts\Test-DshPluginEcosystemPreflight.ps1 -DshVersion 0.1.5-rc.2
+```
+
+- 图中包含 `DependsOn`、`RequiresService`、`HostRange`、反向依赖和安装顺序。卸载父插件会先展示全部下游链，确认后按反向顺序移除。
+- 升级 DSH 前会重新扫描目标版本的硬阻断项。`UNKNOWN` 不能自动视为兼容，`latest` 也不等于推荐版本。
+- `PASS` 只表示同一精确 DSH/插件版本与安装 spec 在 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启检查全部真实通过；`WARN`、`BLOCKED`、`UNKNOWN` 都不会被管理器自动升级为兼容。Git 来源还必须由 `pnpm-lock.yaml` 或包元数据锁定 commit。
+- 若 `cordis.patch.yml` 引用没有已安装 provider 的 id，完整组合预检将 `BLOCKED`，并保留配置等待人工核对，而不是删除无关插件或静默改写补丁。
+- 2026-09-13 提交快照：真实 `web` Profile 的 `plugin list` exit 0，12 个已安装插件的独立依赖链和完整组合均为 `PASS`；没有 `Failed to load plugins` 或 `pending (waiting for service...)`。可复查 [矩阵](PLUGIN_COMPATIBILITY_MATRIX.md)、[预检结果](PLUGIN_PREFLIGHT_0.1.5-rc.2.json) 与 [WebView2 结果](WEBVIEW2_ACCEPTANCE_0.1.5-rc.2.json)。
 
 ## 验证边界
 
-- PowerShell 7 运行全部 **41** 项源码回归；Windows PowerShell 5.1 解析全部脚本，并运行 7 项
-  宿主兼容回归。
-- 自动化覆盖源码和可隔离行为；托盘、WebView2、连续重启和 Dream Skin 的视觉恢复仍须在真实 Windows
-  桌面按 [Dream Skin 人工验收表](DREAM_SKIN_ACCEPTANCE.md) 记录。
-- 端口归属只接受回环 DSH 命令行特征，且在指定端口时要求完整匹配 `--port <端口>`，避免把
-  `30801` 误认为 `3080`。
-- Cost Meter 的自动账本修复会先限制输入大小（最多 16 Mi 字符），并且只在当前安装源码仍可证明为受影响旧布局时才会写入；新版上游的 wrapper 去重与迁移保持原样。
-
-## 插件目录与可复现性
-
-管理器当前提供 26 项可移植推荐插件。`Installed` 表示目录中已审计的目标版本；它不会自动改动真实
-Profile，也不等同于用户机器上的安装状态。
-
-该目录的逐插件结论仍是历史 rc.2 审计，不应视为 `0.1.5-rc.1` 兼容声明。需要在 0.1.5 上使用插件时，
-应先新建隔离 Profile 并运行对应插件的 BootReady preflight。
-
-- 精确 npm 版本和带版本的 npm spec 由目录明确声明。
-- 目录优先采用已隔离验证的精确 npm 版本或 GitHub release tag，避免未来发布静默改变结果。
-- 仍有 3 个 GitHub spec 没有 tag 或 commit，目录会明确标作“GitHub 浮动引用”；安装时会解析上游默认分支，
-  不应被理解为固定兼容版本。
-- 需要可复现安装时，应在“额外插件”步骤提供精确 tag/commit spec，并运行
-  `scripts/Test-PluginBootPreflight.ps1` 的隔离 preflight；日常安装成功不等同于运行兼容。
+- PowerShell 7 运行全部源码回归；Windows PowerShell 5.1 解析全部脚本并运行宿主兼容契约。
+- 自动化覆盖源码、隔离 Profile、真实 WebView2、刷新、设置页和重启；托盘与主题视觉恢复仍须按 Windows 桌面发布清单复验。
+- 端口归属只接受回环 DSH 命令行特征，且在指定端口时要求完整匹配 `--port <端口>`，避免把 `30801` 误认为 `3080`。
 
 ## 文档定位
 
-- [AUDIT.md](AUDIT.md)：v1.0.4 的历史审计快照，保留旧版本风险和修复记录。
-- [DREAM_SKIN_ACCEPTANCE.md](DREAM_SKIN_ACCEPTANCE.md)：当前 Dream Skin 的人工 Windows 验收清单。
-- [PLUGIN_RC2_UPDATE_AUDIT.md](PLUGIN_RC2_UPDATE_AUDIT.md)：当前 rc.2 插件升级筛选、隔离验证和排除项。
-- [DSH_015_NO_PLUGIN_ACCEPTANCE.md](DSH_015_NO_PLUGIN_ACCEPTANCE.md)：`0.1.5-rc.1` 的无插件 CLI/Web 验收边界与复跑命令。
-- [DSH_ALPHA_PREVIEW_COMPATIBILITY.md](DSH_ALPHA_PREVIEW_COMPATIBILITY.md)：alpha 通道的历史/预览快照，
-  不是生产兼容声明。
+- [DSH_015_NO_PLUGIN_ACCEPTANCE.md](DSH_015_NO_PLUGIN_ACCEPTANCE.md)：固定 `0.1.5-rc.2` 的核心 CLI/Web 验收边界。
+- [PLUGIN_COMPATIBILITY_MATRIX.md](PLUGIN_COMPATIBILITY_MATRIX.md)：从真实 Profile 生成的当前插件矩阵与依赖图。
+- [PLUGIN_RC2_UPDATE_AUDIT.md](PLUGIN_RC2_UPDATE_AUDIT.md)：历史 `0.1.1-rc.2` 审计快照，不是当前 `0.1.5-rc.2` 兼容声明。
+- [AUDIT.md](AUDIT.md)：历史安全审计快照。

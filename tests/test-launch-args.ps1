@@ -14,6 +14,9 @@ Assert-True "no web-port suffix in arguments" ($cs -notmatch '" web --port "')
 Assert-True "no web appended after profile arg" ($cs -notmatch 'QuoteArg\(profile\)\s*\+\s*" web')
 Assert-True "uses --profile form" ($cs -match '" --profile " \+ QuoteArg\(profile\)')
 Assert-True "passes --port" ($cs -match '" --port " \+ port\.ToString\(\)')
+Assert-True "rc2 launch order is --profile --no-open --port" (
+    $cs -match 'args = "-y @deepseek-ai/dsh@" \+ QuoteArg\(version\) \+\s*\r?\n\s*" --profile " \+ QuoteArg\(profile\);' -and
+    $cs -match 'if \(noOpen\)\s*\r?\n\s*args \+= " --no-open";\s*\r?\n\s*args \+= " --port " \+ port\.ToString\(\);')
 
 # ---- 2. 统一 CLI 能力检测与参数构造 ----
 Assert-True "SupportsNoOpen probes --help for unknown versions" ($cs -match '--profile " \+ QuoteArg\(profile\) \+ " --help"')
@@ -25,6 +28,7 @@ Assert-True "known rc.8 short-circuits help probe" ($cs -match 'String\.Equals\(
 Assert-True "known rc1 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.1-rc\.1"' -and $cs -match 'bool knownNoOpen')
 Assert-True "known rc2 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.1-rc\.2"' -and $cs -match 'bool knownNoOpen')
 Assert-True "known 0.1.5 rc1 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.5-rc\.1"' -and $cs -match 'bool knownNoOpen')
+Assert-True "known 0.1.5 rc2 short-circuits help probe" ($cs -match 'String\.Equals\(version, "0\.1\.5-rc\.2"' -and $cs -match 'bool knownNoOpen')
 Assert-True "known rc.8 => --no-open" ($cs -match 'if \(noOpen\)\s*args \+= " --no-open";')
 $noOpenMethod = [regex]::Match($cs, 'private bool SupportsNoOpen[\s\S]*?\r?\n\s*///').Value
 Assert-True "future versions retain --help probe" ($noOpenMethod -match 'string probeArgs = usingNpx' -and $noOpenMethod -match '--help' -and $noOpenMethod -notmatch 'version\s*>=')
@@ -39,6 +43,9 @@ Assert-True "rc.8 is tested baseline" (@($compat.testedDshVersions | Where-Objec
 Assert-True "rc1 is tested baseline" (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.1' }).Count -gt 0)
 Assert-True "rc2 is tested baseline" (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.1-rc.2' }).Count -gt 0)
 Assert-True "0.1.5 rc1 is tested baseline" (@($compat.testedDshVersions | Where-Object { $_ -eq '0.1.5-rc.1' }).Count -gt 0)
+Assert-True "0.1.5 rc2 is tested baseline and default" (
+    @($compat.testedDshVersions | Where-Object { $_ -eq '0.1.5-rc.2' }).Count -gt 0 -and
+    $compat.defaultDshVersion -eq '0.1.5-rc.2')
 
 if ($fail -eq 0) { Write-Host 'LAUNCH ARGS TESTS PASSED' } else { Write-Host "FAILURES: $fail" }
 exit $(if ($fail -eq 0) { 0 } else { 1 })

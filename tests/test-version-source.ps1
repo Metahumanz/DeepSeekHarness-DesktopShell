@@ -27,12 +27,12 @@ Assert-True "Get-DshVersionFromNpx surfaces npm log path" ($manage -match 'log o
 
 # ---- 3. 根 VERSION 与 release.yml 默认一致 ----
 $versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
-Assert-True "root VERSION is 1.0.10 (got: $versionText)" ($versionText -eq '1.0.10')
+Assert-True "root VERSION is 1.0.11 (got: $versionText)" ($versionText -eq '1.0.11')
 Assert-True "release.yml default matches VERSION" ($releaseYml -match ("default: '" + [regex]::Escape($versionText) + "'"))
 
 # ---- 4. COMPATIBILITY.json 自洽 ----
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-True "schemaVersion is 3" ($compat.schemaVersion -eq 3)
+Assert-True "schemaVersion is 4" ($compat.schemaVersion -eq 4)
 Assert-True "defaultDshVersion valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "minimumCompatibleDshVersion valid semver (got: $($compat.minimumCompatibleDshVersion))" ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "testedDshVersions is non-empty array" (@($compat.testedDshVersions).Count -gt 0)

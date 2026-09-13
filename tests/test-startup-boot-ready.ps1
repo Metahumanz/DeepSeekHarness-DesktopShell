@@ -135,7 +135,7 @@ class BootReadyHarness
             DshProcessManager failed = new DshProcessManager();
             try
             {
-                failed.EnsureStarted(failPort, baseDir, logsDir, "0.1.0-rc.7", "web",
+                failed.EnsureStarted(failPort, baseDir, logsDir, "0.1.5-rc.2", "web",
                     dshPath, "command", false);
                 Assert(false, "listen then exit=1 is rejected before BootReady");
             }
@@ -159,7 +159,7 @@ class BootReadyHarness
             try
             {
                 DshProcessManager.BackendStartResult result = ready.EnsureStarted(
-                    passPort, baseDir, logsDir, "0.1.0-rc.7", "web", dshPath, "command", false);
+                    passPort, baseDir, logsDir, "0.1.5-rc.2", "web", dshPath, "command", false);
                 Assert(result != null && result.BootReady, "ready banner + HTTP200 stable returns BootReady");
                 Assert(ready.BootReady, "manager BootReady state is true");
                 Assert(ready.IsDshHealthy(passPort, 500), "BootReady backend remains healthy");
@@ -174,7 +174,7 @@ class BootReadyHarness
             try
             {
                 DshProcessManager.BackendStartResult authResult = authenticated.EnsureStarted(
-                    authPort, baseDir, logsDir, "0.1.0-rc.7", "web", dshPath, "command", false);
+                    authPort, baseDir, logsDir, "0.1.5-rc.2", "web", dshPath, "command", false);
                 Assert(authResult != null && authResult.BootReady,
                     "BrowserAuth ready URL follows 303 cookie exchange to BootReady");
                 string authUrl = authenticated.GetWebUrl(authPort);

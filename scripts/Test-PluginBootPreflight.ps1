@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]]$PluginSpec,
 
-    [string]$DshVersion = '0.1.1-rc.2',
+    [string]$DshVersion = '0.1.5-rc.2',
     [ValidateSet('npx', 'command', 'auto')]
     [string]$RunnerMode = 'npx',
     [string]$DshPath = '',
@@ -12,6 +12,14 @@ param(
     [string]$Validation = 'standard',
     [ValidateRange(0, 180)]
     [int]$BrowserProbeSeconds = 0,
+    # 可选地把真实 Profile 的 patch 层复制到隔离 Profile。只复制文件，不打印内容，
+    # 这样包含私密配置的 patch 不会进入日志，同时可以发现孤立 id / 服务依赖。
+    [string]$ProfilePatchPath = '',
+    # 启用后，在同一隔离 DSH_HOME 中调用真实 WebView2 harness；它只消费本次
+    # dsh web 输出的内存 token URL，并把 token-free 布尔结果写回本探针。
+    [switch]$RequireWebView2Settings,
+    # 供生态编排器读取的无敏感结果。
+    [string]$ResultPath = '',
     [int]$StableSeconds = 10,
     [int]$TimeoutSeconds = 120
 )
@@ -364,6 +372,29 @@ function Read-CapturedText([string]$path) {
     }
 }
 
+function Assert-PluginRuntimeHealthy([string]$text) {
+    $safe = Redact-BrowserAuthText $text
+    if ($safe -match '(?i)failed\s+to\s+load\s+plugins') {
+        throw '运行输出包含 Failed to load plugins。'
+    }
+    if ($safe -match '(?i)pending\s*\(\s*waiting\s+for\s+service') {
+        throw '运行输出包含 pending (waiting for service...)。'
+    }
+}
+
+function Test-PluginTreeHealthy(
+    [object]$treeLaunch,
+    [string]$workingDirectory,
+    [string]$stdout,
+    [string]$stderr
+) {
+    $code = Start-CapturedProcess $treeLaunch $workingDirectory $stdout $stderr 30000
+    $treeText = (Read-CapturedText $stdout) + "`r`n" + (Read-CapturedText $stderr)
+    Assert-PluginRuntimeHealthy $treeText
+    if ($code -ne 0) { throw "plugin list 返回 exitCode=$code。" }
+    Write-Host 'PLUGIN PREFLIGHT plugin-tree=healthy'
+}
+
 function Read-JsonFile([string]$path) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     try { return Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json }
@@ -483,6 +514,13 @@ $oldDshHome = $env:DSH_HOME
 $webProcess = $null
 $passed = $false
 $reason = ''
+$bootReadyCheck = $false
+$httpCheck = $false
+$pluginTreeCheck = $false
+$restartCheck = $false
+$webView2Check = $false
+$refreshCheck = $false
+$settingsCheck = $false
 $cleanupPassed = $true
 $cleanupReason = ''
 $useNpx = $false
@@ -559,15 +597,24 @@ try {
         throw '临时 Profile 未包含 @deepseek-ai/dsh-web-app；无法证明 Web 兼容，未返回兼容 PASS。'
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($ProfilePatchPath)) {
+        if (-not (Test-Path -LiteralPath $ProfilePatchPath -PathType Leaf)) {
+            throw '指定的 ProfilePatchPath 不存在；不能跳过真实 patch 层而返回 PASS。'
+        }
+        Copy-Item -LiteralPath $ProfilePatchPath -Destination (Join-Path $profileDir 'cordis.patch.yml') -Force
+        Write-Host 'PLUGIN PREFLIGHT profile-patch=applied-without-logging-content'
+    }
+
     if ($Validation -eq 'status-rotator') {
         Initialize-StatusRotatorPreflightConfig $profileDir
     }
 
     # 与 DesktopShell 的 BuildWebLaunchArguments 保持一致：web 是 dsh 的默认启动入口，
-    # 正式启动只传 --profile/--port；任何版本均以真实 --help 能力探测决定是否追加 --no-open，
+    # 正式启动顺序保持 --profile <name> --no-open --port <随机端口>；任何版本均以真实 --help 能力探测决定是否追加 --no-open，
     # 不把新的 alpha/rc 版本号维护成另一份硬编码列表。
-    $webArgs = New-DshArguments @('--profile', $profile, '--port', ([string]$port))
+    $webArgs = New-DshArguments @('--profile', $profile)
     if (Test-DshNoOpenSupport $profile $tempHome) { $webArgs += '--no-open' }
+    $webArgs += @('--port', ([string]$port))
     $webLaunch = New-LaunchSpec $executable $webArgs
     $webProcess = Start-RedirectedProcess $webLaunch $tempHome $stdoutPath $stderrPath
 
@@ -592,6 +639,15 @@ try {
             if ($webProcess.HasExited -or -not (Test-Http200 $readyUrl)) {
                 throw '稳定确认结束时 Profile 已退出或 HTTP 不再返回 200。'
             }
+            Assert-PluginRuntimeHealthy $combined
+            $treeStdout = Join-Path $probeRoot 'plugin-list-stdout.log'
+            $treeStderr = Join-Path $probeRoot 'plugin-list-stderr.log'
+            $treeArgs = New-DshArguments @('plugin', '--profile', $profile, 'list')
+            $treeLaunch = New-LaunchSpec $executable $treeArgs
+            Test-PluginTreeHealthy $treeLaunch $tempHome $treeStdout $treeStderr
+            $bootReadyCheck = $true
+            $httpCheck = $true
+            $pluginTreeCheck = $true
             if ($Validation -eq 'status-rotator') {
                 Test-StatusRotatorPlugin $profileDir
                 $configPath = Join-Path $profileDir 'node_modules\dsh-status-rotator\config.json'
@@ -609,6 +665,7 @@ try {
                     $restartOutput = (Read-CapturedText $stdoutPath) + "`r`n" + (Read-CapturedText $stderrPath)
                     $restartUrl = Get-DshReadyUrl $restartOutput $port
                     if ($restartUrl -and (Test-Http200 $restartUrl)) {
+                        Assert-PluginRuntimeHealthy $restartOutput
                         $restartReady = $true
                         break
                     }
@@ -620,9 +677,30 @@ try {
                 Test-StatusRotatorPlugin $profileDir
                 Write-Host 'PLUGIN PREFLIGHT status-rotator restart=config-preserved'
             }
-            elseif ($Validation -eq 'thought-buddy') {
-                Test-ThoughtBuddyPlugin $profileDir
+            else {
+                if (-not (Stop-PreflightWebProcess $webProcess $port)) {
+                    throw '重启前端口未能安全释放。'
+                }
+                try { $webProcess.Dispose() } catch { }
+                $webProcess = Start-RedirectedProcess $webLaunch $tempHome $stdoutPath $stderrPath
+                $restartDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+                $restartReady = $false
+                while ([DateTime]::UtcNow -lt $restartDeadline) {
+                    if ($webProcess.HasExited) { throw '重启后的 Profile 在 ready 前退出。' }
+                    $restartOutput = (Read-CapturedText $stdoutPath) + "`r`n" + (Read-CapturedText $stderrPath)
+                    $restartUrl = Get-DshReadyUrl $restartOutput $port
+                    if ($restartUrl -and (Test-Http200 $restartUrl)) {
+                        Assert-PluginRuntimeHealthy $restartOutput
+                        $restartReady = $true
+                        break
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+                if (-not $restartReady) { throw '重启后未达到 ready URL + HTTP 200。' }
+                Write-Host 'PLUGIN PREFLIGHT restart=healthy'
             }
+            $restartCheck = $true
+            if ($Validation -eq 'thought-buddy') { Test-ThoughtBuddyPlugin $profileDir }
             if ($BrowserProbeSeconds -gt 0) {
                 # 只公布随机端口，不把 alpha BrowserAuth 一次性 URL/token 写入终端。
                 # rc2 等无 BrowserAuth 的版本可由本地浏览器使用该端口检查真实渲染状态。
@@ -631,6 +709,36 @@ try {
                 if ($webProcess.HasExited -or -not (Test-Http200 $readyUrl)) {
                     throw 'Browser probe 等待期间 Profile 已退出或 HTTP 不再返回 200。'
                 }
+            }
+            if ($RequireWebView2Settings) {
+                $webView2Acceptance = Join-Path $PSScriptRoot 'Test-DshWebView2Acceptance.ps1'
+                if (-not (Test-Path -LiteralPath $webView2Acceptance -PathType Leaf)) {
+                    throw '缺少真实 WebView2 验收脚本；不能把 HTTP 结果伪装成 UI 兼容。'
+                }
+                # WebView2 harness 自己启动新的受控 DSH 进程。先精确关闭本轮 restart
+                # 进程，避免它抢占端口或把旧 BrowserAuth token 混入下一次导航。
+                if (-not (Stop-PreflightWebProcess $webProcess $port)) {
+                    throw 'WebView2 验收前未能安全关闭本轮 DSH 进程。'
+                }
+                try { $webProcess.Dispose() } catch { }
+                $webProcess = $null
+                $webView2ResultPath = Join-Path $probeRoot 'webview2-acceptance.json'
+                & $webView2Acceptance -DshHome $tempHome -Profile $profile -DshVersion $DshVersion -ResultPath $webView2ResultPath
+                $webView2Code = $LASTEXITCODE
+                $webView2Result = if (Test-Path -LiteralPath $webView2ResultPath -PathType Leaf) {
+                    Get-Content -LiteralPath $webView2ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                } else { $null }
+                if ($webView2Code -ne 0 -or -not $webView2Result -or $webView2Result.status -ne 'PASS') {
+                    $uiReason = if ($webView2Result -and $webView2Result.reason) { [string]$webView2Result.reason } else { "WebView2 验收失败（exitCode=$webView2Code）。" }
+                    throw $uiReason
+                }
+                $webView2Check = [bool]$webView2Result.checks.webView2
+                $refreshCheck = [bool]$webView2Result.checks.refresh
+                $settingsCheck = [bool]$webView2Result.checks.settings
+                if (-not ($webView2Check -and $refreshCheck -and $settingsCheck -and [bool]$webView2Result.checks.mainUi -and [bool]$webView2Result.checks.pluginState)) {
+                    throw 'WebView2 验收未同时证明主界面、刷新、设置页和插件状态。'
+                }
+                Write-Host 'PLUGIN PREFLIGHT webview2=healthy refresh=healthy settings=healthy'
             }
             $passed = $true
             break
@@ -641,7 +749,7 @@ try {
     if (-not $passed) { throw '等待 Profile BootReady 超时。' }
 }
 catch {
-    $reason = $_.Exception.Message
+    $reason = Redact-BrowserAuthText $_.Exception.Message
     Write-Host "PLUGIN BOOT PREFLIGHT FAILED: $reason"
     if ($activeStdoutPath) {
         $installStdout = Redact-BrowserAuthText (Read-CapturedText $activeStdoutPath)
@@ -673,6 +781,32 @@ finally {
         $cleanupReason = "随机测试端口 $port 在最终检查时仍在监听。"
     }
     Remove-Item -LiteralPath $tempHome -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
+    try {
+        $resultDirectory = Split-Path -Parent $ResultPath
+        if ($resultDirectory) { New-Item -ItemType Directory -Force -Path $resultDirectory | Out-Null }
+        $result = [pscustomobject]@{
+            targetDshVersion = $DshVersion
+            status = if ($passed -and $cleanupPassed) { 'PASS' } else { 'BLOCKED' }
+            reason = if ($passed -and $cleanupPassed) { '' } else { Redact-BrowserAuthText ($reason + ' ' + $cleanupReason).Trim() }
+            checks = [pscustomobject]@{
+                bootReady = [bool]$bootReadyCheck
+                pluginTree = [bool]$pluginTreeCheck
+                http = [bool]$httpCheck
+                restart = [bool]$restartCheck
+                webView2 = [bool]$webView2Check
+                refresh = [bool]$refreshCheck
+                settings = [bool]$settingsCheck
+            }
+        }
+        [IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+    }
+    catch {
+        $passed = $false
+        $reason = '无法写入 token-free preflight 结果：' + $_.Exception.Message
+    }
 }
 
 if ($passed -and $cleanupPassed) {

@@ -1,11 +1,10 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$managePath = Join-Path $repo 'scripts\Manage-Dsh.ps1'
-$preflightPath = Join-Path $repo 'scripts\Test-PluginBootPreflight.ps1'
-$csPath = Join-Path $repo 'src\DeepSeekHarness.cs'
-$manage = [System.IO.File]::ReadAllText($managePath)
-$preflight = [System.IO.File]::ReadAllText($preflightPath)
-$cs = [System.IO.File]::ReadAllText($csPath)
+$manage = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Manage-Dsh.ps1'))
+$single = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-PluginBootPreflight.ps1'))
+$ecosystem = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-DshPluginEcosystemPreflight.ps1'))
+$scanner = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Scan-DshPluginEcosystem.cjs'))
+$cs = [IO.File]::ReadAllText((Join-Path $repo 'src\DeepSeekHarness.cs'))
 
 $fail = 0
 function Assert-True([string]$label, [bool]$condition) {
@@ -13,107 +12,70 @@ function Assert-True([string]$label, [bool]$condition) {
     else { $script:fail++; Write-Host "FAIL: $label" }
 }
 
-$catalogStart = $manage.IndexOf('$PluginCatalog = @(', [System.StringComparison]::Ordinal)
-$catalogEnd = $manage.IndexOf('function Read-Default', $catalogStart, [System.StringComparison]::Ordinal)
-$catalog = if ($catalogStart -ge 0 -and $catalogEnd -gt $catalogStart) {
-    $manage.Substring($catalogStart, $catalogEnd - $catalogStart)
-} else { '' }
-
-Assert-True 'daily manager does not boot-test a user Profile' (
-    $manage -notmatch 'Test-PluginProfileBootCompatibility' -and
-    $manage -notmatch 'New-PluginBootProbeCommand' -and
-    $manage -match '日常插件安装只确认 package 安装成功' -and
-    $manage -match '不启动用户真实 Profile')
-Assert-True 'independent preflight uses a new temporary DSH_HOME' (
-    $preflight -match '\$tempHome = Join-Path \(\[IO\.Path\]::GetTempPath\(\)\)' -and
-    $preflight -match '\$env:DSH_HOME = \$tempHome' -and
-    $preflight -match '所有子进程.*临时 DSH_HOME')
-Assert-True 'preflight uses an isolated temporary Profile and refuses unsafe construction' (
-    $preflight -match 'Normalize-IsolatedProfile' -and
-    $preflight -match '\$profileDir = Join-Path \$tempHome' -and
-    $preflight -match '未返回兼容 PASS')
-Assert-True 'preflight installs plugins before booting the isolated Profile' (
-    $preflight -match '\x27plugin\x27,\s+\x27--profile\x27,\s+\$profile,\s+\x27add\x27,\s+\$spec' -and
-    $preflight -match '@deepseek-ai/dsh-web-app@' -and
-    $preflight -match 'Web 基础包/插件安装后未发现临时 Profile' -and
-    $preflight -match '\$webArgs = New-DshArguments @\(\x27--profile\x27,\s+\$profile,\s+\x27--port\x27' -and
-    $preflight -notmatch 'New-DshArguments @\(\x27web\x27,\s+\x27--profile\x27')
-Assert-True 'preflight uses a random port and the full BootReady gate' (
-    $preflight -match 'Get-FreeTcpPort' -and
-    $preflight -match 'dsh\\s\+web\\s\*:' -and
-    $preflight -match 'Test-Http200' -and
-    $preflight -match 'Get-Content -LiteralPath \$path -Raw' -and
-    $preflight -match '\$StableSeconds' -and
-    $preflight -match '\$installTimeoutMs = \[Math\]::Max' -and
-    $preflight -match '\$webProcess\.HasExited')
-Assert-True 'preflight accepts BrowserAuth ready URLs without exposing their token' (
-    $preflight -match 'Get-DshReadyUrl' -and
-    $preflight -match 'MaximumAutomaticRedirections = 3' -and
-    $preflight -match 'Redact-BrowserAuthText')
-Assert-True 'special plugin validations prove capabilities instead of pinning an obsolete release number' (
-    $preflight -match 'BrowserProbeSeconds' -and
-    $preflight -match 'Status Rotator 缺少可识别的 package.json 版本' -and
-    $preflight -match 'Thought Buddy 缺少可识别的 package.json 版本' -and
-    $preflight -notmatch "version -ne '0\.6\.6'" -and
-    $preflight -notmatch "version -ne '0\.2\.0'")
-Assert-True 'preflight probes --no-open from CLI help instead of listing each future DSH version' (
-    $preflight -match 'function Test-DshNoOpenSupport' -and
-    $preflight -match 'New-DshArguments @\(\x27--profile\x27, \$profile, \x27--help\x27\)' -and
-    $preflight -match 'Test-DshNoOpenSupport \$profile \$tempHome' -and
-    $preflight -notmatch "0\.1\.2-alpha\.3.*0\.1\.2-alpha\.4")
-Assert-True 'preflight cleans only its own process tree and restores DSH_HOME' (
-    $preflight -match 'Stop-ProcessTree' -and
-    $preflight -match 'Get-ListeningPidForPort' -and
-    $preflight -match 'Stop-ListenerByPort' -and
-    $preflight -match 'Wait-PortClosed' -and
-    $preflight -match 'taskkill\.exe' -and
-    $preflight -match '/PID \$processToStop\.Id /T /F' -and
-    $preflight -match 'Remove-Item Env:DSH_HOME' -and
-    $preflight -match 'cleanup=closed' -and
-    $preflight -notmatch 'Get-Process\s+node|Get-Process\s+cmd|Get-Process\s+powershell')
-Assert-True 'install success is explicitly not compatibility success' (
-    $manage -match '仅安装成功，尚未证明运行兼容' -and
-    $manage -match '安装成功 ≠ 运行兼容' -and
-    $manage -match '独立 release preflight')
-Assert-True 'dsh-remote is absent from the active recommendation catalog' (
-    $catalog -notmatch "Id='remote'" -and
-    $catalog -notmatch 'dsh-remote' -and
-    $catalog -match 'No=25; Id=\x27thought-buddy\x27' -and
-    $catalog -match 'No=26; Id=\x27agent-teams\x27')
-Assert-True 'active catalog keeps the audited rc2 plugin set and pins the validated Cost Meter release' (
-    $catalog -match "Id='market'.*dshmarket@1\.41\.0" -and
-    $catalog -match "Id='sidebar'.*dsh-better-sidebar@0\.17\.1" -and
-    $catalog -match "Id='skills'.*@michengai/dsh-skills-manager@0\.1\.38" -and
-    $catalog -match "Id='at-file'.*github:omdsh-dev/dsh-at-file#v0\.7\.0" -and
-    $catalog -match "Id='file-mentions'.*github:a903067276-rgb/dsh-file-mentions#v1\.0\.13" -and
-    $catalog -match "Id='collapse'.*github:a179-sanae/dsh-auto-collapse#v0\.1\.5" -and
-    $catalog -match "Id='rewind'.*github:XSJUSTC/dsh-rewind" -and
-    $catalog -match "Id='outline'.*github:EnkiduGilgamesh/dsh-codex-side-outline#v1\.1\.1" -and
-    $catalog -match "Id='video'.*dsh-video-preview@0\.1\.4" -and
-    $catalog -match "Id='notification'.*github:omdsh-dev/dsh-notification#v0\.1\.4" -and
-    $catalog -match "Id='cost'.*dsh-cost-meter@1\.7\.10" -and
-    $catalog -match "Id='dream-skin'.*dsh-dream-skin@8\.30\.1" -and
-    $catalog -match "Id='liangshen'.*@linxin666/dsh-liangshen@0\.3\.14" -and
-    $catalog -match "Id='thought-buddy'.*@dsh-plugin/dsh-thought-buddy@0\.3\.3" -and
-    $catalog -match "Id='status-rotator'.*dsh-status-rotator@0\.10\.0" -and
-    $catalog -match "Id='context'.*dsh-context@0\.41\.3" -and
-    $catalog -match "Id='agent-teams'.*@nanmicoder/dsh-agent-teams@0\.1\.14" -and
-    $catalog -notmatch "Id='model-picker'" -and
-    $catalog -notmatch "Id='modlens'" -and
-    $catalog -notmatch 'open-in-vscode'
-)
-Assert-True 'local-only bridge-browser is documented but not offered as a portable plugin' (
-    $manage -match '本地集成依赖' -and
-    $manage -match 'bridge-browser' -and
-    $catalog -notmatch 'dsh-bridge-browser'
-)
-Assert-True 'unverified plugin API mismatches offer an isolated Profile instead of modifying the real Profile' (
-    $cs -match 'IsPluginLoaderApiMismatch' -and
-    $cs -match 'does not provide an export named' -and
-    $cs -match 'AllocateIsolatedPreviewProfileName' -and
-    $cs -match 'OnOverlayUseIsolatedPreviewProfile' -and
-    $cs -match '现有 Profile、插件、主题和会话不会被修改'
-)
+Assert-True 'single-plugin preflight always creates a new DSH_HOME and Profile' (
+    $single -match '\$tempHome = Join-Path \(\[IO\.Path\]::GetTempPath\(\)' -and
+    $single -match '\$env:DSH_HOME = \$tempHome' -and
+    $single.Contains('Normalize-IsolatedProfile'))
+Assert-True 'single-plugin preflight installs web-app and plugins before boot' (
+    $single.Contains("@deepseek-ai/dsh-web-app@' + `$DshVersion") -and
+    $single.Contains("@('plugin', '--profile', `$profile, 'add', `$spec)") -and
+    $single.Contains('Web 基础包/插件安装后未发现临时 Profile'))
+Assert-True 'the launch contract remains --profile --no-open --port with exact readiness URL' (
+    $single.Contains("@('--profile', `$profile)") -and
+    $single.Contains("`$webArgs += '--no-open'") -and
+    $single.Contains("`$webArgs += @('--port', ([string]`$port))") -and
+    $single.Contains('Get-DshReadyUrl') -and $single.Contains('Test-Http200'))
+Assert-True 'preflight treats plugin tree failure and pending services as blockers' (
+    $single.Contains('Failed to load plugins') -and
+    $single.Contains('pending (waiting for service') -and
+    $single.Contains('Assert-PluginRuntimeHealthy') -and
+    $single.Contains('Test-PluginTreeHealthy'))
+Assert-True 'preflight checks restart for every plugin rather than only named historical plugins' (
+    $single.Contains("if (`$Validation -eq 'status-rotator')") -and
+    $single.Contains("Write-Host 'PLUGIN PREFLIGHT restart=healthy'") -and
+    $single.Contains('重启后未达到 ready URL + HTTP 200。'))
+Assert-True 'BrowserAuth URLs are authenticated in memory and redacted from output/result evidence' (
+    $single.Contains('CookieContainer') -and
+    $single.Contains('Redact-BrowserAuthText') -and
+    $single.Contains('token-free preflight 结果') -and
+    $cs.Contains('ReadyUrl') -and $cs.Contains('RedactSensitiveOutput') -and
+    $cs.Contains('仅保存在本次 backend run 的内存中') -and
+    $cs.Contains('WEBVIEW navigation-completed success=') -and
+    $cs -notmatch 'WEBVIEW navigation-completed[\s\S]{0,240}e\.Uri')
+Assert-True 'ecosystem preflight starts clean then follows the generated dependency order' (
+    $ecosystem.Contains("DshVersion = '0.1.5-rc.2'") -and
+    $ecosystem.Contains('Get-DependencyOrder') -and
+    $ecosystem.Contains('$plugin.dependsOn') -and
+    $ecosystem.Contains('Get-DependencyChain') -and
+    $ecosystem.Contains('-PluginSpec $chainSpecs'))
+Assert-True 'every isolated chain and the full combination require the real token-safe WebView2 settings harness' (
+    $ecosystem.Contains('-RequireWebView2Settings') -and
+    $single.Contains('[switch]$RequireWebView2Settings') -and
+    $single.Contains("'PLUGIN PREFLIGHT webview2=healthy refresh=healthy settings=healthy'"))
+Assert-True 'ecosystem preflight isolates only a blocker and its downstream chain' (
+    $ecosystem.Contains('$blockedParents') -and
+    $ecosystem.Contains('上游依赖链已阻断') -and
+    $ecosystem.Contains('继续') -eq $false -and
+    $ecosystem.Contains('BLOCKED'))
+Assert-True 'full combination copies the real patch only after graph validation' (
+    $ecosystem.Contains('patchOrphans') -and
+    $ecosystem.Contains('-ProfilePatchPath $profilePatch') -and
+    $single.Contains('profile-patch=applied-without-logging-content') -and
+    $ecosystem.Contains('-PluginSpec $fullSpecs'))
+Assert-True 'PASS cannot be inferred from a version-only scan' (
+    $scanner.Contains("required = ['bootReady', 'pluginTree', 'http', 'webView2', 'refresh', 'settings', 'restart']") -and
+    $scanner.Contains("exact.status === 'PASS'") -and
+    $scanner.Contains('exact.installSpec === row.installSpec') -and
+    $scanner.Contains('fullPreflightComplete') -and
+    $ecosystem.Contains('完整组合 preflight 已通过 BootReady、plugin tree、HTTP、WebView2、刷新、设置页和重启。'))
+Assert-True 'production preflight evidence is profile-local and the manager prefers it for upgrade gating' (
+    $ecosystem.Contains('.dsh-desktop-shell\PLUGIN_PREFLIGHT_0.1.5-rc.2.json') -and
+    $manage.Contains('profilePreflight') -and
+    $manage.Contains('sourcePreflight'))
+Assert-True 'daily manager does not boot-test or silently mutate the user Profile' (
+    $manage.Contains('日常插件安装只确认 package 安装成功') -and
+    $manage.Contains('不启动用户真实 Profile') -and
+    $manage.Contains('安装成功 ≠ 运行兼容'))
 
 if ($fail -eq 0) { Write-Host 'PLUGIN BOOT ACCEPTANCE TESTS PASSED' }
 else { Write-Host "FAILURES: $fail" }

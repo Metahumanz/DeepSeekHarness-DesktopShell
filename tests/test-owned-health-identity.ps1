@@ -115,7 +115,7 @@ class HealthHarness
         try
         {
             DshProcessManager.BackendStartResult result = manager.EnsureStarted(
-                port, baseDir, logs, "0.1.0-rc.7", "web", dsh, "command", false);
+                port, baseDir, logs, "0.1.5-rc.2", "web", dsh, "command", false);
             Assert(result != null && manager.OwnsBackend, "owned listener setup starts");
             Assert(manager.OwnedListenerPid > 0, "owned listener pid recorded");
             Assert(manager.IsDshHealthy(port, 500), "owned listener normal is healthy");

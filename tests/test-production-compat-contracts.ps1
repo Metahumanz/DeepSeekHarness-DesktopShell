@@ -123,9 +123,9 @@ $identityMethod
         public static int Main()
         {
             string line;
-            Check(IsLikelyDshCommandLine("npx @deepseek-ai/dsh@0.1.1-rc.2 web --profile work --port 3080", 3080, out line), "exact port accepted");
-            Check(!IsLikelyDshCommandLine("npx @deepseek-ai/dsh@0.1.1-rc.2 web --profile work --port 30801", 3080, out line), "port prefix rejected");
-            Check(!IsLikelyDshCommandLine("npx @deepseek-ai/dsh@0.1.1-rc.2 web --profile work --port 3080x", 3080, out line), "non-boundary suffix rejected");
+            Check(IsLikelyDshCommandLine("npx @deepseek-ai/dsh@0.1.5-rc.2 --profile work --port 3080", 3080, out line), "exact port accepted");
+            Check(!IsLikelyDshCommandLine("npx @deepseek-ai/dsh@0.1.5-rc.2 --profile work --port 30801", 3080, out line), "port prefix rejected");
+            Check(!IsLikelyDshCommandLine("npx @deepseek-ai/dsh@0.1.5-rc.2 --profile work --port 3080x", 3080, out line), "non-boundary suffix rejected");
             return failures == 0 ? 0 : 1;
         }
     }
@@ -154,8 +154,8 @@ $identityMethod
     if ($psIdentityBody.StartsWith('{')) { $psIdentityBody = $psIdentityBody.Substring(1) }
     if ($psIdentityBody.EndsWith('}')) { $psIdentityBody = $psIdentityBody.Substring(0, $psIdentityBody.Length - 1) }
     $psIdentity = [scriptblock]::Create("param([string]`$cmd, [int]`$port)`r`n$psIdentityBody")
-    $validCommand = 'npx @deepseek-ai/dsh@0.1.1-rc.2 web --profile work --port 3080'
-    $prefixPortCommand = 'npx @deepseek-ai/dsh@0.1.1-rc.2 web --profile work --port 30801'
+    $validCommand = 'npx @deepseek-ai/dsh@0.1.5-rc.2 --profile work --port 3080'
+    $prefixPortCommand = 'npx @deepseek-ai/dsh@0.1.5-rc.2 --profile work --port 30801'
     Assert-True 'PowerShell uninstaller accepts exact port' ([bool](& $psIdentity $validCommand 3080))
     Assert-True 'PowerShell uninstaller rejects port prefix' (-not [bool](& $psIdentity $prefixPortCommand 3080))
 
