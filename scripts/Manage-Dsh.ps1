@@ -669,12 +669,16 @@ function Get-DshVersionFromNpx([string]$version) {
         throw $detail
     }
 
-    # 成功只接受整行独立版本号，不从任意文本中抽取 SemVer。
-    if ($text -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$') {
-        return $text
+    # 成功只接受唯一一行独立版本号，不从任意文本中抽取 SemVer。
+    # npm 11 会在正常 npx 输出后追加 "npm notice" 升级提示；这些额外行不应让
+    # 已验证的版本探测失败。明确错误已在上方拒绝，仍要求版本行本身完整且唯一。
+    $versionLines = @($text -split "`r?`n" | ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$' })
+    if ($versionLines.Count -eq 1) {
+        return $versionLines[0]
     }
 
-    throw "无法通过 npx 启动 @deepseek-ai/dsh@$version：输出不是独立版本号。原始输出：`r`n$text"
+    throw "无法通过 npx 启动 @deepseek-ai/dsh@$version：输出中没有唯一的独立版本号。原始输出：`r`n$text"
 }
 
 function Prepare-NpxDsh([string]$version) {
