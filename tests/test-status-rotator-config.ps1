@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $managePath = Join-Path $repo 'scripts\Manage-Dsh.ps1'
 $manage = [System.IO.File]::ReadAllText($managePath)

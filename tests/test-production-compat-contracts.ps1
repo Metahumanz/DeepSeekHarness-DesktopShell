@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $sourcePath = Join-Path $repo 'src\DeepSeekHarness.cs'
 $uninstallPath = Join-Path $repo 'scripts\Uninstall-DesktopShell.ps1'
