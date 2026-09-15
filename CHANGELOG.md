@@ -4,6 +4,11 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.13（npm 11 版本探测与安装链修复）
+
+- **npm notice 容错**：`Manage-Dsh` 的 npx 版本探测改为接受唯一的整行 SemVer，同时继续拒绝 ETARGET、notarget、npm error 及含版本号的错误输出。npm 11 追加的升级提示不再使正常的 `@deepseek-ai/dsh@0.1.5-rc.2 --version` 探测失败。
+- **真实下载式安装回归**：新增模拟 npm 11 notice 的双宿主测试。`v1.0.12` 的 Release 资产可下载且 SHA256 正确，但隔离首次初始化会被该 notice 阻断；遵循不可变标签策略，以本版本修复。
+
 ## v1.0.12（Windows PowerShell 5.1 发布链编码修复）
 
 - **PS5.1 UTF-8 BOM 门禁**：将本次 rc.2 适配中变动的扫描、preflight、安装、验收及测试脚本统一保存为 UTF-8 BOM；新增编码回归，要求所有含非 ASCII 源码的 `scripts/` / `tests/` PowerShell 文件均具备 BOM，避免 Windows PowerShell 5.1 按本地代码页误解析中文字符串。

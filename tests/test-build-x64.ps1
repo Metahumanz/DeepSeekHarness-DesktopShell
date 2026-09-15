@@ -85,7 +85,7 @@ Assert-True 'release verifies the downloaded artifact hash after the cross-job d
     $releaseYml -match 'SHA256SUMS\.txt')
 
 # ---- 5. 根目录版本文件与兼容基线内容自洽 ----
-Assert-True "root VERSION is 1.0.12 (got: $versionText)" ($versionText -eq '1.0.12')
+Assert-True "root VERSION is 1.0.13 (got: $versionText)" ($versionText -eq '1.0.13')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True "COMPATIBILITY.json defaultDshVersion is a valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "COMPATIBILITY.json minimumCompatibleDshVersion is a valid semver (got: $($compat.minimumCompatibleDshVersion))" ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
