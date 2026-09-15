@@ -4,6 +4,11 @@
 > **v1.0.0 已冻结（2026-08-19）**：不再以同 tag 覆盖发布；后续修复走新版本号
 > （Release 工作流已移除"删除已有 Release"步骤，重复发布同一 tag 会失败，属有意行为）。
 
+## v1.0.12（Windows PowerShell 5.1 发布链编码修复）
+
+- **PS5.1 UTF-8 BOM 门禁**：将本次 rc.2 适配中变动的扫描、preflight、安装、验收及测试脚本统一保存为 UTF-8 BOM；新增编码回归，要求所有含非 ASCII 源码的 `scripts/` / `tests/` PowerShell 文件均具备 BOM，避免 Windows PowerShell 5.1 按本地代码页误解析中文字符串。
+- **双宿主发布验证**：发布前同时通过完整 `pwsh tests/verify.ps1`（含 Analyzer）与 `powershell -NoProfile -File tests/verify.ps1 -Suite Ps51Compat -SkipAnalyzer`。此前 `v1.0.11` 因 PS5.1 发布门禁失败而未产生可下载资产；遵循不可变标签策略，以新版本重新发布。
+
 ## v1.0.11（DSH 0.1.5-rc.2 DesktopShell 与真实插件生态适配）
 
 - **固定 rc.2 核心目标**：默认和已测 DSH 升级为精确 `0.1.5-rc.2`，`--no-open` 能力表同步更新；`latest` 保留为用户主动选择的可选通道，绝不自动成为推荐版本。
