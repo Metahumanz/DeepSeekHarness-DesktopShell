@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $cs = [IO.File]::ReadAllText((Join-Path $repo 'src\DeepSeekHarness.cs'))
@@ -38,7 +38,7 @@ Assert-True 'ecosystem preflight refuses every target other than rc2' (
     $ecosystem.Contains('只接受固定目标 DSH 0.1.5-rc.2'))
 Assert-True 'manual acceptance states the fixed rc2 target' (
     $manual.Contains('# DSH 0.1.5-rc.2') -and $manual.Contains('@deepseek-ai/dsh@0.1.5-rc.2'))
-Assert-True 'DesktopShell product VERSION is 1.0.11' ($version -eq '1.0.11')
+Assert-True 'DesktopShell product VERSION is 1.0.12' ($version -eq '1.0.12')
 
 if ($fail -eq 0) { Write-Host 'DSH 0.1.5 RC2 COMPAT TESTS PASSED' }
 else { Write-Host "FAILURES: $fail" }

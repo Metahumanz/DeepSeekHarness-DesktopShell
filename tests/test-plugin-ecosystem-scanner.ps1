@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $scanner = Join-Path $repo 'scripts\Scan-DshPluginEcosystem.ps1'
 $tempHome = Join-Path ([IO.Path]::GetTempPath()) ('dsh-plugin-graph-fixture-' + [guid]::NewGuid().ToString('N'))

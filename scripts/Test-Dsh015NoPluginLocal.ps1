@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$DshVersion = '0.1.5-rc.2',
     [int]$Port = 0,

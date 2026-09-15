@@ -43,6 +43,7 @@ $ps51SuiteMatch = [regex]::Match($verify, '(?s)\$ps51CompatibilityTests = @\((.*
 $fullSuiteTests = @($fullSuiteMatch.Groups[1].Value | Select-String -AllMatches "'([^']+\.ps1)'" | ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value })
 $ps51SuiteTests = @($ps51SuiteMatch.Groups[1].Value | Select-String -AllMatches "'([^']+\.ps1)'" | ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value })
 $requiredPs51Tests = @(
+    'test-ps51-encoding.ps1',
     'test-npx-version-parser.ps1',
     'test-dsh-version.ps1',
     'test-runner-mode.ps1',
@@ -53,11 +54,11 @@ $requiredPs51Tests = @(
 )
 
 Assert-True 'verify exposes separate Full and Ps51Compat suites' ($verify -match "ValidateSet\('Full', 'Ps51Compat'\)" -and $fullSuiteMatch.Success -and $ps51SuiteMatch.Success)
-Assert-True "Full suite retains all 43 regression tests (got: $($fullSuiteTests.Count))" ($fullSuiteTests.Count -eq 43)
+Assert-True "Full suite retains all 44 regression tests (got: $($fullSuiteTests.Count))" ($fullSuiteTests.Count -eq 44)
 Assert-True 'production compatibility contract test stays in the Full suite' (
     $fullSuiteTests -contains 'test-production-compat-contracts.ps1' -and
     $ps51SuiteTests -notcontains 'test-production-compat-contracts.ps1')
-Assert-True "Ps51Compat retains exactly 7 host-sensitive tests (got: $($ps51SuiteTests.Count))" (
+Assert-True "Ps51Compat retains exactly 8 host-sensitive tests (got: $($ps51SuiteTests.Count))" (
     $ps51SuiteTests.Count -eq $requiredPs51Tests.Count -and
     @($requiredPs51Tests | Where-Object { $ps51SuiteTests -notcontains $_ }).Count -eq 0)
 Assert-True 'PowerShell 7 remains the one full-source gate' ($ciYml -match 'run: pwsh -NoProfile -File tests/verify\.ps1' -and $releaseYml -match 'run: pwsh -NoProfile -File tests/verify\.ps1')
@@ -84,7 +85,7 @@ Assert-True 'release verifies the downloaded artifact hash after the cross-job d
     $releaseYml -match 'SHA256SUMS\.txt')
 
 # ---- 5. 根目录版本文件与兼容基线内容自洽 ----
-Assert-True "root VERSION is 1.0.11 (got: $versionText)" ($versionText -eq '1.0.11')
+Assert-True "root VERSION is 1.0.12 (got: $versionText)" ($versionText -eq '1.0.12')
 $compat = Get-Content -LiteralPath (Join-Path $repo 'COMPATIBILITY.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True "COMPATIBILITY.json defaultDshVersion is a valid semver (got: $($compat.defaultDshVersion))" ($compat.defaultDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')
 Assert-True "COMPATIBILITY.json minimumCompatibleDshVersion is a valid semver (got: $($compat.minimumCompatibleDshVersion))" ($compat.minimumCompatibleDshVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9._+-]+)?$')

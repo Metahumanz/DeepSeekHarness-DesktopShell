@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $scriptText = [IO.File]::ReadAllText((Join-Path $repo 'scripts\Test-DshWebView2Acceptance.ps1'))
 
