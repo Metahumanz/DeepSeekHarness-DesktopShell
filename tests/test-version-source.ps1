@@ -24,10 +24,11 @@ Assert-True "npx fallback version derives from default" ($manage -match '\$defau
 Assert-True "Get-DshVersionFromNpx does not swallow stderr" ($manage -notmatch 'Get-DshVersionFromNpx[\s\S]*?2>\$null')
 Assert-True "Get-DshVersionFromNpx surfaces ETARGET" ($manage -match 'No matching version found for')
 Assert-True "Get-DshVersionFromNpx surfaces npm log path" ($manage -match 'log of this run can be found in')
+Assert-True "Get-DshVersionFromNpx accepts one standalone version line amid npm notices" ($manage -match '\$versionLines = @\(' -and $manage -match 'unique')
 
 # ---- 3. 根 VERSION 与 release.yml 默认一致 ----
 $versionText = [System.IO.File]::ReadAllText((Join-Path $repo 'VERSION')).Trim()
-Assert-True "root VERSION is 1.0.12 (got: $versionText)" ($versionText -eq '1.0.12')
+Assert-True "root VERSION is 1.0.13 (got: $versionText)" ($versionText -eq '1.0.13')
 Assert-True "release.yml default matches VERSION" ($releaseYml -match ("default: '" + [regex]::Escape($versionText) + "'"))
 
 # ---- 4. COMPATIBILITY.json 自洽 ----

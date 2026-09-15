@@ -37,6 +37,18 @@ try {
     $got = & $getNpxVersion '0.1.0-rc.7'
     Assert-Equal "success standalone version line returns rc.7" $got '0.1.0-rc.7'
 
+    # 1b) npm 11 的升级提示会与成功的版本行混合输出；唯一的独立版本行仍应有效。
+    $noticeNpx = Join-Path $base 'notice-npx.cmd'
+    @'
+@echo off
+echo 0.1.5-rc.2
+echo npm notice 1>&2
+echo npm notice New patch version of npm available! 1>&2
+'@ | Set-Content -LiteralPath $noticeNpx -Encoding ascii
+    $script:fakeNpx = $noticeNpx
+    $noticeVersion = & $getNpxVersion '0.1.5-rc.2'
+    Assert-Equal "success version remains valid with npm notice lines" $noticeVersion '0.1.5-rc.2'
+
     # 2) 失败：ETARGET 输出中即使包含 0.1.0-rc.8，也必须抛错
     $errNpx = Join-Path $base 'err-npx.cmd'
     @'
